@@ -212,11 +212,17 @@ class VideoToWavConverter(wx.Frame):
         self.progress.SetValue(0)
 
         def convert_task():
-            # Simulating a long-running task
-            for i in range(1, 101):
-                time.sleep(0.05)  # Simulate work by sleeping
-                self.update_progress(i)
-            wx.CallAfter(wx.MessageBox, 'Conversion completed!', 'Info', wx.OK | wx.ICON_INFORMATION)
+        	try:
+        		# Simulating a long-running task
+        		for i in range(1, 101):
+        			time.sleep(0.05)  # Simulate work by sleeping
+        			self.update_progress(i)
+        			
+        			
+        		#perform conversion
+        		self.convert_to_wav(filepath)
+        	except:
+        		wx.CallAfter(wx.MessageBox, 'Conversion completed!', 'Info', wx.OK | wx.ICON_INFORMATION)
 
         thread = threading.Thread(target=convert_task)
         thread.start()
@@ -231,7 +237,7 @@ class VideoToWavConverter(wx.Frame):
             wx.MessageBox(f'Video has been converted to {output_path}', 'Success', wx.OK | wx.ICON_INFORMATION)
             self.save_file(output_path)
         except Exception as e:
-            wx.MessageBox(f'An error occurred: {e}', 'Error', wx.OK | wx.ICON_ERROR)
+            wx.CallAfter(wx.MessageBox(f'An error occurred: {e}', 'Error', wx.OK | wx.ICON_ERROR))
 
     def save_file(self, output_path):
         with wx.FileDialog(self, "Save WAV file", wildcard="WAV files (*.wav)|*.wav", style=wx.FD_SAVE |
