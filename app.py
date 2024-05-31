@@ -10,7 +10,7 @@ import os
 #import cv2
 import base64
 import sys
-import torch
+#import torch
 from scipy.io.wavfile import read
 import wx.lib.agw.gradientbutton as GB
 import wx.adv as hl
@@ -25,8 +25,10 @@ def install(package):
 try:
     import opensmile
 except ImportError:
-    install("opensmile pandas opencv-python torch scipy torch")
+    install("opensmile pandas opencv-python scipy")
     import opensmile
+    import pandas, cv2, scipy
+    
     
     
 try:
