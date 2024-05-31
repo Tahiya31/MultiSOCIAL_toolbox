@@ -1,12 +1,13 @@
 import subprocess
 import sys
 import os
-import wx
-import opensmile
-import librosa
-import mediapipe as mp
-import pandas as pd
-import cv2
+
+#import wx
+#import opensmile
+#import librosa
+#import mediapipe as mp
+#import pandas as pd
+#import cv2
 import base64
 import sys
 import torch
@@ -20,6 +21,14 @@ def install(package):
     subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
 # Ensure ffmpeg-python, pydub, wxPython, librosa, mediapipe, opencv-python, and SpeechRecognition are installed
+
+try:
+    import opensmile
+except ImportError:
+    install("opensmile pandas opencv-python torch scipy torch")
+    import opensmile
+    
+    
 try:
     import ffmpeg
 except ImportError:
