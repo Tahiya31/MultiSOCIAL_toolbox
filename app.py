@@ -28,7 +28,7 @@ except ImportError:
     import opensmile
     
 try:
-    import pandas
+    import pandas as pd
 except ImportError:
 	install("pandas")
 	import pandas as pd
@@ -255,11 +255,13 @@ class VideoToWavConverter(wx.Frame):
     def convert_to_wav(self, filepath):
         try:
             output_path = os.path.splitext(filepath)[0] + ".wav"
+            print(f"Input file path: {filepath}")
+            print(f"Output file path: {output_path}")
             video = ffmpeg.input(filepath)
             audio = video.audio
             ffmpeg.output(audio, output_path).run(overwrite_output=True)
             wx.MessageBox(f'Video has been converted to {output_path}', 'Success', wx.OK | wx.ICON_INFORMATION)
-            self.save_file(output_path)
+            wx.CallAfter(self.save_file, output_path)
         except Exception as e:
             wx.CallAfter(wx.MessageBox(f'An error occurred: {e}', 'Error', wx.OK | wx.ICON_ERROR))
 
