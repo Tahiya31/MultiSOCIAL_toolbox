@@ -11,11 +11,10 @@ import os
 import base64
 import sys
 #import torch
-from scipy.io.wavfile import read
-import wx.lib.agw.gradientbutton as GB
-import wx.adv as hl
+#from scipy.io.wavfile import read
 import threading
 import time
+
 
 def install(package):
     subprocess.check_call([sys.executable, "-m", "pip", "install", package])
@@ -28,6 +27,7 @@ except ImportError:
     install("opensmile pandas opencv-python scipy")
     import opensmile
     import pandas, cv2, scipy
+    from scipy.io.wavfile import read
     
     
     
@@ -42,6 +42,9 @@ try:
 except ImportError:
     install("wxPython")
     import wx
+    import wx.lib.agw.gradientbutton as GB
+    import wx.adv as hl
+	
     
 try:
     import librosa
