@@ -24,11 +24,21 @@ def install(package):
 try:
     import opensmile
 except ImportError:
-    install("opensmile pandas opencv-python scipy")
+    install("opensmile")
     import opensmile
-    import pandas, cv2, scipy
-    from scipy.io.wavfile import read
     
+try:
+    import pandas
+except ImportError:
+	install("pandas")
+	import pandas as pd
+	
+try:
+	import scipy
+except ImportError:
+	install("scipy")
+	import scipy
+	from scipy.io.wavfile import read
     
     
 try:
