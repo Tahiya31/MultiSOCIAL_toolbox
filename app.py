@@ -15,11 +15,70 @@ import sys
 import threading
 import time
 
+import platform
+import urllib.request
+import zipfile
+import shutil
 
 def install(package):
     subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
 # Ensure ffmpeg-python, pydub, wxPython, librosa, mediapipe, opencv-python, and SpeechRecognition are installed
+
+
+
+def install(package):
+    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+
+#installing ffmpeg for windows
+def install_ffmpeg_windows():
+    ffmpeg_url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+    ffmpeg_zip = "ffmpeg.zip"
+    ffmpeg_dir = "ffmpeg"
+    
+    try:
+        # Download ffmpeg
+        print("Downloading ffmpeg...")
+        urllib.request.urlretrieve(ffmpeg_url, ffmpeg_zip)
+        
+        # Extract ffmpeg
+        print("Extracting ffmpeg...")
+        with zipfile.ZipFile(ffmpeg_zip, 'r') as zip_ref:
+            zip_ref.extractall(ffmpeg_dir)
+        
+        # Find the bin folder
+        bin_dir = os.path.join(ffmpeg_dir, 'ffmpeg-*-essentials_build', 'bin')
+        bin_dir = glob.glob(bin_dir)[0]  # Assumes only one match
+
+        # Move the binaries to a known location
+        target_dir = os.path.join(os.environ['USERPROFILE'], 'ffmpeg')
+        if not os.path.exists(target_dir):
+            os.makedirs(target_dir)
+
+        for file_name in os.listdir(bin_dir):
+            shutil.move(os.path.join(bin_dir, file_name), target_dir)
+
+        # Add to PATH
+        os.environ["PATH"] += os.pathsep + target_dir
+
+        print("ffmpeg installed successfully on Windows.")
+    except Exception as e:
+        print(f"An error occurred while installing ffmpeg on Windows: {e}")
+    finally:
+        # Clean up
+        if os.path.exists(ffmpeg_zip):
+            os.remove(ffmpeg_zip)
+        if os.path.exists(ffmpeg_dir):
+            shutil.rmtree(ffmpeg_dir)
+
+try:
+    import ffmpeg
+except ImportError:
+    install("ffmpeg-python")
+    import ffmpeg
+
+    if platform.system() == "Windows":
+        install_ffmpeg_windows()
 
 try:
     import opensmile
@@ -40,12 +99,7 @@ except ImportError:
 	import scipy
 	from scipy.io.wavfile import read
     
-    
-try:
-    import ffmpeg
-except ImportError:
-    install("ffmpeg-python")
-    import ffmpeg
+
 
 try:
     import wx
