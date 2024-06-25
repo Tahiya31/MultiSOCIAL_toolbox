@@ -33,11 +33,12 @@ The toolbox allows you to process audio and video files of conversation.
 6. If the script above executes properly, all necessary packages should be installed and the MultiSOCIAL app should launch.
 
 
-## Usage
+# Usage
+Once launched, MultiSOCIAL Toolbox application looks like this.
+![alt text](![Application UI.png "Title") 
 
 
-
-## Troubleshooting
+# Troubleshooting
 
 * I am running into error in the **Convert video to audio** step that says ``An error occured [WinError 2]: The system cannot find the file specified.``
 
