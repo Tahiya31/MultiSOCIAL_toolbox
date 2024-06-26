@@ -36,7 +36,7 @@ The toolbox allows you to process audio and video files of conversation.
 # Usage
 Once launched, MultiSOCIAL Toolbox application looks like this.
 
-![alt text](./ApplicationUI.png =100x20) 
+<img src="./ApplicationUI.png" width="350">
 
 The toolbox takes two types of input: audio (.wav file) and video (.mp4 file).
 
