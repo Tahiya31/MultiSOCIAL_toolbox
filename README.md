@@ -83,4 +83,17 @@ The toolbox takes two types of input: audio (.wav file) and video (.mp4 file).
   * You can follow the link to add ``ffmpeg`` to the environment PATH above or [this link](https://stackoverflow.com/questions/44272416/how-to-add-a-folder-to-path-environment-variable-in-windows-10-with-screensho) to add them.
  
 
+## Acknowledgement
+
+We thank the authors and developers of ``MediPipe``, ``OpenSMILE``, and ``whisper`` for their awesome contributions and making their code open-sourced which we use to develop ``MultiSOCIAL toolbox``. 
+
+## Team
+
+``MultiSOCIAL toolbox`` is developed by Tahiya Chowdhury, Veronica Romero, and Alexandra Paxton``.
+
+## Disclaimer
+
+Automated tools can be inaccurate and should be used after human verification for correctedness.
+ 
+
   
