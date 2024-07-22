@@ -55,6 +55,11 @@ The toolbox takes two types of input: audio (.wav file) and video (.mp4 file).
   * z: Represents the landmark depth with the depth at the midpoint of hips being the origin, and the smaller the value the closer the landmark is to the camera. The magnitude of z uses roughly the same scale as x.
   * confidence: A value in [0.0, 1.0] indicating the likelihood of the landmark being visible (present and not occluded) in the image.
 
+**Embed Pose Features** If you are interested in embedding body key-points extracted from Mediapipe on each frames, this step uses [MediaPipe](https://github.com/google-ai-edge/mediapipe/blob/master/docs/solutions/pose.md) to achieve this. 
+  * Use the ``Browse`` button to locate your input video file.
+  * Then press **Embed Pose Features** button. A window will pop up where you will see each frame being processed and body key-points being embedded.
+  * Once all the frames are processed, an output video will appear in the same folder where your input video is located.
+
 ## Audio file
 **Extract Audio Features** If you are interested in extracting speech features from human speech during interaction, this step uses [OpenSMILE](https://audeering.github.io/opensmile-python/) to achieve this. This step currently uses predetermined feature sets (ComParE 2016) from OpenSMILE. For more details on OpenSMILE, please check their official [documentation page](https://audeering.github.io/opensmile-python/).
   * Use the ``Browse`` button to locate your input audio file.
