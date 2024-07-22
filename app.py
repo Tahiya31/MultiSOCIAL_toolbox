@@ -1,6 +1,7 @@
 import subprocess
 import sys
 import os
+import glob
 
 #import wx
 #import opensmile
@@ -25,10 +26,6 @@ def install(package):
 
 # Ensure ffmpeg-python, pydub, wxPython, librosa, mediapipe, opencv-python, and SpeechRecognition are installed
 
-
-
-def install(package):
-    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
 #installing ffmpeg for windows
 def install_ffmpeg_windows():
@@ -217,6 +214,19 @@ class VideoToWavConverter(wx.Frame):
         hbox_extract_pose.Add(self.extractFeaturesBtn, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
 
         vbox.Add(hbox_extract_pose, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+        
+        # Embed Pose Features Button with Placeholder
+        hbox_embed_pose = wx.BoxSizer(wx.HORIZONTAL)
+        #placeholder_pose = wx.StaticText(pnl, label="To embed pose features:")
+        #placeholder_pose.SetFont(placeholder_font)
+        #hbox_extract_pose.Add(placeholder_pose, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+
+        self.embedFeaturesBtn = wx.Button(pnl, label='Embed Pose Features')
+        self.embedFeaturesBtn.SetFont(button_font)
+        self.embedFeaturesBtn.Bind(wx.EVT_BUTTON, self.on_embed_poses)
+        hbox_embed_pose.Add(self.embedFeaturesBtn, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+
+        vbox.Add(hbox_embed_pose, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
         
         # Placeholder middle
         placeholder_middle = wx.StaticText(pnl, label="If you have an audio file:")
@@ -430,6 +440,97 @@ class VideoToWavConverter(wx.Frame):
 
         except Exception as e:
             wx.MessageBox(f'An error occurred during pose feature extraction: {e}', 'Error', wx.OK | wx.ICON_ERROR)
+            
+           
+    def on_embed_poses(self, event):
+        file_path = self.filePicker.GetPath()
+        #output_folder = self.dirPicker.GetPath()
+
+        if file_path and file_path.lower().endswith('.mp4'):
+        	self.embed_pose_information(file_path)
+        else:
+            wx.MessageBox('Please select MP4 video files.', 'Error', wx.OK | wx.ICON_ERROR)
+
+    def embed_pose_information(self, file_path):
+        try:
+            # Initialize Mediapipe Pose
+            mp_pose = mp.solutions.pose
+            pose = mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5, min_tracking_confidence=0.5)
+            mp_drawing = mp.solutions.drawing_utils
+
+            # Ensure the output directory exists
+            #os.makedirs(output_folder, exist_ok=True)
+
+            # Process each video file 
+            input_dir, input_filename = os.path.split(file_path)
+            filename_without_ext, ext = os.path.splitext(input_filename) 
+            output_filename = f"{filename_without_ext}_mediapipe_output{ext}"
+            output_video_path = os.path.join(input_dir, output_filename)
+            	
+    
+            # Open the video file
+            cap = cv2.VideoCapture(file_path)
+
+            if not cap.isOpened():
+                print(f"Error: Could not open input video {input_filename}.")
+                return
+                
+
+            # Get video properties
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # You can use other codecs like 'XVID', 'MJPG', 'X264'
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+            # Define VideoWriter object
+            out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
+
+            if not out.isOpened():
+                print(f"Error: Could not open output video {output_filename} for writing.")
+                cap.release()
+                return
+               
+
+            frame_count = 0
+
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                    
+                frame_count += 1
+                print(f"Processing frame {frame_count} of {input_filename}")
+
+                # Convert the image to RGB
+                image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    
+                # Process the image and get pose landmarks
+                results = pose.process(image_rgb)
+                    
+                # Draw pose landmarks on the frame
+                if results.pose_landmarks:
+                    mp_drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+                    
+                # Write the frame with landmarks to the output video
+                out.write(frame)
+                    
+                # Optionally display the frame with landmarks
+                cv2.imshow('Frame with Pose Landmarks', frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+
+            print(f"Processing complete for {input_filename}.")
+
+            # Release resources
+            cap.release()
+            out.release()
+            cv2.destroyAllWindows()
+            pose.close()
+            
+            wx.MessageBox('Pose embedding completed successfully.', 'Success', wx.OK | wx.ICON_INFORMATION)   
+            
+        except Exception as e:
+        	wx.MessageBox(f'An error occurred during pose embedding: {e}', 'Error', wx.OK | wx.ICON_ERROR)
 
     def on_extract_audio_features(self, event):
         filepath = self.filePicker.GetPath()
