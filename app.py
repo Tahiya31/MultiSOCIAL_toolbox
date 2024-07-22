@@ -159,10 +159,37 @@ class VideoToWavConverter(wx.Frame):
         
         # Add extra space above the title
         vbox.Add((0, 30))  # Add a 30-pixel high spacer, adjust as needed
+		
+		 # Logo image
+        logo_path = "MultiSOCIAL_logo.png"  # Path to your logo image
+        logo_image = wx.Image(logo_path, wx.BITMAP_TYPE_ANY)
+        
+        new_width, new_height = 100, 100  # Desired size
+        logo_image = logo_image.Scale(new_width, new_height, wx.IMAGE_QUALITY_HIGH)
+        logo_bmp = wx.Bitmap(logo_image)
+        
+        logo_bitmap = wx.StaticBitmap(pnl, bitmap = logo_bmp)
 
+        # GitHub link
+        #github_link = hl.HyperlinkCtrl(pnl, id=wx.ID_ANY, label="GitHub", url="https://github.com")
+        #github_icon_path = "github_icon.png"  # Path to your GitHub icon image
+        #github_bmp = wx.Bitmap(github_icon_path, wx.BITMAP_TYPE_ANY)
+        #github_bitmap = wx.StaticBitmap(pnl, bitmap=github_bmp)
+
+        # Horizontal box sizer to arrange logo and GitHub link
+        hbox = wx.BoxSizer(wx.HORIZONTAL)
+        hbox.AddStretchSpacer(1) 
+        hbox.Add(logo_bitmap, flag=wx.ALL|wx.ALIGN_LEFT, border=5)
+        hbox.AddStretchSpacer(1)  # Add stretchable space between logo and GitHub link
+        vbox.Add(hbox, proportion=1, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+        
+        #hbox.Add(github_link, flag=wx.ALL|wx.ALIGN_RIGHT, border=5)
+        #hbox.Add(github_bitmap, flag=wx.ALL|wx.ALIGN_RIGHT, border=5)
+        
+        
         # Title
         title = wx.StaticText(pnl, label="Welcome to", style=wx.ALIGN_CENTER)
-        title_font = wx.Font(14, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
+        title_font = wx.Font(20, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
         title.SetFont(title_font)
         title.SetForegroundColour('#FFFFFF')
 
@@ -177,28 +204,28 @@ class VideoToWavConverter(wx.Frame):
 
         # File Picker
         self.filePicker = wx.FilePickerCtrl(pnl, message="Select a video or an audio file", wildcard="Video files (*.mp4;*.avi;*.mov;*.mkv)|*.mp4;*.avi;*.mov;*.mkv|WAV files (*.wav)|*.wav")
-        vbox.Add(self.filePicker, flag=wx.EXPAND|wx.ALL, border=10)
+        vbox.Add(self.filePicker, flag=wx.EXPAND|wx.ALL, border=14)
         
         # Placeholder above buttons
         placeholder_above = wx.StaticText(pnl, label="If you have a video file:")
-        placeholder_above_font = wx.Font(12, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
+        placeholder_above_font = wx.Font(20, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
         placeholder_above.SetFont(placeholder_above_font)
         vbox.Add(placeholder_above, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
 
         # Button Font
-        button_font = wx.Font(12, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
-        placeholder_font = wx.Font(12, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
+        button_font = wx.Font(16, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
+        placeholder_font = wx.Font(20, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
 
         # Convert Button with Placeholder
         hbox_convert = wx.BoxSizer(wx.HORIZONTAL)
         #placeholder_convert = wx.StaticText(pnl, label="If you have a video file:")
         #placeholder_convert.SetFont(placeholder_font)
-        #hbox_convert.Add(placeholder_convert, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+        #hbox_convert.Add(placeholder_convert, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
         
         self.convertBtn = wx.Button(pnl, label='Convert video to audio')
         self.convertBtn.SetFont(button_font)
         self.convertBtn.Bind(wx.EVT_BUTTON, self.on_convert)
-        hbox_convert.Add(self.convertBtn, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+        hbox_convert.Add(self.convertBtn, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
         
         vbox.Add(hbox_convert, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
 
@@ -206,85 +233,66 @@ class VideoToWavConverter(wx.Frame):
         hbox_extract_pose = wx.BoxSizer(wx.HORIZONTAL)
         #placeholder_pose = wx.StaticText(pnl, label="To extract pose features:")
         #placeholder_pose.SetFont(placeholder_font)
-        #hbox_extract_pose.Add(placeholder_pose, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+        #hbox_extract_pose.Add(placeholder_pose, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
 
         self.extractFeaturesBtn = wx.Button(pnl, label='Extract Pose Features')
         self.extractFeaturesBtn.SetFont(button_font)
         self.extractFeaturesBtn.Bind(wx.EVT_BUTTON, self.on_extract_features)
-        hbox_extract_pose.Add(self.extractFeaturesBtn, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+        hbox_extract_pose.Add(self.extractFeaturesBtn, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
 
-        vbox.Add(hbox_extract_pose, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+        vbox.Add(hbox_extract_pose, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
         
         # Embed Pose Features Button with Placeholder
         hbox_embed_pose = wx.BoxSizer(wx.HORIZONTAL)
         #placeholder_pose = wx.StaticText(pnl, label="To embed pose features:")
         #placeholder_pose.SetFont(placeholder_font)
-        #hbox_extract_pose.Add(placeholder_pose, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+        #hbox_extract_pose.Add(placeholder_pose, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
 
         self.embedFeaturesBtn = wx.Button(pnl, label='Embed Pose Features')
         self.embedFeaturesBtn.SetFont(button_font)
         self.embedFeaturesBtn.Bind(wx.EVT_BUTTON, self.on_embed_poses)
-        hbox_embed_pose.Add(self.embedFeaturesBtn, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+        hbox_embed_pose.Add(self.embedFeaturesBtn, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
 
-        vbox.Add(hbox_embed_pose, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+        vbox.Add(hbox_embed_pose, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
         
         # Placeholder middle
         placeholder_middle = wx.StaticText(pnl, label="If you have an audio file:")
         placeholder_middle.SetFont(placeholder_font)
-        vbox.Add(placeholder_middle, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+        vbox.Add(placeholder_middle, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
 
         # Extract Audio Features Button with Placeholder
         hbox_extract_audio = wx.BoxSizer(wx.HORIZONTAL)
         #placeholder_audio = wx.StaticText(pnl, label="To extract audio features:")
         #placeholder_audio.SetFont(placeholder_font)
-        #hbox_extract_audio.Add(placeholder_audio, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+        #hbox_extract_audio.Add(placeholder_audio, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
 
         self.extractAudioFeaturesBtn = wx.Button(pnl, label='Extract Audio Features')
         self.extractAudioFeaturesBtn.SetFont(button_font)
         self.extractAudioFeaturesBtn.Bind(wx.EVT_BUTTON, self.on_extract_audio_features)
-        hbox_extract_audio.Add(self.extractAudioFeaturesBtn, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+        hbox_extract_audio.Add(self.extractAudioFeaturesBtn, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
 
-        vbox.Add(hbox_extract_audio, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+        vbox.Add(hbox_extract_audio, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
 
         # Extract Transcripts Button with Placeholder
         hbox_extract_transcripts = wx.BoxSizer(wx.HORIZONTAL)
         #placeholder_transcripts = wx.StaticText(pnl, label="To extract transcripts:")
         #placeholder_transcripts.SetFont(placeholder_font)
-        #hbox_extract_transcripts.Add(placeholder_transcripts, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+        #hbox_extract_transcripts.Add(placeholder_transcripts, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
 
         self.extractTranscriptsBtn = wx.Button(pnl, label='Extract Transcripts')
         self.extractTranscriptsBtn.SetFont(button_font)
         self.extractTranscriptsBtn.Bind(wx.EVT_BUTTON, self.on_extract_transcripts)
-        hbox_extract_transcripts.Add(self.extractTranscriptsBtn, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+        hbox_extract_transcripts.Add(self.extractTranscriptsBtn, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
 
-        vbox.Add(hbox_extract_transcripts, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+        vbox.Add(hbox_extract_transcripts, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
 
         # Progress Bar
         self.progress = wx.Gauge(pnl, range=100, style=wx.GA_HORIZONTAL)
-        vbox.Add(self.progress, proportion=1, flag=wx.EXPAND|wx.ALL, border=10)
-        
-        
-        # Logo image
-        #logo_path = "MultiSOCIAL_logo.png"  # Path to your logo image
-        #logo_bmp = wx.Bitmap(logo_path, wx.BITMAP_TYPE_ANY)
-        #logo_bitmap = wx.StaticBitmap(pnl, bitmap=logo_bmp)
-
-        # GitHub link
-        #github_link = hl.HyperlinkCtrl(pnl, id=wx.ID_ANY, label="GitHub", url="https://github.com")
-        #github_icon_path = "github_icon.png"  # Path to your GitHub icon image
-        #github_bmp = wx.Bitmap(github_icon_path, wx.BITMAP_TYPE_ANY)
-        #github_bitmap = wx.StaticBitmap(pnl, bitmap=github_bmp)
-
-        # Horizontal box sizer to arrange logo and GitHub link
-        #hbox = wx.BoxSizer(wx.HORIZONTAL)
-        #hbox.Add(logo_bitmap, flag=wx.ALL|wx.ALIGN_LEFT, border=5)
-        #hbox.AddStretchSpacer(1)  # Add stretchable space between logo and GitHub link
-        #hbox.Add(github_link, flag=wx.ALL|wx.ALIGN_RIGHT, border=5)
-        #hbox.Add(github_bitmap, flag=wx.ALL|wx.ALIGN_RIGHT, border=5)
+        vbox.Add(self.progress, proportion=1, flag=wx.EXPAND|wx.ALL, border=12)
         
         pnl.SetSizer(vbox)
         
-        self.SetSize((400, 600))  # Adjusted the size to accommodate new elements
+        self.SetSize((400, 800))  # Adjusted the size to accommodate new elements
         self.SetTitle('MultiSOCIAL Toolbox')
         self.Centre()
 
