@@ -100,7 +100,7 @@ We thank the authors and developers of ``MediPipe``, ``OpenSMILE``, and ``whispe
 
 Automated tools can be inaccurate and should be used after human verification for correctedness.
 
-## Help us improve this toobox!
+## Help us improve this toolbox!
 [Please leave your feedback in this form.](https://docs.google.com/forms/d/e/1FAIpQLScGkEu-LfLAa_IGNOXG25trtMf8k12FFPymObBRDmLdPkAvxQ/viewform)
 
  
