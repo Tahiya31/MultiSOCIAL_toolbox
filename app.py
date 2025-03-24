@@ -1,31 +1,37 @@
+'''
+This is the main script for multisocial app
+
+'''
+
+
+# Import necessary system and utility modules
 import subprocess
 import sys
 import os
 import glob
-
-#import wx
-#import opensmile
-#import librosa
-#import mediapipe as mp
-#import pandas as pd
-#import cv2
 import base64
-import sys
-#import torch
-#from scipy.io.wavfile import read
 import threading
 import time
-
 import platform
 import urllib.request
 import zipfile
 import shutil
 
+
+# Import the core pose processing class
+from pose import PoseProcessor
+
+# Set up GPU environment specially for Mediapipe (specific for Saturn Cloud), if you use some other high performance computing platform check compatibility before usage
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # Make sure the system uses the GPU
+
+
+# Helper function to install Python packages
 def install(package):
     subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
 # Ensure ffmpeg-python, pydub, wxPython, librosa, mediapipe, opencv-python, and SpeechRecognition are installed
 
+# ---- Install and set up FFmpeg for audio/video processing ----
 
 #installing ffmpeg for windows
 def install_ffmpeg_windows():
@@ -68,6 +74,8 @@ def install_ffmpeg_windows():
         if os.path.exists(ffmpeg_dir):
             shutil.rmtree(ffmpeg_dir)
 
+
+# Try to import packages; install if missing
 try:
     import ffmpeg
 except ImportError:
@@ -96,7 +104,6 @@ except ImportError:
 	import scipy
 	from scipy.io.wavfile import read
     
-
 
 try:
     import wx
@@ -138,6 +145,26 @@ except ImportError:
     from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
     from transformers import pipeline
 
+ 
+try:
+    from yolov5 import YOLOv5
+except ImportError:
+    install("yolov5")
+    from yolov5 import YOLOv5
+
+# Ensure YOLOv5s weights are downloaded
+def download_yolov5_weights():
+    weights_path = "yolov5s.pt"
+    if not os.path.exists(weights_path):
+        print("Downloading yolov5s.pt weights...")
+        import requests
+        url = "https://github.com/ultralytics/yolov5/releases/download/v6.0/yolov5s.pt"
+        response = requests.get(url)
+        with open(weights_path, "wb") as f:
+            f.write(response.content)
+        print("Downloaded yolov5s.pt")
+
+
 class GradientPanel(wx.Panel):
     def __init__(self, parent):
         super(GradientPanel, self).__init__(parent)
@@ -153,22 +180,39 @@ class VideoToWavConverter(wx.Frame):
     def __init__(self, *args, **kw):
         super(VideoToWavConverter, self).__init__(*args, **kw)
         
-        pnl = GradientPanel(self)
+        self.Maximize(True)  # Make window full screen responsive
         
+        pnl = GradientPanel(self)
         vbox = wx.BoxSizer(wx.VERTICAL)
+        
+        #status update
+        self.statusLabel = wx.StaticText(pnl, label="", style=wx.ALIGN_CENTER)
+        self.statusLabel.SetForegroundColour('#FFFFFF')
+        vbox.Add(self.statusLabel, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
         
         # Add extra space above the title
         vbox.Add((0, 30))  # Add a 30-pixel high spacer, adjust as needed
 		
-		 # Logo image
+		  
+        new_width, new_height = wx.GetDisplaySize()
+        logo_size = min(int(new_height * 0.08), 150)
+        
+        # Top layout for logo and title
+        top_box = wx.BoxSizer(wx.HORIZONTAL)
+        
+        # Logo image
         logo_path = "MultiSOCIAL_logo.png"  # Path to your logo image
         logo_image = wx.Image(logo_path, wx.BITMAP_TYPE_ANY)
-        
-        new_width, new_height = 100, 100  # Desired size
-        logo_image = logo_image.Scale(new_width, new_height, wx.IMAGE_QUALITY_HIGH)
+        logo_image = logo_image.Scale(logo_size, logo_size, wx.IMAGE_QUALITY_HIGH)
         logo_bmp = wx.Bitmap(logo_image)
         
         logo_bitmap = wx.StaticBitmap(pnl, bitmap = logo_bmp)
+        
+        top_box.AddStretchSpacer(1)
+        top_box.Add(logo_bitmap, flag=wx.ALIGN_CENTER | wx.ALL, border=10)
+        top_box.AddStretchSpacer(1)
+
+        vbox.Add(top_box, flag=wx.EXPAND | wx.TOP | wx.BOTTOM, border=10)
 
         # GitHub link
         #github_link = hl.HyperlinkCtrl(pnl, id=wx.ID_ANY, label="GitHub", url="https://github.com")
@@ -177,11 +221,11 @@ class VideoToWavConverter(wx.Frame):
         #github_bitmap = wx.StaticBitmap(pnl, bitmap=github_bmp)
 
         # Horizontal box sizer to arrange logo and GitHub link
-        hbox = wx.BoxSizer(wx.HORIZONTAL)
-        hbox.AddStretchSpacer(1) 
-        hbox.Add(logo_bitmap, flag=wx.ALL|wx.ALIGN_LEFT, border=5)
-        hbox.AddStretchSpacer(1)  # Add stretchable space between logo and GitHub link
-        vbox.Add(hbox, proportion=1, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+        #hbox = wx.BoxSizer(wx.HORIZONTAL)
+        #hbox.AddStretchSpacer(1) 
+        #hbox.Add(logo_bitmap, flag=wx.ALL|wx.ALIGN_LEFT, border=5)
+        #hbox.AddStretchSpacer(1)  # Add stretchable space between logo and GitHub link
+        #vbox.Add(hbox, proportion=1, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
         
         #hbox.Add(github_link, flag=wx.ALL|wx.ALIGN_RIGHT, border=5)
         #hbox.Add(github_bitmap, flag=wx.ALL|wx.ALIGN_RIGHT, border=5)
@@ -192,6 +236,7 @@ class VideoToWavConverter(wx.Frame):
         title_font = wx.Font(20, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
         title.SetFont(title_font)
         title.SetForegroundColour('#FFFFFF')
+        vbox.Add(title, flag=wx.ALIGN_CENTER | wx.BOTTOM, border=10)
 
         # Logo
         logo = wx.StaticText(pnl, label="MultiSOCIAL Toolbox", style=wx.ALIGN_CENTER)
@@ -199,13 +244,21 @@ class VideoToWavConverter(wx.Frame):
         logo.SetFont(font)
         logo.SetForegroundColour('#FFFFFF')
 
-        vbox.Add(title, flag=wx.ALIGN_CENTER|wx.BOTTOM, border=5)  # Adjusted the bottom border
         vbox.Add(logo, flag=wx.ALIGN_CENTER|wx.TOP, border=5)  # Adjusted the top border
 
         # File Picker
-        self.filePicker = wx.FilePickerCtrl(pnl, message="Select a video or an audio file", wildcard="Video files (*.mp4;*.avi;*.mov;*.mkv)|*.mp4;*.avi;*.mov;*.mkv|WAV files (*.wav)|*.wav")
-        vbox.Add(self.filePicker, flag=wx.EXPAND|wx.ALL, border=14)
-        
+        #self.filePicker = wx.FilePickerCtrl(pnl, message="Select a video or an audio file", wildcard="Video files (*.mp4;*.avi;*.mov;*.mkv)|*.mp4;*.avi;*.mov;*.mkv|WAV files (*.wav)|*.wav")
+        #vbox.Add(self.filePicker, flag=wx.EXPAND|wx.ALL, border=14)
+        # Folder Picker
+        self.folderPicker = wx.DirPickerCtrl(pnl, message="Select a folder containing media files")
+        vbox.Add(self.folderPicker, flag=wx.EXPAND | wx.ALL, border=10,proportion=0)
+
+        # Toggle for multi-person pose
+        self.multiPersonCheckbox = wx.CheckBox(pnl, label="Enable Multi-Person Pose")
+        self.multiPersonCheckbox.SetFont(wx.Font(14, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+        self.multiPersonCheckbox.SetForegroundColour('#FFFFFF')
+        vbox.Add(self.multiPersonCheckbox, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+
         # Placeholder above buttons
         placeholder_above = wx.StaticText(pnl, label="If you have a video file:")
         placeholder_above_font = wx.Font(20, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
@@ -285,6 +338,12 @@ class VideoToWavConverter(wx.Frame):
         hbox_extract_transcripts.Add(self.extractTranscriptsBtn, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
 
         vbox.Add(hbox_extract_transcripts, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
+        
+        
+        #status update
+        self.statusLabel = wx.StaticText(pnl, label="", style=wx.ALIGN_CENTER)
+        self.statusLabel.SetForegroundColour('#800000')
+        vbox.Add(self.statusLabel, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
 
         # Progress Bar
         self.progress = wx.Gauge(pnl, range=100, style=wx.GA_HORIZONTAL)
@@ -295,296 +354,267 @@ class VideoToWavConverter(wx.Frame):
         self.SetSize((400, 800))  # Adjusted the size to accommodate new elements
         self.SetTitle('MultiSOCIAL Toolbox')
         self.Centre()
+        
+    def set_status_message(self, message):
+        """Safely update the status label from any thread."""
+        if hasattr(self, 'statusLabel'):
+            wx.CallAfter(self.statusLabel.SetLabel, message)
+
 
     def update_progress(self, value):
+        """Update the progress bar."""
         wx.CallAfter(self.progress.SetValue, value)
 
-    def on_convert(self, event):
-        filepath = self.filePicker.GetPath()
-        if not filepath:
-            wx.MessageBox('Please select a file.', 'Error', wx.OK | wx.ICON_ERROR)
-            return
-        
-        self.progress.SetValue(0)
 
-        def convert_task():
-        	try:
-        		# Simulating a long-running task
-        		for i in range(1, 101):
-        			time.sleep(0.05)  # Simulate work by sleeping
-        			self.update_progress(i)
-        			
-        			
-        		#perform conversion
-        		self.convert_to_wav(filepath)
-        	except:
-        		wx.CallAfter(wx.MessageBox, 'Conversion completed!', 'Info', wx.OK | wx.ICON_INFORMATION)
+    def ensure_output_folders(self, folder_path):
+        """Ensures output directories exist inside the selected folder only when needed."""
+    
+        # Define folder paths
+        self.converted_audio_folder = os.path.join(folder_path, "converted_audio")
+        self.extracted_pose_folder = os.path.join(folder_path, "pose_features")
+        self.embedded_pose_folder = os.path.join(folder_path, "embedded_pose")
+        self.extracted_audio_folder = os.path.join(folder_path, "audio_features")
+        self.extracted_transcripts_folder = os.path.join(folder_path, "transcripts")
 
-        thread = threading.Thread(target=convert_task)
-        thread.start()
-        
-        
-    def convert_to_wav(self, filepath):
-        try:
-            output_path = os.path.splitext(filepath)[0] + ".wav"
-            print(f"Input file path: {filepath}")
-            print(f"Output file path: {output_path}")
-            video = ffmpeg.input(filepath)
-            audio = video.audio
-            ffmpeg.output(audio, output_path).run(overwrite_output=True)
-            wx.MessageBox(f'Video has been converted to {output_path}', 'Success', wx.OK | wx.ICON_INFORMATION)
-            wx.CallAfter(self.save_file, output_path)
-        except Exception as e:
-            wx.CallAfter(wx.MessageBox(f'An error occurred: {e}', 'Error', wx.OK | wx.ICON_ERROR))
+        # Check if the selected folder has video files
+        video_files = self.get_files_from_folder(folder_path, (".mp4", ".avi", ".mov"))
+        if video_files:
+            for folder in [self.converted_audio_folder, self.extracted_pose_folder, self.embedded_pose_folder]:
+                os.makedirs(folder, exist_ok=True)
+        else:
+            self.converted_audio_folder = None
+            self.extracted_pose_folder = None
+            self.embedded_pose_folder = None
 
-    def save_file(self, output_path):
-        with wx.FileDialog(self, "Save WAV file", wildcard="WAV files (*.wav)|*.wav", style=wx.FD_SAVE |
-		        wx.FD_OVERWRITE_PROMPT) as fileDialog:
-            if fileDialog.ShowModal() == wx.ID_CANCEL:
-                return     # the user changed their mind
+        # Check if the selected folder has audio files
+        audio_files = self.get_files_from_folder(folder_path, (".wav",))
+        if audio_files:
+            for folder in [self.extracted_audio_folder, self.extracted_transcripts_folder]:
+                os.makedirs(folder, exist_ok=True)
+        else:
+            self.extracted_audio_folder = None
+            self.extracted_transcripts_folder = None
+
             
-            save_path = fileDialog.GetPath()
-            if save_path:
-                os.rename(output_path, save_path)
-                wx.MessageBox(f'File saved to {save_path}', 'Saved', wx.OK | wx.ICON_INFORMATION)
+    def get_files_from_folder(self, folder_path, extensions):
+        """Retrieve files with the specified extensions from the folder."""
+        return [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith(extensions)]
+      
+      
+    def on_convert(self, event):
+        """Convert all videos in a selected folder to WAV."""
+        folder_path = self.folderPicker.GetPath()
+        if not folder_path:
+            wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        self.ensure_output_folders(folder_path)
+        video_files = self.get_files_from_folder(folder_path, (".mp4", ".avi", ".mov", ".mkv"))
+
+        if not video_files:
+            wx.MessageBox("No video files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        # Process each video file in a separate thread
+        thread = threading.Thread(target=self.convert_all_videos_to_wav, args=(video_files,))
+        thread.start()
+
+    def convert_all_videos_to_wav(self, video_files):
+        """Convert multiple videos to WAV format and save to output folder."""
+        total_files = len(video_files)
+    
+        for i, video_file in enumerate(video_files):
+            #print(f"Converting: {video_file}")
+            file_name = os.path.basename(video_file)
+            self.set_status_message(f"Converting to WAV: {file_name}")
+            self.convert_to_wav(video_file)
+        
+            # Update progress bar
+            progress_value = int(((i + 1) / total_files) * 100)
+            self.update_progress(progress_value)
+
+        wx.MessageBox("Video to audio conversion completed!", "Success", wx.OK | wx.ICON_INFORMATION)
+
+    def convert_to_wav(self, filepath):
+        """Convert a single video file to WAV using ffmpeg."""
+        try:
+            output_path = os.path.join(self.converted_audio_folder, os.path.splitext(os.path.basename(filepath))[0] + ".wav")
+        
+            # Debugging messages
+            print(f"Processing video: {filepath}")
+            print(f"Saving output as: {output_path}")
+        
+            # Run ffmpeg conversion
+            (
+                ffmpeg
+                .input(filepath)
+                .output(output_path, format='wav', acodec='pcm_s16le')
+                .run(overwrite_output=True)
+            )
+
+            print(f"Conversion complete: {output_path}")
+
+        except Exception as e:
+            wx.MessageBox(f'Error converting {filepath}: {e}', 'Error', wx.OK | wx.ICON_ERROR)
+
 
     def on_extract_features(self, event):
-        filepath = self.filePicker.GetPath()
-        if filepath and filepath.lower().endswith('.mp4'):
-            self.extract_features(filepath)
-        else:
-            wx.MessageBox('Please select a video file.', 'Error', wx.OK | wx.ICON_ERROR)
-    
-    def extract_features(self, filepath):
-        try:
-            mp_pose = mp.solutions.pose
+        folder_path = self.folderPicker.GetPath()
+        if not folder_path:
+            wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
+            return
 
-            # Define a function to extract pose features
-            def extract_pose_features(video_path):
-                # Initialize MediaPipe Pose model
-                with mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5) as pose:
-                    # Open video file
-                    cap = cv2.VideoCapture(video_path)
-                    frame_number = 0
-                    frames = []
-                    while cap.isOpened():
-                        ret, frame = cap.read()
-                        if not ret:
-                            break
-                        frames.append((frame_number, frame))
-                        frame_number += 1
-                    cap.release()
+        self.ensure_output_folders(folder_path)
+        video_files = self.get_files_from_folder(folder_path, (".mp4", ".avi"))
+        
+        pose_processor = PoseProcessor(self.extracted_pose_folder, status_callback=self.set_status_message)
+        pose_processor.set_multi_person_mode(self.multiPersonCheckbox.GetValue())
 
-                    # Extract pose features for each frame
-                    pose_features = []
-                    for frame_number, frame in frames:
-                        # Convert frame to RGB
-                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        # Process the frame with MediaPipe Pose
-                        results = pose.process(frame_rgb)
-                        # Extract pose landmarks
-                        if results.pose_landmarks:
-                            landmarks = results.pose_landmarks.landmark
-                            pose_landmarks = [frame_number] + [coord for lmk in landmarks for coord in (lmk.x, lmk.y, lmk.z, lmk.visibility)]
-                            pose_features.append(pose_landmarks)
-                        else:
-                            pose_landmarks = [frame_number] + [0, 0, 0, 0] * 33  # Fill with zeros if no landmarks detected
-                            pose_features.append(pose_landmarks)
-                    return pose_features
+        for video_file in video_files:
+            pose_processor.extract_pose_features(video_file)
 
-            # Extract pose features
-            pose_features = extract_pose_features(filepath)
-
-            # Column names
-            columns = [
-                'frame_number', 'Nose_x', 'Nose_y', 'Nose_z', 'Nose_conf',
-                'Left_eye_inner_x', 'Left_eye_inner_y', 'Left_eye_inner_z', 'Left_eye_inner_conf',
-                'Left_eye_x', 'Left_eye_y', 'Left_eye_z', 'Left_eye_conf',
-                'Left_eye_outer_x', 'Left_eye_outer_y', 'Left_eye_outer_z', 'Left_eye_outer_conf',
-                'Right_eye_inner_x', 'Right_eye_inner_y', 'Right_eye_inner_z', 'Right_eye_inner_conf',
-                'Right_eye_x', 'Right_eye_y', 'Right_eye_z', 'Right_eye_conf',
-                'Right_eye_outer_x', 'Right_eye_outer_y', 'Right_eye_outer_z', 'Right_eye_outer_conf',
-                'Left_ear_x', 'Left_ear_y', 'Left_ear_z', 'Left_ear_conf',
-                'Right_ear_x', 'Right_ear_y', 'Right_ear_z', 'Right_ear_conf',
-                'Mouth_left_x', 'Mouth_left_y', 'Mouth_left_z', 'Mouth_left_conf',
-                'Mouth_right_x', 'Mouth_right_y', 'Mouth_right_z', 'Mouth_right_conf',
-                'Left_shoulder_x', 'Left_shoulder_y', 'Left_shoulder_z', 'Left_shoulder_conf',
-                'Right_shoulder_x', 'Right_shoulder_y', 'Right_shoulder_z', 'Right_shoulder_conf',
-                'Left_elbow_x', 'Left_elbow_y', 'Left_elbow_z', 'Left_elbow_conf',
-                'Right_elbow_x', 'Right_elbow_y', 'Right_elbow_z', 'Right_elbow_conf',
-                'Left_wrist_x', 'Left_wrist_y', 'Left_wrist_z', 'Left_wrist_conf',
-                'Right_wrist_x', 'Right_wrist_y', 'Right_wrist_z', 'Right_wrist_conf',
-                'Left_pinky_x', 'Left_pinky_y', 'Left_pinky_z', 'Left_pinky_conf',
-                'Right_pinky_x', 'Right_pinky_y', 'Right_pinky_z', 'Right_pinky_conf',
-                'Left_index_x', 'Left_index_y', 'Left_index_z', 'Left_index_conf',
-                'Right_index_x', 'Right_index_y', 'Right_index_z', 'Right_index_conf',
-                'Left_thumb_x', 'Left_thumb_y', 'Left_thumb_z', 'Left_thumb_conf',
-                'Right_thumb_x', 'Right_thumb_y', 'Right_thumb_z', 'Right_thumb_conf',
-                'Left_hip_x', 'Left_hip_y', 'Left_hip_z', 'Left_hip_conf',
-                'Right_hip_x', 'Right_hip_y', 'Right_hip_z', 'Right_hip_conf',
-                'Left_knee_x', 'Left_knee_y', 'Left_knee_z', 'Left_knee_conf',
-                'Right_knee_x', 'Right_knee_y', 'Right_knee_z', 'Right_knee_conf',
-                'Left_ankle_x', 'Left_ankle_y', 'Left_ankle_z', 'Left_ankle_conf',
-                'Right_ankle_x', 'Right_ankle_y', 'Right_ankle_z', 'Right_ankle_conf',
-                'Left_heel_x', 'Left_heel_y', 'Left_heel_z', 'Left_heel_conf',
-                'Right_heel_x', 'Right_heel_y', 'Right_heel_z', 'Right_heel_conf',
-                'Left_foot_index_x', 'Left_foot_index_y', 'Left_foot_index_z', 'Left_foot_index_conf',
-                'Right_foot_index_x', 'Right_foot_index_y', 'Right_foot_index_z', 'Right_foot_index_conf'
-            ]
-
-            # Convert pose features to DataFrame
-            pose_df = pd.DataFrame(pose_features, columns=columns)
-
-            # Ask user to select a path to save the output CSV file
-            with wx.FileDialog(self, "Save Pose Feature File", wildcard="CSV files (*.csv)|*.csv", style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT) as fileDialog:
-                if fileDialog.ShowModal() == wx.ID_CANCEL:
-                    return  # User changed their mind
-                output_path = fileDialog.GetPath()
-
-                # Save pose features as CSV
-                if output_path:
-                    pose_df.to_csv(output_path, index=False)
-                    wx.MessageBox(f'Pose features extracted and saved to {output_path}', 'Success', wx.OK | wx.ICON_INFORMATION)
-
-        except Exception as e:
-            wx.MessageBox(f'An error occurred during pose feature extraction: {e}', 'Error', wx.OK | wx.ICON_ERROR)
+        wx.MessageBox("Pose feature extraction completed!", "Success", wx.OK | wx.ICON_INFORMATION)
             
            
     def on_embed_poses(self, event):
-        file_path = self.filePicker.GetPath()
-        #output_folder = self.dirPicker.GetPath()
+        folder_path = self.folderPicker.GetPath()
+        if not folder_path:
+            wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
+            return
 
-        if file_path and file_path.lower().endswith('.mp4'):
-        	self.embed_pose_information(file_path)
-        else:
-            wx.MessageBox('Please select MP4 video files.', 'Error', wx.OK | wx.ICON_ERROR)
+        self.ensure_output_folders(folder_path)
+        video_files = self.get_files_from_folder(folder_path, (".mp4", ".avi", ".mov"))
+        
+      
+        pose_processor = PoseProcessor(output_csv_folder=self.extracted_pose_folder,output_video_folder=self.embedded_pose_folder)
+        pose_processor.set_multi_person_mode(self.multiPersonCheckbox.GetValue())
+        
+        if not video_files:
+            wx.MessageBox("No video files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
+            return
 
-    def embed_pose_information(self, file_path):
-        try:
-            # Initialize Mediapipe Pose
-            mp_pose = mp.solutions.pose
-            pose = mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5, min_tracking_confidence=0.5)
-            mp_drawing = mp.solutions.drawing_utils
+        # Run in a separate thread to keep UI responsive
+        thread = threading.Thread(target=self.embed_pose_batch, args=(video_files, pose_processor))
+        thread.start()
 
-            # Ensure the output directory exists
-            #os.makedirs(output_folder, exist_ok=True)
+    def embed_pose_batch(self, video_files, pose_processor):
+        total_files = len(video_files)
 
-            # Process each video file 
-            input_dir, input_filename = os.path.split(file_path)
-            filename_without_ext, ext = os.path.splitext(input_filename) 
-            output_filename = f"{filename_without_ext}_mediapipe_output{ext}"
-            output_video_path = os.path.join(input_dir, output_filename)
-            	
+        for index, video_file in enumerate(video_files, start=1):
+            self.set_status_message(f"🕺 Embedding poses for: {os.path.basename(video_file)}")
+            pose_processor.embed_pose_video(video_file)
+            progress = int((index / total_files) * 100)
+            self.update_progress(progress)
+
+        wx.CallAfter(wx.MessageBox, "Pose embedding completed!", "Success", wx.OK | wx.ICON_INFORMATION)
+        self.update_progress(0)  # Reset progress bar
+
+
     
-            # Open the video file
-            cap = cv2.VideoCapture(file_path)
-
-            if not cap.isOpened():
-                print(f"Error: Could not open input video {input_filename}.")
-                return
-                
-
-            # Get video properties
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # You can use other codecs like 'XVID', 'MJPG', 'X264'
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-            # Define VideoWriter object
-            out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
-
-            if not out.isOpened():
-                print(f"Error: Could not open output video {output_filename} for writing.")
-                cap.release()
-                return
-               
-
-            frame_count = 0
-
-            while cap.isOpened():
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                    
-                frame_count += 1
-                print(f"Processing frame {frame_count} of {input_filename}")
-
-                # Convert the image to RGB
-                image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    
-                # Process the image and get pose landmarks
-                results = pose.process(image_rgb)
-                    
-                # Draw pose landmarks on the frame
-                if results.pose_landmarks:
-                    mp_drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-                    
-                # Write the frame with landmarks to the output video
-                out.write(frame)
-                    
-                # Optionally display the frame with landmarks
-                cv2.imshow('Frame with Pose Landmarks', frame)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
-
-            print(f"Processing complete for {input_filename}.")
-
-            # Release resources
-            cap.release()
-            out.release()
-            cv2.destroyAllWindows()
-            pose.close()
-            
-            wx.MessageBox('Pose embedding completed successfully.', 'Success', wx.OK | wx.ICON_INFORMATION)   
-            
-        except Exception as e:
-        	wx.MessageBox(f'An error occurred during pose embedding: {e}', 'Error', wx.OK | wx.ICON_ERROR)
 
     def on_extract_audio_features(self, event):
-        filepath = self.filePicker.GetPath()
-        if filepath and filepath.lower().endswith('.wav'):
-            self.extract_audio_features(filepath)
-        else:
-        	wx.MessageBox('Please select a WAV file.', 'Error', wx.OK | wx.ICON_ERROR)
-			            
-			         
+        """Extract audio features from all WAV files in the folder."""
+        folder_path = self.folderPicker.GetPath()
+        if not folder_path:
+            wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        self.ensure_output_folders(folder_path)
+        audio_files = self.get_files_from_folder(folder_path, (".wav",))
+
+        if not audio_files:
+            wx.MessageBox("No WAV files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        thread = threading.Thread(target=self.extract_audio_features_batch, args=(audio_files,))
+        thread.start()
+
+    def extract_audio_features_batch(self, audio_files):
+        """Batch process all audio files to extract features."""
+        total_files = len(audio_files)
+
+        for i, audio_file in enumerate(audio_files):
+            self.set_status_message(f"🎧 Extracting audio from: {os.path.basename(audio_file)}")
+            print(f"Extracting features from: {audio_file}")
+            self.extract_audio_features(audio_file)
+        
+            # Update progress bar
+            progress_value = int(((i + 1) / total_files) * 100)
+            self.update_progress(progress_value)
+
+        wx.MessageBox("Audio feature extraction completed!", "Success", wx.OK | wx.ICON_INFORMATION)
+
     def extract_audio_features(self, filepath):
-        
+        """Extracts audio features from a single WAV file."""
         try:
-        	feature_set_name = opensmile.FeatureSet.ComParE_2016
-        	feature_level_name=opensmile.FeatureLevel.LowLevelDescriptors
-        
-        	smile = opensmile.Smile(feature_set=feature_set_name,feature_level=feature_level_name)
-        	y, sr = librosa.load(filepath)
-        	features = smile.process_signal(y, sr)
-        	features_df = pd.DataFrame(features, columns=smile.feature_names)
-        	with wx.FileDialog(self, "Save Audio Feature File", wildcard="CSV files (*.csv)|*.csv", style=wx.FD_SAVE|wx.FD_OVERWRITE_PROMPT) as fileDialog:
-        		if fileDialog.ShowModal() == wx.ID_CANCEL:
-        			return  # User changed their mind
-        		output_path = fileDialog.GetPath()
-        		
-        		if output_path:
-        			features_df.to_csv(output_path, index=False)
-        			wx.MessageBox(f'Audio features extracted and saved to {output_path}', 'Success', wx.OK | wx.ICON_INFORMATION)
+            feature_set_name = opensmile.FeatureSet.ComParE_2016
+            feature_level_name = opensmile.FeatureLevel.LowLevelDescriptors
+
+            smile = opensmile.Smile(feature_set=feature_set_name, feature_level=feature_level_name)
+            y, sr = librosa.load(filepath)
+            features = smile.process_signal(y, sr)
+
+            output_csv = os.path.join(self.extracted_audio_folder, os.path.splitext(os.path.basename(filepath))[0] + ".csv")
+            features.to_csv(output_csv, index=False)
+
+            print(f"Saved audio features: {output_csv}")
 
         except Exception as e:
-            wx.MessageBox(f'An error occurred during audio feature extraction: {e}', 'Error', wx.OK | wx.ICON_ERROR)
+            wx.MessageBox(f'Error extracting audio features from {filepath}: {e}', 'Error', wx.OK | wx.ICON_ERROR)
+
 
     def on_extract_transcripts(self, event):
-        filepath = self.filePicker.GetPath()
-        if filepath and filepath.lower().endswith('.wav'):
-            self.extract_transcripts(filepath)
-        else:
-            wx.MessageBox('Please select a WAV file.', 'Error', wx.OK | wx.ICON_ERROR)
-            
+        """Extract transcripts from all WAV files in the folder."""
+        folder_path = self.folderPicker.GetPath()
+        if not folder_path:
+            wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        self.ensure_output_folders(folder_path)
+        audio_files = self.get_files_from_folder(folder_path, (".wav",))
+
+        if not audio_files:
+            wx.MessageBox("No WAV files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        # Run transcription in a separate thread
+        thread = threading.Thread(target=self.extract_transcripts_batch, args=(audio_files,))
+        thread.start()
+
+
+    def extract_transcripts_batch(self, audio_files):
+        """Batch process all audio files to generate transcripts."""
+        total_files = len(audio_files)
+
+        #print(f"Found {total_files} WAV files for transcription.")
+
+        for i, audio_file in enumerate(audio_files):
+            #print(f"Starting transcription for: {audio_file}")
+            #file_name = os.path.basename(audio_file)
+            self.set_status_message(f"🗣️ Transcribing: {os.path.basename(audio_file)}")
+        
+            try:
+                self.extract_transcripts(audio_file)
+            except Exception as e:
+                print(f"Error processing {audio_file}: {e}")
+
+           # Update progress bar
+            progress_value = int(((i + 1) / total_files) * 100)
+            self.update_progress(progress_value)
+
+        #print("All transcriptions completed.")
+        #self.set_status_message("Transcription complete.")
+        wx.MessageBox("Transcription extraction completed!", "Success", wx.OK | wx.ICON_INFORMATION)
+
     def extract_transcripts(self, filepath):
+        """Transcribes a single WAV file using Whisper."""
         try:
-            # Check for GPU availability
+            print(f"Loading Whisper model for {filepath}...")
             device = "cuda:0" if torch.cuda.is_available() else "cpu"
             torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
-            # Load the model and tokenizer
             model_id = "distil-whisper/distil-large-v3"
+
             model = AutoModelForSpeechSeq2Seq.from_pretrained(
                 model_id, torch_dtype=torch_dtype, low_cpu_mem_usage=True, use_safetensors=True
             )
@@ -592,7 +622,6 @@ class VideoToWavConverter(wx.Frame):
 
             processor = AutoProcessor.from_pretrained(model_id)
 
-            # Create the transcription pipeline
             pipe = pipeline(
                 "automatic-speech-recognition",
                 model=model,
@@ -605,25 +634,21 @@ class VideoToWavConverter(wx.Frame):
                 device=device,
             )
 
-            # Perform transcription
+            print(f"Transcribing {filepath}...")
             result = pipe(filepath)
             transcript = result['text']
 
-            with wx.FileDialog(self, "Save Transcript File", wildcard="Text files (*.txt)|*.txt", style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT) as fileDialog:
-                if fileDialog.ShowModal() == wx.ID_CANCEL:
-                    return  # User changed their mind
-                output_path = fileDialog.GetPath()
+            output_txt = os.path.join(self.extracted_transcripts_folder, os.path.splitext(os.path.basename(filepath))[0] + ".txt")
 
-                if output_path:
-                    with open(output_path, 'w') as f:
-                        f.write(transcript)
-                    wx.MessageBox(f'Transcript extracted and saved to {output_path}', 'Success', wx.OK | wx.ICON_INFORMATION)
+            with open(output_txt, 'w') as f:
+                f.write(transcript)
+
+            print(f"Saved transcript: {output_txt}")
 
         except Exception as e:
-            wx.MessageBox(f'An error occurred during transcript extraction: {e}', 'Error', wx.OK | wx.ICON_ERROR)
-            
-            
-          
+            print(f" Error transcribing {filepath}: {e}")
+            wx.MessageBox(f'Error transcribing {filepath}: {e}', 'Error', wx.OK | wx.ICON_ERROR)
+
 
 
 def main():
