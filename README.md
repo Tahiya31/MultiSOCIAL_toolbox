@@ -42,14 +42,22 @@ The toolbox takes two types of input: audio (.wav file) and video (.mp4 file).
 
 ## Video file
 **Convert video to audio** If you have a video file of human interaction and would like to convert it to a audio file in .wav format, this step is for you.
-  * Use the ``Browse`` button to locate your input vudeo file.
+  * Use the ``Browse`` button to locate your input video file.
   * Then press **Convert video to audio** button.
-  * Once the .wav file is ready, a dialogue box will prompt you to provide a location and name to save output .wav file.
+  * Once the .wav file is ready, a dialogue box will let you know the output file is ready.
+
+You should see three folders within your input folder (containing video) now.
+  * converted_video: This will contain all the converted audio files from the **Convert video to audio** option.
+  * embedded_pose: This will contain all the csv files containing extracted pose files from the **Extract Pose Features** option.
+  * pose_features: This will contain all the video file with extracted pose embedded from the **Embed Pose Features** option.
+
 
 **Extract Pose Features** If you are interested in extracting pose or body key-points from the video, this step uses [MediaPipe](https://github.com/google-ai-edge/mediapipe/blob/master/docs/solutions/pose.md) to achieve this. This step returns 33 body pose land marks. For more details on MediaPipe, please check out the [official page](https://github.com/google-ai-edge/mediapipe/blob/master/docs/solutions/pose.md). 
   * Use the ``Browse`` button to locate your input video file.
   * Then press **Extract Pose Features** button. This step may take some time.
-  * Once the pose features are extracted, a dialogue box will appeare asking to provide a location and name to save the output .csv file.
+  * Note: If your video has multiple people, you must select **Enable Multi-person Pose** for getting pose information of each people.
+  * Once the pose features are extracted, you can find them in **pose_features** folder created before.
+  * **For multi-person mode**: Each outpur csv file will represent a single person's information (files will be named as {name of original video file}_multi_ID_0, {name of original video file}_multi_ID_1,etc.
   * **CSV format** Each row represents a frame, each column represents features. For each of the 33 body land marks, you should see 4 columns:
   * x and y: Landmark coordinates normalized to [0.0, 1.0] by the image width and height respectively.
   * z: Represents the landmark depth with the depth at the midpoint of hips being the origin, and the smaller the value the closer the landmark is to the camera. The magnitude of z uses roughly the same scale as x.
@@ -57,20 +65,27 @@ The toolbox takes two types of input: audio (.wav file) and video (.mp4 file).
 
 **Embed Pose Features** If you are interested in embedding body key-points extracted from Mediapipe on each frames, this step uses [MediaPipe](https://github.com/google-ai-edge/mediapipe/blob/master/docs/solutions/pose.md) to achieve this. 
   * Use the ``Browse`` button to locate your input video file.
-  * Then press **Embed Pose Features** button. A window will pop up where you will see each frame being processed and body key-points being embedded.
-  * Once all the frames are processed, an output video will appear in the same folder where your input video is located.
+  * Then press **Embed Pose Features** button. A window will pop up where you will see each frame being processed and body key-points being embedded. [We are no longer supporting the real-time embedding as it makes other simultaneous processes slower]
+  * Once all the frames are processed, an output video will appear in the **embedded_pose** folder where your input video is located.
+  * $${\color{red}Embed pose features only supports a single person video at this moment.}$$
 
 ## Audio file
 **Extract Audio Features** If you are interested in extracting speech features from human speech during interaction, this step uses [OpenSMILE](https://audeering.github.io/opensmile-python/) to achieve this. This step currently uses predetermined feature sets (ComParE 2016) from OpenSMILE. For more details on OpenSMILE, please check their official [documentation page](https://audeering.github.io/opensmile-python/).
-  * Use the ``Browse`` button to locate your input audio file.
+  * Use the ``Browse`` button to locate your input audio file. You can select the audio located in **converted_audio** folder as well.
   * Then press **Extract Audio Features** button.
-  * Once the audio features are extracted, a dialogue box will appeare asking to provide a location and name to save the output .csv file.
-  *  **CSV format** Each row represents a sample, each column represents features. For ComParE 2016, you should see 65 feature columns.
+  * Once the audio features are extracted, a dialogue box will let you know the output file is ready.
+
+  You should see two folders within your input folder (containing audio) now.
+  * audio_features: This will contain all the csv files containing audio features from the **Extract Audio Features** option.
+  * transcripts: This will contain all the .txt files containing transcriptions of the audio from the **Extract Transcripts** option
+    
+  *  **CSV format for Audio feature** Each row represents a sample, each column represents features. For ComParE 2016, you should see 65 feature columns.
 
 **Extract Transcripts** If you are interested in extracting transcript of the conversation, this step uses [whisper](https://github.com/openai/whisper) and [distil-whisper](https://github.com/huggingface/distil-whisper) for automatically recognize speech and transcribe. For more details on whisper, please check their offcial documentation page [here](https://github.com/openai/whisper).
   * Use the ``Browse`` button to locate your input audio file.
   * Then press **Extract Transcripts** button.
-  * Once the transcript is extracted, a dialogue box will appeare asking to provide a location and name to save the output .txt file.
+  * Once the transcript is extracted, a dialogue box will let you know the output file is ready.
+  * You can find them in **transcripts** folder created before.
 
 # Troubleshooting
 
@@ -90,7 +105,7 @@ The toolbox takes two types of input: audio (.wav file) and video (.mp4 file).
 
 ## Acknowledgement
 
-We thank the authors and developers of ``MediPipe``, ``OpenSMILE``, and ``whisper`` for their awesome contributions and making their code open-sourced which we use to develop ``MultiSOCIAL toolbox``. 
+We thank the authors and developers of ``MediaPipe``, ``OpenSMILE``, and ``whisper`` for their awesome contributions and making their code open-sourced which we use to develop ``MultiSOCIAL toolbox``. 
 
 ## Team
 
