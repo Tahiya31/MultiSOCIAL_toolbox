@@ -67,7 +67,7 @@ You should see three folders within your input folder (containing video) now.
   * Use the ``Browse`` button to locate your input video file.
   * Then press **Embed Pose Features** button. A window will pop up where you will see each frame being processed and body key-points being embedded. [We are no longer supporting the real-time embedding as it makes other simultaneous processes slower]
   * Once all the frames are processed, an output video will appear in the **embedded_pose** folder where your input video is located.
-  * {\color{red}Embed pose features only supports a single person video at this moment.}
+  * **Note: Embed pose features only supports a single person video at this moment.**
 
 ## Audio file
 **Extract Audio Features** If you are interested in extracting speech features from human speech during interaction, this step uses [OpenSMILE](https://audeering.github.io/opensmile-python/) to achieve this. This step currently uses predetermined feature sets (ComParE 2016) from OpenSMILE. For more details on OpenSMILE, please check their official [documentation page](https://audeering.github.io/opensmile-python/).
