@@ -105,7 +105,7 @@ You should see three folders within your input folder (containing video) now.
 
 ## Acknowledgement
 
-We thank the authors and developers of ``MediaPipe``, ``OpenSMILE``, and ``whisper`` for their awesome contributions and making their code open-sourced which we use to develop ``MultiSOCIAL toolbox``. 
+We thank the authors and developers of ``MediaPipe``, ``OpenSMILE``, ``YOLOv5`` and ``whisper`` for their awesome contributions and making their code open-sourced which we use to develop ``MultiSOCIAL toolbox``. 
 
 ## Team
 
