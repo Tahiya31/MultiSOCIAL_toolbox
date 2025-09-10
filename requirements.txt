@@ -1,0 +1,31 @@
+# Core numerical stack (pin to numpy<2 to satisfy mediapipe and avoid mixed-state downgrades)
+numpy>=1.26.0,<2.0.0
+scipy
+pandas
+
+# Computer vision
+opencv-contrib-python
+mediapipe
+matplotlib
+
+# Deep learning / ASR
+# Let pip choose a compatible torch for your platform (macOS arm64, etc.)
+torch
+transformers==4.44.2
+accelerate
+# Datasets with audio extras used by transformers pipelines
+datasets[audio]
+
+# Audio processing
+librosa
+opensmile
+ffmpeg-python
+
+# Object detection
+yolov5
+
+# GUI
+wxPython
+
+# Utilities
+requests
