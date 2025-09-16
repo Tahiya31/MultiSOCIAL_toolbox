@@ -4,7 +4,7 @@ scipy
 pandas
 
 # Computer vision
-opencv-contrib-python
+opencv-python
 mediapipe
 matplotlib
 
