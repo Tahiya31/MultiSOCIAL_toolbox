@@ -21,11 +21,11 @@ The toolbox allows you to process audio and video files of conversation.
 
 1. Download the toolbox code by going to [this link](https://github.com/Tahiya31/MultiSOCIAL_toolbox) and click on **Code**.
 2. Click on **Download Zip** to download the entire code folder. (You can also use ``git clone`` command to clone the repository.)
-3. Open **Git Bash** (or Windows Terminal with WSL).
+3. Open **Command Prompt** (or PowerShell).
 4. Go to the folder where **MultiSOCIAL_toolbox** is saved. (Typically this location is ``../Users/(name of the user)/Downloads/``)
-   * You can run ``cd Downloads/MultiSOCIAL_toolbox`` to achieve this.
+   * You can run ``cd Downloads\MultiSOCIAL_toolbox`` to achieve this.
 5. Run this single command to set up and launch the toolbox:
-   * ``bash run_app.sh``
+   * ``run_app.bat``
 
 
 # Usage
