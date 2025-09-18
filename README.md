@@ -13,24 +13,19 @@ The toolbox allows you to process audio and video files of conversation.
 3. Open the **Terminal** application.
 4. Go to the folder where **MultiSOCIAL_toolbox** is saved. (On Mac OS, typically the location is ``../Users/(name of the user)/Downloads/``)
    * You can run ``cd Downloads/MultiSOCIAL_toolbox`` to achieve this.
-5. Run ``python app.py.``
-   * If you run into error saying **Python is not recognized**, then you will need to install Python, the programming language our toolbox is written on, on your computer.
-   * Install the latest version of Python for your MAC computer from [this link](https://www.python.org/downloads/macos/)
-6. If the script above executes properly, all necessary packages should be installed and the MultiSOCIAL app should launch.      
+5. Run this single command to set up and launch the toolbox:
+   * ``bash run_app.sh``
 
 
 ## WINDOWS
 
 1. Download the toolbox code by going to [this link](https://github.com/Tahiya31/MultiSOCIAL_toolbox) and click on **Code**.
 2. Click on **Download Zip** to download the entire code folder. (You can also use ``git clone`` command to clone the repository.)
-3. Open **Windows Command Prompt** application.
+3. Open **Command Prompt** (or PowerShell).
 4. Go to the folder where **MultiSOCIAL_toolbox** is saved. (Typically this location is ``../Users/(name of the user)/Downloads/``)
-   * You can run ``cd Downloads/MultiSOCIAL_toolbox`` to achieve this.
-
-5. Run ``python app.py.``
-   * If you run into error saying **Python is not recognized**, then you will need to install Python, the programming language our toolbox is written on, on your computer.
-   * Install the latest version of Python for your WINDOWS computer from [this link](https://www.python.org/downloads/windows/)
-6. If the script above executes properly, all necessary packages should be installed and the MultiSOCIAL app should launch.
+   * You can run ``cd Downloads\MultiSOCIAL_toolbox`` to achieve this.
+5. Run this single command to set up and launch the toolbox:tem
+   * ``run_app.bat``
 
 
 # Usage
@@ -102,6 +97,26 @@ You should see three folders within your input folder (containing video) now.
 * I am seeing warnings suggesting to set the path to certain package directories installed by this toolbox.
   * You can follow the link to add ``ffmpeg`` to the environment PATH above or [this link](https://stackoverflow.com/questions/44272416/how-to-add-a-folder-to-path-environment-variable-in-windows-10-with-screensho) to add them.
  
+* I am getting an error during installation similar to ``ERROR: Failed building wheel for pi-heif`` or ``error: failed-wheel-build-for-install``
+  * Why this happens: ``pi-heif`` provides HEIF/AVIF image support in Python and needs the system ``libheif`` library when a prebuilt wheel is not available for your OS/Python/architecture. On some machines, ``pip`` falls back to building from source, which fails without ``libheif`` present.
+  * What to do:
+    * macOS:
+      * Install Homebrew if you don't have it yet by following the instructions here: [Homebrew](https://brew.sh).
+      * Then install ``libheif``:
+        * ``brew install libheif``
+      * Re-run the toolbox setup command (``bash run_app.sh``).
+    * Windows:
+      * Install vcpkg (Microsoft's C/C++ package manager). Quick start: [vcpkg getting started](https://learn.microsoft.com/en-us/vcpkg/get_started/get-started).
+      * In ``Command Prompt`` or ``PowerShell``:
+        * ``git clone https://github.com/microsoft/vcpkg.git``
+        * ``cd vcpkg``
+        * ``.\bootstrap-vcpkg.bat``
+        * (Optional, if you need specific codec backends for HEIF/AVIF) e.g., install AOM: ``vcpkg install aom:x64-windows``
+        * Install libheif: ``vcpkg install libheif:x64-windows``
+        * (Optional) Integrate with Visual Studio: ``vcpkg integrate install``
+      * Re-run the toolbox setup command (``run_app.bat``).
+  * After installing ``libheif``, ``pip`` can either use a compatible prebuilt wheel or successfully build ``pi-heif`` from source.
+
 
 ## Acknowledgement
 

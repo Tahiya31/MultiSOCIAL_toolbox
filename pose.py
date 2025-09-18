@@ -4,41 +4,25 @@ using MediaPipe and YOLO
 
 '''
 
-#import all packages
 import os
 import cv2
 import mediapipe as mp
 import pandas as pd
-import torch
+from yolov5 import YOLOv5
 
-import subprocess
-import sys
-
-# Helper function to install packages
-def install(package):
-    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-
-
-# Try to import YOLOv5; install if missing
-try:
-    from yolov5 import YOLOv5
-except ImportError:
-    install("yolov5")
-    from yolov5 import YOLOv5
-
-# Download yolov5s weights if not already present
-def download_yolov5_weights():
+def ensure_yolov5_weights():
+    """Ensure yolov5s weights exist without triggering network calls at import in other modules."""
     weights_path = "yolov5s.pt"
     if not os.path.exists(weights_path):
-        print("Downloading yolov5s.pt weights...")
-        import requests
-        url = "https://github.com/ultralytics/yolov5/releases/download/v6.0/yolov5s.pt"
-        response = requests.get(url)
-        with open(weights_path, "wb") as f:
-            f.write(response.content)
-        print("Downloaded yolov5s.pt")
-
-download_yolov5_weights()
+        try:
+            import requests
+            url = "https://github.com/ultralytics/yolov5/releases/download/v6.0/yolov5s.pt"
+            response = requests.get(url)
+            with open(weights_path, "wb") as f:
+                f.write(response.content)
+        except Exception:
+            # Defer error handling to when YOLO is actually constructed
+            pass
 
 
 # Core pose processor class
@@ -53,6 +37,7 @@ class PoseProcessor:
         # Initialize Mediapipe Pose and YOLOv5
         self.pose = mp.solutions.pose.Pose(static_image_mode=False, min_detection_confidence=0.5, model_complexity=1)
         self.drawing_utils = mp.solutions.drawing_utils
+        ensure_yolov5_weights()
         self.yolo = YOLOv5("yolov5s.pt")  # Load YOLOv5 once
 
     def set_multi_person_mode(self, enabled: bool):
