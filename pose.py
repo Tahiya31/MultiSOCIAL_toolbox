@@ -18,11 +18,12 @@ def ensure_yolov5_weights():
             import requests
             url = "https://github.com/ultralytics/yolov5/releases/download/v6.0/yolov5s.pt"
             response = requests.get(url)
+            response.raise_for_status()  # Raise exception for HTTP errors
             with open(weights_path, "wb") as f:
                 f.write(response.content)
-        except Exception:
-            # Defer error handling to when YOLO is actually constructed
-            pass
+            print(f"Downloaded YOLOv5 weights to {weights_path}")
+        except Exception as e:
+            raise RuntimeError(f"Failed to download YOLOv5 weights: {e}")
 
 
 # Core pose processor class
@@ -33,22 +34,39 @@ class PoseProcessor:
         self.status_callback = status_callback  
         self.enable_multi_person_pose = False  # Default to single person mode
         
-        
-        # Initialize Mediapipe Pose and YOLOv5
+        # Initialize Mediapipe Pose
         self.pose = mp.solutions.pose.Pose(static_image_mode=False, min_detection_confidence=0.5, model_complexity=1)
         self.drawing_utils = mp.solutions.drawing_utils
-        ensure_yolov5_weights()
-        self.yolo = YOLOv5("yolov5s.pt")  # Load YOLOv5 once
+        
+        # Initialize YOLO lazily (only when needed for multi-person mode)
+        self.yolo = None
 
     def set_multi_person_mode(self, enabled: bool):
         """Enable or disable multi-person pose mode."""
         self.enable_multi_person_pose = enabled
+
+    def _ensure_yolo(self):
+        """Lazily initialize YOLO only when needed for multi-person detection."""
+        if self.yolo is None:
+            try:
+                ensure_yolov5_weights()
+                self.yolo = YOLOv5("yolov5s.pt")
+                if self.status_callback:
+                    self.status_callback("🤖 YOLOv5 model loaded for multi-person detection")
+            except Exception as e:
+                if self.status_callback:
+                    self.status_callback(f"❌ Failed to load YOLOv5: {e}")
+                raise RuntimeError(f"Failed to initialize YOLOv5: {e}")
 
     def extract_pose_features(self, video_path):
         """Extract pose features from video, saving one CSV per person."""
         cap = cv2.VideoCapture(video_path)
         frame_idx = 0
         keypoints_by_person = {} # Dictionary to store keypoints per person
+        
+        # Get video dimensions for coordinate normalization
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
         while cap.isOpened():
             ret, frame = cap.read()
@@ -61,10 +79,19 @@ class PoseProcessor:
             image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
             if self.enable_multi_person_pose:
-              # Detect multiple people using YOLO
+                # Ensure YOLO is loaded
+                self._ensure_yolo()
+                
+                # Detect multiple people using YOLO
                 results = self.yolo.predict(image_rgb, size=640)
                 boxes = results.xyxy[0]
                 person_boxes = [b[:4].int().tolist() for b in boxes if int(b[5]) == 0]
+                
+                # Check if any people were detected
+                if not person_boxes:
+                    if self.status_callback:
+                        self.status_callback(f"⚠️ No people detected in frame {frame_idx}")
+                    continue
                 
                 # Process each detected person
                 for person_id, (x1, y1, x2, y2) in enumerate(person_boxes):
@@ -74,7 +101,10 @@ class PoseProcessor:
                     if result.pose_landmarks:
                         row = [frame_idx, person_id]
                         for lmk in result.pose_landmarks.landmark:
-                            row.extend([lmk.x, lmk.y, lmk.z, lmk.visibility])
+                            # Transform coordinates back to original frame and normalize to [0,1]
+                            orig_x = ((lmk.x * (x2 - x1)) + x1) / w
+                            orig_y = ((lmk.y * (y2 - y1)) + y1) / h
+                            row.extend([orig_x, orig_y, lmk.z, lmk.visibility])
                         if person_id not in keypoints_by_person:
                             keypoints_by_person[person_id] = []
                         keypoints_by_person[person_id].append(row)
@@ -143,20 +173,33 @@ class PoseProcessor:
             image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
             if self.enable_multi_person_pose:
+                # Ensure YOLO is loaded
+                self._ensure_yolo()
+                
                 # Use YOLO to detect person boxes
                 results = self.yolo.predict(image_rgb, size=640)
                 boxes = results.xyxy[0]
                 person_boxes = [b[:4].int().tolist() for b in boxes if int(b[5]) == 0]
                 
-                # Draw pose for each person (approximate)
+                # Draw pose for each person
                 for (x1, y1, x2, y2) in person_boxes:
                     cropped = image_rgb[y1:y2, x1:x2]
                     result = self.pose.process(cropped)
 
                     if result.pose_landmarks:
                         try:
-                            # Draw landmarks within the cropped region (can be improved with coordinate shifting)
-                            self.drawing_utils.draw_landmarks(frame[y1:y2, x1:x2], result.pose_landmarks, mp.solutions.pose.POSE_CONNECTIONS)
+                            # Create a copy of landmarks with transformed coordinates
+                            transformed_landmarks = mp.framework.formats.landmark_pb2.NormalizedLandmarkList()
+                            for lmk in result.pose_landmarks.landmark:
+                                new_lmk = transformed_landmarks.landmark.add()
+                                # Transform coordinates back to original frame and normalize
+                                new_lmk.x = (lmk.x * (x2 - x1) + x1) / w
+                                new_lmk.y = (lmk.y * (y2 - y1) + y1) / h
+                                new_lmk.z = lmk.z
+                                new_lmk.visibility = lmk.visibility
+                            
+                            # Draw landmarks on the full frame
+                            self.drawing_utils.draw_landmarks(frame, transformed_landmarks, mp.solutions.pose.POSE_CONNECTIONS)
                         except Exception:
                             pass
 
