@@ -9,8 +9,8 @@ mediapipe
 matplotlib
 
 # Deep learning / ASR
-# Let pip choose a compatible torch for your platform (macOS arm64, etc.)
-torch
+# Use PyTorch version before 2.6 to avoid weights_only security issues
+torch>=2.0.0,<2.6.0
 transformers==4.44.2
 accelerate
 # Datasets with audio extras used by transformers pipelines
