@@ -419,15 +419,21 @@ class VideoToWavConverter(wx.Frame):
             #print(f"Converting: {video_file}")
             file_name = os.path.basename(video_file)
             self.set_status_message(f"Converting to WAV: {file_name}")
-            self.convert_to_wav(video_file)
-        
-            # Update progress bar
-            progress_value = int(((i + 1) / total_files) * 100)
-            self.update_progress(progress_value)
+            
+            # Create progress callback for this video
+            def make_progress_callback(video_index, total_videos):
+                def progress_callback(conversion_progress):
+                    # Calculate overall progress: (video_index-1)/total_videos + conversion_progress/total_videos
+                    overall_progress = int(((video_index - 1) / total_videos) * 100 + (conversion_progress / total_videos))
+                    self.update_progress(overall_progress)
+                return progress_callback
+            
+            self.convert_to_wav(video_file, progress_callback=make_progress_callback(i + 1, total_files))
 
         wx.MessageBox("Video to audio conversion completed!", "Success", wx.OK | wx.ICON_INFORMATION)
+        self.update_progress(0)  # Reset progress bar
 
-    def convert_to_wav(self, filepath):
+    def convert_to_wav(self, filepath, progress_callback=None):
         """Convert a single video file to WAV using ffmpeg."""
         try:
             output_path = os.path.join(self.converted_audio_folder, os.path.splitext(os.path.basename(filepath))[0] + ".wav")
@@ -436,13 +442,23 @@ class VideoToWavConverter(wx.Frame):
             print(f"Processing video: {filepath}")
             print(f"Saving output as: {output_path}")
         
-            # Run ffmpeg conversion
+            # Run ffmpeg conversion with progress tracking
+            if progress_callback:
+                # Simulate progress for ffmpeg conversion (since ffmpeg doesn't provide real-time progress easily)
+                import time
+                progress_callback(0)
+                time.sleep(0.1)  # Small delay to show progress start
+                progress_callback(50)
+            
             (
                 ffmpeg
                 .input(filepath)
                 .output(output_path, format='wav', acodec='pcm_s16le')
                 .run(overwrite_output=True)
             )
+            
+            if progress_callback:
+                progress_callback(100)
 
             print(f"Conversion complete: {output_path}")
 
@@ -459,13 +475,36 @@ class VideoToWavConverter(wx.Frame):
         self.ensure_output_folders(folder_path)
         video_files = self.get_files_from_folder(folder_path, (".mp4", ".avi"))
         
+        if not video_files:
+            wx.MessageBox("No video files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        # Run in a separate thread to keep UI responsive
+        thread = threading.Thread(target=self.extract_pose_features_batch, args=(video_files,))
+        thread.start()
+
+    def extract_pose_features_batch(self, video_files):
+        """Batch process all video files to extract pose features."""
+        total_files = len(video_files)
+        
         pose_processor = PoseProcessor(self.extracted_pose_folder, status_callback=self.set_status_message)
         pose_processor.set_multi_person_mode(self.multiPersonCheckbox.GetValue())
 
-        for video_file in video_files:
-            pose_processor.extract_pose_features(video_file)
+        for index, video_file in enumerate(video_files, start=1):
+            self.set_status_message(f"📸 Extracting pose from: {os.path.basename(video_file)}")
+            
+            # Create progress callback for this video
+            def make_progress_callback(video_index, total_videos):
+                def progress_callback(frame_progress):
+                    # Calculate overall progress: (video_index-1)/total_videos + frame_progress/total_videos
+                    overall_progress = int(((video_index - 1) / total_videos) * 100 + (frame_progress / total_videos))
+                    self.update_progress(overall_progress)
+                return progress_callback
+            
+            pose_processor.extract_pose_features(video_file, progress_callback=make_progress_callback(index, total_files))
 
-        wx.MessageBox("Pose feature extraction completed!", "Success", wx.OK | wx.ICON_INFORMATION)
+        wx.CallAfter(wx.MessageBox, "Pose feature extraction completed!", "Success", wx.OK | wx.ICON_INFORMATION)
+        self.update_progress(0)  # Reset progress bar
             
            
     def on_embed_poses(self, event):
@@ -494,9 +533,16 @@ class VideoToWavConverter(wx.Frame):
 
         for index, video_file in enumerate(video_files, start=1):
             self.set_status_message(f"🕺 Embedding poses for: {os.path.basename(video_file)}")
-            pose_processor.embed_pose_video(video_file)
-            progress = int((index / total_files) * 100)
-            self.update_progress(progress)
+            
+            # Create progress callback for this video
+            def make_progress_callback(video_index, total_videos):
+                def progress_callback(frame_progress):
+                    # Calculate overall progress: (video_index-1)/total_videos + frame_progress/total_videos
+                    overall_progress = int(((video_index - 1) / total_videos) * 100 + (frame_progress / total_videos))
+                    self.update_progress(overall_progress)
+                return progress_callback
+            
+            pose_processor.embed_pose_video(video_file, progress_callback=make_progress_callback(index, total_files))
 
         wx.CallAfter(wx.MessageBox, "Pose embedding completed!", "Success", wx.OK | wx.ICON_INFORMATION)
         self.update_progress(0)  # Reset progress bar
@@ -528,26 +574,48 @@ class VideoToWavConverter(wx.Frame):
         for i, audio_file in enumerate(audio_files):
             self.set_status_message(f"🎧 Extracting audio from: {os.path.basename(audio_file)}")
             print(f"Extracting features from: {audio_file}")
-            self.extract_audio_features(audio_file)
-        
-            # Update progress bar
-            progress_value = int(((i + 1) / total_files) * 100)
-            self.update_progress(progress_value)
+            
+            # Create progress callback for this audio file
+            def make_progress_callback(audio_index, total_audios):
+                def progress_callback(extraction_progress):
+                    # Calculate overall progress: (audio_index-1)/total_audios + extraction_progress/total_audios
+                    overall_progress = int(((audio_index - 1) / total_audios) * 100 + (extraction_progress / total_audios))
+                    self.update_progress(overall_progress)
+                return progress_callback
+            
+            self.extract_audio_features(audio_file, progress_callback=make_progress_callback(i + 1, total_files))
 
         wx.MessageBox("Audio feature extraction completed!", "Success", wx.OK | wx.ICON_INFORMATION)
+        self.update_progress(0)  # Reset progress bar
 
-    def extract_audio_features(self, filepath):
+    def extract_audio_features(self, filepath, progress_callback=None):
         """Extracts audio features from a single WAV file."""
         try:
+            if progress_callback:
+                progress_callback(0)
+            
             feature_set_name = opensmile.FeatureSet.ComParE_2016
             feature_level_name = opensmile.FeatureLevel.LowLevelDescriptors
 
+            if progress_callback:
+                progress_callback(25)
+            
             smile = opensmile.Smile(feature_set=feature_set_name, feature_level=feature_level_name)
             y, sr = librosa.load(filepath)
+            
+            if progress_callback:
+                progress_callback(50)
+            
             features = smile.process_signal(y, sr)
+            
+            if progress_callback:
+                progress_callback(75)
 
             output_csv = os.path.join(self.extracted_audio_folder, os.path.splitext(os.path.basename(filepath))[0] + ".csv")
             features.to_csv(output_csv, index=False)
+            
+            if progress_callback:
+                progress_callback(100)
 
             print(f"Saved audio features: {output_csv}")
 
@@ -584,35 +652,55 @@ class VideoToWavConverter(wx.Frame):
             #print(f"Starting transcription for: {audio_file}")
             #file_name = os.path.basename(audio_file)
             self.set_status_message(f"🗣️ Transcribing: {os.path.basename(audio_file)}")
+            
+            # Create progress callback for this audio file
+            def make_progress_callback(audio_index, total_audios):
+                def progress_callback(transcription_progress):
+                    # Calculate overall progress: (audio_index-1)/total_audios + transcription_progress/total_audios
+                    overall_progress = int(((audio_index - 1) / total_audios) * 100 + (transcription_progress / total_audios))
+                    self.update_progress(overall_progress)
+                return progress_callback
         
             try:
-                self.extract_transcripts(audio_file)
+                self.extract_transcripts(audio_file, progress_callback=make_progress_callback(i + 1, total_files))
             except Exception as e:
                 print(f"Error processing {audio_file}: {e}")
-
-           # Update progress bar
-            progress_value = int(((i + 1) / total_files) * 100)
-            self.update_progress(progress_value)
 
         #print("All transcriptions completed.")
         #self.set_status_message("Transcription complete.")
         wx.MessageBox("Transcription extraction completed!", "Success", wx.OK | wx.ICON_INFORMATION)
+        self.update_progress(0)  # Reset progress bar
 
-    def extract_transcripts(self, filepath):
+    def extract_transcripts(self, filepath, progress_callback=None):
         """Transcribes a single WAV file using Whisper."""
         try:
+            if progress_callback:
+                progress_callback(0)
+            
             print(f"Loading Whisper model for {filepath}...")
             device = "cuda:0" if torch.cuda.is_available() else "cpu"
             torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
+            if progress_callback:
+                progress_callback(10)
+
             model_id = "distil-whisper/distil-large-v3"
+
+            if progress_callback:
+                progress_callback(20)
 
             model = AutoModelForSpeechSeq2Seq.from_pretrained(
                 model_id, torch_dtype=torch_dtype, low_cpu_mem_usage=True, use_safetensors=True
             )
             model.to(device)
 
+            if progress_callback:
+                progress_callback(40)
+
             processor = AutoProcessor.from_pretrained(model_id)
+
+            if progress_callback:
+                progress_callback(50)
 
             pipe = pipeline(
                 "automatic-speech-recognition",
@@ -626,14 +714,23 @@ class VideoToWavConverter(wx.Frame):
                 device=device,
             )
 
+            if progress_callback:
+                progress_callback(70)
+
             print(f"Transcribing {filepath}...")
             result = pipe(filepath)
             transcript = result['text']
+
+            if progress_callback:
+                progress_callback(90)
 
             output_txt = os.path.join(self.extracted_transcripts_folder, os.path.splitext(os.path.basename(filepath))[0] + ".txt")
 
             with open(output_txt, 'w') as f:
                 f.write(transcript)
+
+            if progress_callback:
+                progress_callback(100)
 
             print(f"Saved transcript: {output_txt}")
 
