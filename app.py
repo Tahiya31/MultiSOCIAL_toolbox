@@ -37,7 +37,110 @@ class GradientPanel(wx.Panel):
     def OnPaint(self, event):
         dc = wx.PaintDC(self)
         rect = self.GetClientRect()
-        dc.GradientFillLinear(rect, '#7FFFD4', '#5F9EA0', wx.NORTH)  # Aqua green gradient
+        dc.GradientFillLinear(rect, '#00695C', '#2E7D32', wx.NORTH)  # Dark Teal to Medium Forest Green
+
+
+class CustomTooltip(wx.PopupWindow):
+    def __init__(self, parent, text):
+        super(CustomTooltip, self).__init__(parent, wx.SIMPLE_BORDER)
+        self.text = text
+        self.SetBackgroundColour('#D3D3D3')  # Light gray to match buttons
+        self.SetForegroundColour('#FFFFFF')  # White text to match buttons
+        
+        # Create a panel for the tooltip content
+        panel = wx.Panel(self)
+        panel.SetBackgroundColour('#D3D3D3')  # Light gray background
+        
+        # Create text control for the tooltip with word wrapping
+        self.text_ctrl = wx.StaticText(panel, label=text, style=wx.ALIGN_LEFT)
+        self.text_ctrl.SetFont(wx.Font(10, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+        self.text_ctrl.SetForegroundColour('#FFFFFF')  # White text
+        self.text_ctrl.Wrap(300)  # Wrap text at 300 pixels width
+        
+        # Layout
+        sizer = wx.BoxSizer(wx.VERTICAL)
+        sizer.Add(self.text_ctrl, flag=wx.ALL, border=8)
+        panel.SetSizer(sizer)
+        
+        # Size the tooltip
+        panel.Fit()
+        self.SetSize(panel.GetSize())
+
+
+class InfoIcon(wx.StaticText):
+    def __init__(self, parent, tooltip_text):
+        super(InfoIcon, self).__init__(parent, label="ℹ", style=wx.ALIGN_CENTER)
+        self.tooltip_text = tooltip_text
+        self.tooltip = None
+        
+        # Style the info icon
+        self.SetFont(wx.Font(12, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+        self.SetForegroundColour('#FFFFFF')
+        self.SetBackgroundColour('#666666')
+        self.SetMinSize((20, 20))
+        
+        # Bind mouse events
+        self.Bind(wx.EVT_ENTER_WINDOW, self.OnMouseEnter)
+        self.Bind(wx.EVT_LEAVE_WINDOW, self.OnMouseLeave)
+        self.Bind(wx.EVT_MOTION, self.OnMouseMove)
+        self.Bind(wx.EVT_PAINT, self.OnPaint)
+    
+    def OnPaint(self, event):
+        dc = wx.PaintDC(self)
+        rect = self.GetClientRect()
+        
+        # Draw circular background
+        dc.SetBrush(wx.Brush('#666666'))
+        dc.SetPen(wx.Pen('#666666', 1))
+        dc.DrawCircle(rect.width//2, rect.height//2, min(rect.width, rect.height)//2 - 1)
+        
+        # Draw the "i" text
+        dc.SetTextForeground('#FFFFFF')
+        dc.SetFont(self.GetFont())
+        text_width, text_height = dc.GetTextExtent("ℹ")
+        dc.DrawText("ℹ", (rect.width - text_width)//2, (rect.height - text_height)//2)
+    
+    def OnMouseEnter(self, event):
+        if not self.tooltip:
+            self.tooltip = CustomTooltip(self.GetParent(), self.tooltip_text)
+            self.ShowTooltip()
+        event.Skip()
+    
+    def OnMouseLeave(self, event):
+        if self.tooltip:
+            self.tooltip.Destroy()
+            self.tooltip = None
+        event.Skip()
+    
+    def OnMouseMove(self, event):
+        if self.tooltip:
+            self.ShowTooltip()
+        event.Skip()
+    
+    def ShowTooltip(self):
+        if self.tooltip:
+            # Get the screen position of the icon
+            icon_rect = self.GetRect()
+            parent_pos = self.GetParent().GetScreenPosition()
+            
+            # Calculate tooltip position to the right of the icon
+            tooltip_x = parent_pos.x + icon_rect.x + icon_rect.width + 2
+            tooltip_y = parent_pos.y + icon_rect.y
+            
+            self.tooltip.Position((tooltip_x, tooltip_y), (0, 0))
+            self.tooltip.Show()
+
+
+class TooltipButton(wx.Button):
+    def __init__(self, parent, label, tooltip_text):
+        super(TooltipButton, self).__init__(parent, label=label)
+        self.tooltip_text = tooltip_text
+        self.info_icon = None
+        
+    def add_info_icon(self, parent):
+        """Add info icon to the button's parent container"""
+        self.info_icon = InfoIcon(parent, self.tooltip_text)
+        return self.info_icon
 
 
 class VideoToWavConverter(wx.Frame):
@@ -117,17 +220,17 @@ class VideoToWavConverter(wx.Frame):
         self.folderPicker = wx.DirPickerCtrl(pnl, message="Select a folder containing media files")
         vbox.Add(self.folderPicker, flag=wx.EXPAND | wx.ALL, border=10,proportion=0)
 
-        # Toggle for multi-person pose
-        self.multiPersonCheckbox = wx.CheckBox(pnl, label="Enable Multi-Person Pose")
-        self.multiPersonCheckbox.SetFont(wx.Font(14, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
-        self.multiPersonCheckbox.SetForegroundColour('#FFFFFF')
-        vbox.Add(self.multiPersonCheckbox, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
-
         # Placeholder above buttons
         placeholder_above = wx.StaticText(pnl, label="If you have a video file:")
         placeholder_above_font = wx.Font(20, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
         placeholder_above.SetFont(placeholder_above_font)
         vbox.Add(placeholder_above, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+
+        # Toggle for multi-person pose (video option)
+        self.multiPersonCheckbox = wx.CheckBox(pnl, label="Enable Multi-Person Pose")
+        self.multiPersonCheckbox.SetFont(wx.Font(14, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+        self.multiPersonCheckbox.SetForegroundColour('#FFFFFF')
+        vbox.Add(self.multiPersonCheckbox, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
 
         # Button Font
         button_font = wx.Font(16, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
@@ -139,10 +242,15 @@ class VideoToWavConverter(wx.Frame):
         #placeholder_convert.SetFont(placeholder_font)
         #hbox_convert.Add(placeholder_convert, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
         
-        self.convertBtn = wx.Button(pnl, label='Convert video to audio')
+        self.convertBtn = TooltipButton(pnl, 'Convert video to audio', 
+                                       'Converts video files (.mp4, .avi, .mov, .mkv) to audio files (.wav) for further processing')
         self.convertBtn.SetFont(button_font)
         self.convertBtn.Bind(wx.EVT_BUTTON, self.on_convert)
         hbox_convert.Add(self.convertBtn, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
+        
+        # Add info icon
+        info_icon = self.convertBtn.add_info_icon(pnl)
+        hbox_convert.Add(info_icon, flag=wx.ALIGN_CENTER|wx.LEFT, border=5)
         
         vbox.Add(hbox_convert, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
 
@@ -152,10 +260,15 @@ class VideoToWavConverter(wx.Frame):
         #placeholder_pose.SetFont(placeholder_font)
         #hbox_extract_pose.Add(placeholder_pose, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
 
-        self.extractFeaturesBtn = wx.Button(pnl, label='Extract Pose Features')
+        self.extractFeaturesBtn = TooltipButton(pnl, 'Extract Pose Features', 
+                                               'Extracts human pose landmarks and features from video files using MediaPipe. Supports single and multi-person detection.')
         self.extractFeaturesBtn.SetFont(button_font)
         self.extractFeaturesBtn.Bind(wx.EVT_BUTTON, self.on_extract_features)
         hbox_extract_pose.Add(self.extractFeaturesBtn, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
+        
+        # Add info icon
+        info_icon = self.extractFeaturesBtn.add_info_icon(pnl)
+        hbox_extract_pose.Add(info_icon, flag=wx.ALIGN_CENTER|wx.LEFT, border=5)
 
         vbox.Add(hbox_extract_pose, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
         
@@ -165,10 +278,15 @@ class VideoToWavConverter(wx.Frame):
         #placeholder_pose.SetFont(placeholder_font)
         #hbox_extract_pose.Add(placeholder_pose, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
 
-        self.embedFeaturesBtn = wx.Button(pnl, label='Embed Pose Features')
+        self.embedFeaturesBtn = TooltipButton(pnl, 'Embed Pose Features', 
+                                             'Creates vector embeddings from extracted pose features for machine learning and analysis purposes.')
         self.embedFeaturesBtn.SetFont(button_font)
         self.embedFeaturesBtn.Bind(wx.EVT_BUTTON, self.on_embed_poses)
         hbox_embed_pose.Add(self.embedFeaturesBtn, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
+        
+        # Add info icon
+        info_icon = self.embedFeaturesBtn.add_info_icon(pnl)
+        hbox_embed_pose.Add(info_icon, flag=wx.ALIGN_CENTER|wx.LEFT, border=5)
 
         vbox.Add(hbox_embed_pose, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
         
@@ -183,10 +301,15 @@ class VideoToWavConverter(wx.Frame):
         #placeholder_audio.SetFont(placeholder_font)
         #hbox_extract_audio.Add(placeholder_audio, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
 
-        self.extractAudioFeaturesBtn = wx.Button(pnl, label='Extract Audio Features')
+        self.extractAudioFeaturesBtn = TooltipButton(pnl, 'Extract Audio Features', 
+                                                    'Extracts acoustic features from audio files (.wav) including MFCC, spectral features, and prosodic characteristics.')
         self.extractAudioFeaturesBtn.SetFont(button_font)
         self.extractAudioFeaturesBtn.Bind(wx.EVT_BUTTON, self.on_extract_audio_features)
         hbox_extract_audio.Add(self.extractAudioFeaturesBtn, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
+        
+        # Add info icon
+        info_icon = self.extractAudioFeaturesBtn.add_info_icon(pnl)
+        hbox_extract_audio.Add(info_icon, flag=wx.ALIGN_CENTER|wx.LEFT, border=5)
 
         vbox.Add(hbox_extract_audio, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
 
@@ -196,10 +319,15 @@ class VideoToWavConverter(wx.Frame):
         #placeholder_transcripts.SetFont(placeholder_font)
         #hbox_extract_transcripts.Add(placeholder_transcripts, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
 
-        self.extractTranscriptsBtn = wx.Button(pnl, label='Extract Transcripts')
+        self.extractTranscriptsBtn = TooltipButton(pnl, 'Extract Transcripts', 
+                                                  'Converts speech in audio files (.wav) to text transcripts using automatic speech recognition (ASR) technology.')
         self.extractTranscriptsBtn.SetFont(button_font)
         self.extractTranscriptsBtn.Bind(wx.EVT_BUTTON, self.on_extract_transcripts)
         hbox_extract_transcripts.Add(self.extractTranscriptsBtn, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
+        
+        # Add info icon
+        info_icon = self.extractTranscriptsBtn.add_info_icon(pnl)
+        hbox_extract_transcripts.Add(info_icon, flag=wx.ALIGN_CENTER|wx.LEFT, border=5)
 
         vbox.Add(hbox_extract_transcripts, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
         
@@ -291,15 +419,21 @@ class VideoToWavConverter(wx.Frame):
             #print(f"Converting: {video_file}")
             file_name = os.path.basename(video_file)
             self.set_status_message(f"Converting to WAV: {file_name}")
-            self.convert_to_wav(video_file)
-        
-            # Update progress bar
-            progress_value = int(((i + 1) / total_files) * 100)
-            self.update_progress(progress_value)
+            
+            # Create progress callback for this video
+            def make_progress_callback(video_index, total_videos):
+                def progress_callback(conversion_progress):
+                    # Calculate overall progress: (video_index-1)/total_videos + conversion_progress/total_videos
+                    overall_progress = int(((video_index - 1) / total_videos) * 100 + (conversion_progress / total_videos))
+                    self.update_progress(overall_progress)
+                return progress_callback
+            
+            self.convert_to_wav(video_file, progress_callback=make_progress_callback(i + 1, total_files))
 
         wx.MessageBox("Video to audio conversion completed!", "Success", wx.OK | wx.ICON_INFORMATION)
+        self.update_progress(0)  # Reset progress bar
 
-    def convert_to_wav(self, filepath):
+    def convert_to_wav(self, filepath, progress_callback=None):
         """Convert a single video file to WAV using ffmpeg."""
         try:
             output_path = os.path.join(self.converted_audio_folder, os.path.splitext(os.path.basename(filepath))[0] + ".wav")
@@ -308,13 +442,23 @@ class VideoToWavConverter(wx.Frame):
             print(f"Processing video: {filepath}")
             print(f"Saving output as: {output_path}")
         
-            # Run ffmpeg conversion
+            # Run ffmpeg conversion with progress tracking
+            if progress_callback:
+                # Simulate progress for ffmpeg conversion (since ffmpeg doesn't provide real-time progress easily)
+                import time
+                progress_callback(0)
+                time.sleep(0.1)  # Small delay to show progress start
+                progress_callback(50)
+            
             (
                 ffmpeg
                 .input(filepath)
                 .output(output_path, format='wav', acodec='pcm_s16le')
                 .run(overwrite_output=True)
             )
+            
+            if progress_callback:
+                progress_callback(100)
 
             print(f"Conversion complete: {output_path}")
 
@@ -331,13 +475,36 @@ class VideoToWavConverter(wx.Frame):
         self.ensure_output_folders(folder_path)
         video_files = self.get_files_from_folder(folder_path, (".mp4", ".avi"))
         
+        if not video_files:
+            wx.MessageBox("No video files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        # Run in a separate thread to keep UI responsive
+        thread = threading.Thread(target=self.extract_pose_features_batch, args=(video_files,))
+        thread.start()
+
+    def extract_pose_features_batch(self, video_files):
+        """Batch process all video files to extract pose features."""
+        total_files = len(video_files)
+        
         pose_processor = PoseProcessor(self.extracted_pose_folder, status_callback=self.set_status_message)
         pose_processor.set_multi_person_mode(self.multiPersonCheckbox.GetValue())
 
-        for video_file in video_files:
-            pose_processor.extract_pose_features(video_file)
+        for index, video_file in enumerate(video_files, start=1):
+            self.set_status_message(f"📸 Extracting pose from: {os.path.basename(video_file)}")
+            
+            # Create progress callback for this video
+            def make_progress_callback(video_index, total_videos):
+                def progress_callback(frame_progress):
+                    # Calculate overall progress: (video_index-1)/total_videos + frame_progress/total_videos
+                    overall_progress = int(((video_index - 1) / total_videos) * 100 + (frame_progress / total_videos))
+                    self.update_progress(overall_progress)
+                return progress_callback
+            
+            pose_processor.extract_pose_features(video_file, progress_callback=make_progress_callback(index, total_files))
 
-        wx.MessageBox("Pose feature extraction completed!", "Success", wx.OK | wx.ICON_INFORMATION)
+        wx.CallAfter(wx.MessageBox, "Pose feature extraction completed!", "Success", wx.OK | wx.ICON_INFORMATION)
+        self.update_progress(0)  # Reset progress bar
             
            
     def on_embed_poses(self, event):
@@ -366,9 +533,16 @@ class VideoToWavConverter(wx.Frame):
 
         for index, video_file in enumerate(video_files, start=1):
             self.set_status_message(f"🕺 Embedding poses for: {os.path.basename(video_file)}")
-            pose_processor.embed_pose_video(video_file)
-            progress = int((index / total_files) * 100)
-            self.update_progress(progress)
+            
+            # Create progress callback for this video
+            def make_progress_callback(video_index, total_videos):
+                def progress_callback(frame_progress):
+                    # Calculate overall progress: (video_index-1)/total_videos + frame_progress/total_videos
+                    overall_progress = int(((video_index - 1) / total_videos) * 100 + (frame_progress / total_videos))
+                    self.update_progress(overall_progress)
+                return progress_callback
+            
+            pose_processor.embed_pose_video(video_file, progress_callback=make_progress_callback(index, total_files))
 
         wx.CallAfter(wx.MessageBox, "Pose embedding completed!", "Success", wx.OK | wx.ICON_INFORMATION)
         self.update_progress(0)  # Reset progress bar
@@ -400,26 +574,48 @@ class VideoToWavConverter(wx.Frame):
         for i, audio_file in enumerate(audio_files):
             self.set_status_message(f"🎧 Extracting audio from: {os.path.basename(audio_file)}")
             print(f"Extracting features from: {audio_file}")
-            self.extract_audio_features(audio_file)
-        
-            # Update progress bar
-            progress_value = int(((i + 1) / total_files) * 100)
-            self.update_progress(progress_value)
+            
+            # Create progress callback for this audio file
+            def make_progress_callback(audio_index, total_audios):
+                def progress_callback(extraction_progress):
+                    # Calculate overall progress: (audio_index-1)/total_audios + extraction_progress/total_audios
+                    overall_progress = int(((audio_index - 1) / total_audios) * 100 + (extraction_progress / total_audios))
+                    self.update_progress(overall_progress)
+                return progress_callback
+            
+            self.extract_audio_features(audio_file, progress_callback=make_progress_callback(i + 1, total_files))
 
         wx.MessageBox("Audio feature extraction completed!", "Success", wx.OK | wx.ICON_INFORMATION)
+        self.update_progress(0)  # Reset progress bar
 
-    def extract_audio_features(self, filepath):
+    def extract_audio_features(self, filepath, progress_callback=None):
         """Extracts audio features from a single WAV file."""
         try:
+            if progress_callback:
+                progress_callback(0)
+            
             feature_set_name = opensmile.FeatureSet.ComParE_2016
             feature_level_name = opensmile.FeatureLevel.LowLevelDescriptors
 
+            if progress_callback:
+                progress_callback(25)
+            
             smile = opensmile.Smile(feature_set=feature_set_name, feature_level=feature_level_name)
             y, sr = librosa.load(filepath)
+            
+            if progress_callback:
+                progress_callback(50)
+            
             features = smile.process_signal(y, sr)
+            
+            if progress_callback:
+                progress_callback(75)
 
             output_csv = os.path.join(self.extracted_audio_folder, os.path.splitext(os.path.basename(filepath))[0] + ".csv")
             features.to_csv(output_csv, index=False)
+            
+            if progress_callback:
+                progress_callback(100)
 
             print(f"Saved audio features: {output_csv}")
 
@@ -456,35 +652,55 @@ class VideoToWavConverter(wx.Frame):
             #print(f"Starting transcription for: {audio_file}")
             #file_name = os.path.basename(audio_file)
             self.set_status_message(f"🗣️ Transcribing: {os.path.basename(audio_file)}")
+            
+            # Create progress callback for this audio file
+            def make_progress_callback(audio_index, total_audios):
+                def progress_callback(transcription_progress):
+                    # Calculate overall progress: (audio_index-1)/total_audios + transcription_progress/total_audios
+                    overall_progress = int(((audio_index - 1) / total_audios) * 100 + (transcription_progress / total_audios))
+                    self.update_progress(overall_progress)
+                return progress_callback
         
             try:
-                self.extract_transcripts(audio_file)
+                self.extract_transcripts(audio_file, progress_callback=make_progress_callback(i + 1, total_files))
             except Exception as e:
                 print(f"Error processing {audio_file}: {e}")
-
-           # Update progress bar
-            progress_value = int(((i + 1) / total_files) * 100)
-            self.update_progress(progress_value)
 
         #print("All transcriptions completed.")
         #self.set_status_message("Transcription complete.")
         wx.MessageBox("Transcription extraction completed!", "Success", wx.OK | wx.ICON_INFORMATION)
+        self.update_progress(0)  # Reset progress bar
 
-    def extract_transcripts(self, filepath):
+    def extract_transcripts(self, filepath, progress_callback=None):
         """Transcribes a single WAV file using Whisper."""
         try:
+            if progress_callback:
+                progress_callback(0)
+            
             print(f"Loading Whisper model for {filepath}...")
             device = "cuda:0" if torch.cuda.is_available() else "cpu"
             torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
+            if progress_callback:
+                progress_callback(10)
+
             model_id = "distil-whisper/distil-large-v3"
+
+            if progress_callback:
+                progress_callback(20)
 
             model = AutoModelForSpeechSeq2Seq.from_pretrained(
                 model_id, torch_dtype=torch_dtype, low_cpu_mem_usage=True, use_safetensors=True
             )
             model.to(device)
 
+            if progress_callback:
+                progress_callback(40)
+
             processor = AutoProcessor.from_pretrained(model_id)
+
+            if progress_callback:
+                progress_callback(50)
 
             pipe = pipeline(
                 "automatic-speech-recognition",
@@ -498,14 +714,23 @@ class VideoToWavConverter(wx.Frame):
                 device=device,
             )
 
+            if progress_callback:
+                progress_callback(70)
+
             print(f"Transcribing {filepath}...")
             result = pipe(filepath)
             transcript = result['text']
+
+            if progress_callback:
+                progress_callback(90)
 
             output_txt = os.path.join(self.extracted_transcripts_folder, os.path.splitext(os.path.basename(filepath))[0] + ".txt")
 
             with open(output_txt, 'w') as f:
                 f.write(transcript)
+
+            if progress_callback:
+                progress_callback(100)
 
             print(f"Saved transcript: {output_txt}")
 
