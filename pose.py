@@ -111,6 +111,15 @@ class PoseProcessor:
                 duration = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
                 total_frames = int(fps * duration)
 
+        # Maintain locked ROIs across frames for multi-person mode
+        # Each ROI holds its own MediaPipe Pose instance; index in list is stable person_id
+        locked_rois = []  # Each item: {"x1":int,"y1":int,"x2":int,"y2":int,"lost":int, "pose": Pose}
+
+        def _roi_center(x1, y1, x2, y2):
+            cx = 0.5 * (x1 + x2)
+            cy = 0.5 * (y1 + y2)
+            return cx, cy
+
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
@@ -124,26 +133,41 @@ class PoseProcessor:
             if self.enable_multi_person_pose:
                 # Ensure YOLO is loaded
                 self._ensure_yolo()
-                
-                # Detect multiple people using YOLO
-                results = self.yolo.predict(image_rgb, size=640)
-                boxes = results.xyxy[0]
-                person_boxes = [b[:4].int().tolist() for b in boxes if int(b[5]) == 0]
-                
-                # Check if any people were detected
-                if not person_boxes:
-                    if self.status_callback:
-                        self.status_callback(f"⚠️ No people detected in frame {frame_idx}")
+
+                # Seed locked ROIs once (or when none exist)
+                if not locked_rois:
+                    results = self.yolo.predict(image_rgb, size=640)
+                    boxes = results.xyxy[0]
+                    person_boxes = [b[:4].int().tolist() for b in boxes if int(b[5]) == 0]
+                    if not person_boxes:
+                        if self.status_callback:
+                            self.status_callback(f"⚠️ No people detected in frame {frame_idx}")
+                        frame_idx += 1
+                        if progress_callback and total_frames > 0:
+                            progress_percent = int((frame_idx / total_frames) * 100)
+                            progress_callback(progress_percent)
+                        continue
+                    for (x1, y1, x2, y2) in person_boxes:
+                        x1e, y1e, x2e, y2e = self._expand_and_clip_bbox(x1, y1, x2, y2, w, h, margin_ratio=0.25)
+                        roi_pose = mp.solutions.pose.Pose(static_image_mode=False, min_detection_confidence=0.7, min_tracking_confidence=0.7, model_complexity=2)
+                        locked_rois.append({"x1": x1e, "y1": y1e, "x2": x2e, "y2": y2e, "lost": 0, "pose": roi_pose})
+
+                # If still none, skip frame
+                if not locked_rois:
+                    frame_idx += 1
+                    if progress_callback and total_frames > 0:
+                        progress_percent = int((frame_idx / total_frames) * 100)
+                        progress_callback(progress_percent)
                     continue
-                
-                # Process each detected person
-                for person_id, (x1, y1, x2, y2) in enumerate(person_boxes):
-                    # Expand and clip bbox with margin before cropping
-                    x1e, y1e, x2e, y2e = self._expand_and_clip_bbox(x1, y1, x2, y2, w, h, margin_ratio=0.12)
+
+                # Process each locked ROI
+                for person_id, roi in enumerate(locked_rois):
+                    x1e, y1e, x2e, y2e = roi["x1"], roi["y1"], roi["x2"], roi["y2"]
                     cropped = image_rgb[y1e:y2e, x1e:x2e]
-                    result = self.pose.process(cropped)
+                    result = roi["pose"].process(cropped)
 
                     if result.pose_landmarks:
+                        roi["lost"] = 0
                         row = [frame_idx, person_id]
                         for lmk in result.pose_landmarks.landmark:
                             # Transform coordinates back to original frame and normalize to [0,1]
@@ -153,6 +177,35 @@ class PoseProcessor:
                         if person_id not in keypoints_by_person:
                             keypoints_by_person[person_id] = []
                         keypoints_by_person[person_id].append(row)
+                    else:
+                        roi["lost"] += 1
+                        if roi["lost"] >= 10:
+                            # Re-seed this ROI using nearest current YOLO detection
+                            results = self.yolo.predict(image_rgb, size=640)
+                            boxes = results.xyxy[0]
+                            person_boxes = [b[:4].int().tolist() for b in boxes if int(b[5]) == 0]
+                            if person_boxes:
+                                cx, cy = _roi_center(x1e, y1e, x2e, y2e)
+                                best = None
+                                best_d = None
+                                for (rx1, ry1, rx2, ry2) in person_boxes:
+                                    rcx, rcy = _roi_center(rx1, ry1, rx2, ry2)
+                                    d = (rcx - cx) * (rcx - cx) + (rcy - cy) * (rcy - cy)
+                                    if best is None or d < best_d:
+                                        best = (rx1, ry1, rx2, ry2)
+                                        best_d = d
+                                if best is not None:
+                                    nx1, ny1, nx2, ny2 = self._expand_and_clip_bbox(best[0], best[1], best[2], best[3], w, h, margin_ratio=0.25)
+                                    # Close old Pose and create a new one tied to the new ROI
+                                    try:
+                                        roi_pose = roi.get("pose")
+                                        if roi_pose is not None:
+                                            roi_pose.close()
+                                    except Exception:
+                                        pass
+                                    roi["x1"], roi["y1"], roi["x2"], roi["y2"] = nx1, ny1, nx2, ny2
+                                    roi["pose"] = mp.solutions.pose.Pose(static_image_mode=False, min_detection_confidence=0.7, min_tracking_confidence=0.7, model_complexity=2)
+                                    roi["lost"] = 0
 
             else:
                 # Single-person mode
