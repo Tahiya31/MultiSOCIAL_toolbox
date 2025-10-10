@@ -41,6 +41,40 @@ class PoseProcessor:
         # Initialize YOLO lazily (only when needed for multi-person mode)
         self.yolo = None
 
+    def _expand_and_clip_bbox(self, x1, y1, x2, y2, image_width, image_height, margin_ratio=0.12):
+        """Expand bbox by margin_ratio on all sides and clip to image bounds.
+
+        Returns clipped integer coordinates (nx1, ny1, nx2, ny2) with nx1 < nx2 and ny1 < ny2.
+        """
+        # Convert to float for precise expansion
+        bx1, by1, bx2, by2 = float(x1), float(y1), float(x2), float(y2)
+        bw = max(0.0, bx2 - bx1)
+        bh = max(0.0, by2 - by1)
+        if bw <= 0 or bh <= 0:
+            return int(max(0, min(image_width - 1, x1))), int(max(0, min(image_height - 1, y1))), int(max(0, min(image_width, x2))), int(max(0, min(image_height, y2)))
+
+        margin_w = bw * margin_ratio
+        margin_h = bh * margin_ratio
+
+        ex1 = bx1 - margin_w
+        ey1 = by1 - margin_h
+        ex2 = bx2 + margin_w
+        ey2 = by2 + margin_h
+
+        # Clip to image bounds
+        ex1 = max(0.0, min(ex1, image_width - 1.0))
+        ey1 = max(0.0, min(ey1, image_height - 1.0))
+        ex2 = max(0.0, min(ex2, image_width - 0.0))
+        ey2 = max(0.0, min(ey2, image_height - 0.0))
+
+        # Ensure correct ordering after clipping
+        if ex2 <= ex1:
+            ex2 = min(image_width * 1.0, ex1 + 1.0)
+        if ey2 <= ey1:
+            ey2 = min(image_height * 1.0, ey1 + 1.0)
+
+        return int(ex1), int(ey1), int(ex2), int(ey2)
+
     def set_multi_person_mode(self, enabled: bool):
         """Enable or disable multi-person pose mode."""
         self.enable_multi_person_pose = enabled
@@ -104,15 +138,17 @@ class PoseProcessor:
                 
                 # Process each detected person
                 for person_id, (x1, y1, x2, y2) in enumerate(person_boxes):
-                    cropped = image_rgb[y1:y2, x1:x2]
+                    # Expand and clip bbox with margin before cropping
+                    x1e, y1e, x2e, y2e = self._expand_and_clip_bbox(x1, y1, x2, y2, w, h, margin_ratio=0.12)
+                    cropped = image_rgb[y1e:y2e, x1e:x2e]
                     result = self.pose.process(cropped)
 
                     if result.pose_landmarks:
                         row = [frame_idx, person_id]
                         for lmk in result.pose_landmarks.landmark:
                             # Transform coordinates back to original frame and normalize to [0,1]
-                            orig_x = ((lmk.x * (x2 - x1)) + x1) / w
-                            orig_y = ((lmk.y * (y2 - y1)) + y1) / h
+                            orig_x = ((lmk.x * (x2e - x1e)) + x1e) / w
+                            orig_y = ((lmk.y * (y2e - y1e)) + y1e) / h
                             row.extend([orig_x, orig_y, lmk.z, lmk.visibility])
                         if person_id not in keypoints_by_person:
                             keypoints_by_person[person_id] = []
@@ -207,7 +243,14 @@ class PoseProcessor:
                 
                 # Draw pose for each person
                 for (x1, y1, x2, y2) in person_boxes:
-                    cropped = image_rgb[y1:y2, x1:x2]
+                    # Expand and clip bbox with margin before cropping
+                    x1e, y1e, x2e, y2e = self._expand_and_clip_bbox(x1, y1, x2, y2, w, h, margin_ratio=0.12)
+                    # Draw the expanded bounding box on the frame for debugging/inspection
+                    try:
+                        cv2.rectangle(frame, (x1e, y1e), (x2e, y2e), (255, 255, 0), 2)
+                    except Exception:
+                        pass
+                    cropped = image_rgb[y1e:y2e, x1e:x2e]
                     result = self.pose.process(cropped)
 
                     if result.pose_landmarks:
@@ -223,8 +266,8 @@ class PoseProcessor:
                             # Transform coordinates back to original frame
                             for lmk in original_landmarks.landmark:
                                 # Transform from cropped coordinates to full frame coordinates
-                                lmk.x = (lmk.x * (x2 - x1) + x1) / w
-                                lmk.y = (lmk.y * (y2 - y1) + y1) / h
+                                lmk.x = (lmk.x * (x2e - x1e) + x1e) / w
+                                lmk.y = (lmk.y * (y2e - y1e) + y1e) / h
                             
                             # Draw landmarks on the full frame with visible style
                             self.drawing_utils.draw_landmarks(
