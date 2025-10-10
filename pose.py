@@ -41,6 +41,89 @@ class PoseProcessor:
         # Initialize YOLO lazily (only when needed for multi-person mode)
         self.yolo = None
 
+    def _roi_center(self, x1, y1, x2, y2):
+        cx = 0.5 * (x1 + x2)
+        cy = 0.5 * (y1 + y2)
+        return cx, cy
+
+    def _seed_rois_if_needed(self, image_rgb, image_width, image_height, locked_rois, margin_ratio=0.25):
+        """Ensure YOLO is initialized and seed ROIs when none exist."""
+        # Ensure YOLO is loaded
+        self._ensure_yolo()
+        if not locked_rois:
+            results = self.yolo.predict(image_rgb, size=640)
+            boxes = results.xyxy[0]
+            person_boxes = [b[:4].int().tolist() for b in boxes if int(b[5]) == 0]
+            for (x1, y1, x2, y2) in person_boxes:
+                x1e, y1e, x2e, y2e = self._expand_and_clip_bbox(x1, y1, x2, y2, image_width, image_height, margin_ratio=margin_ratio)
+                roi_pose = mp.solutions.pose.Pose(static_image_mode=False, min_detection_confidence=0.7, min_tracking_confidence=0.7, model_complexity=2)
+                locked_rois.append({"x1": x1e, "y1": y1e, "x2": x2e, "y2": y2e, "lost": 0, "pose": roi_pose})
+        return locked_rois
+
+    def _process_multiperson_frame(self, image_rgb, image_width, image_height, locked_rois):
+        """Run pose on existing ROIs, handle reseed when lost, and return mapped landmarks per ROI.
+
+        Returns a list of tuples (person_id, mp_landmarks_mapped) where landmarks are mapped to full frame.
+        """
+        outputs = []
+        if not locked_rois:
+            return outputs, locked_rois
+
+        for person_id, roi in enumerate(locked_rois):
+            x1e, y1e, x2e, y2e = roi["x1"], roi["y1"], roi["x2"], roi["y2"]
+            cropped = image_rgb[y1e:y2e, x1e:x2e]
+            result = roi["pose"].process(cropped)
+            if result.pose_landmarks:
+                roi["lost"] = 0
+                # Map back to full frame coordinates
+                try:
+                    original_landmarks = result.pose_landmarks
+                    for lmk in original_landmarks.landmark:
+                        lmk.x = (lmk.x * (x2e - x1e) + x1e) / image_width
+                        lmk.y = (lmk.y * (y2e - y1e) + y1e) / image_height
+                    outputs.append((person_id, original_landmarks))
+                except Exception:
+                    pass
+            else:
+                roi["lost"] += 1
+                if roi["lost"] >= 10:
+                    # Reseed using nearest YOLO detection
+                    results = self.yolo.predict(image_rgb, size=640)
+                    boxes = results.xyxy[0]
+                    person_boxes = [b[:4].int().tolist() for b in boxes if int(b[5]) == 0]
+                    if person_boxes:
+                        cx, cy = self._roi_center(x1e, y1e, x2e, y2e)
+                        best = None
+                        best_d = None
+                        for (rx1, ry1, rx2, ry2) in person_boxes:
+                            rcx, rcy = self._roi_center(rx1, ry1, rx2, ry2)
+                            d = (rcx - cx) * (rcx - cx) + (rcy - cy) * (rcy - cy)
+                            if best is None or d < best_d:
+                                best = (rx1, ry1, rx2, ry2)
+                                best_d = d
+                        if best is not None:
+                            nx1, ny1, nx2, ny2 = self._expand_and_clip_bbox(best[0], best[1], best[2], best[3], image_width, image_height, margin_ratio=0.25)
+                            try:
+                                roi_pose = roi.get("pose")
+                                if roi_pose is not None:
+                                    roi_pose.close()
+                            except Exception:
+                                pass
+                            roi["x1"], roi["y1"], roi["x2"], roi["y2"] = nx1, ny1, nx2, ny2
+                            roi["pose"] = mp.solutions.pose.Pose(static_image_mode=False, min_detection_confidence=0.7, min_tracking_confidence=0.7, model_complexity=2)
+                            roi["lost"] = 0
+        return outputs, locked_rois
+
+    def _cleanup_locked_rois(self, locked_rois):
+        """Close Mediapipe Pose instances to free resources."""
+        try:
+            for roi in locked_rois:
+                roi_pose = roi.get("pose")
+                if roi_pose is not None:
+                    roi_pose.close()
+        except Exception:
+            pass
+
     def _expand_and_clip_bbox(self, x1, y1, x2, y2, image_width, image_height, margin_ratio=0.12):
         """Expand bbox by margin_ratio on all sides and clip to image bounds.
 
@@ -115,11 +198,6 @@ class PoseProcessor:
         # Each ROI holds its own MediaPipe Pose instance; index in list is stable person_id
         locked_rois = []  # Each item: {"x1":int,"y1":int,"x2":int,"y2":int,"lost":int, "pose": Pose}
 
-        def _roi_center(x1, y1, x2, y2):
-            cx = 0.5 * (x1 + x2)
-            cy = 0.5 * (y1 + y2)
-            return cx, cy
-
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
@@ -131,26 +209,8 @@ class PoseProcessor:
             image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
             if self.enable_multi_person_pose:
-                # Ensure YOLO is loaded
-                self._ensure_yolo()
-
-                # Seed locked ROIs once (or when none exist)
-                if not locked_rois:
-                    results = self.yolo.predict(image_rgb, size=640)
-                    boxes = results.xyxy[0]
-                    person_boxes = [b[:4].int().tolist() for b in boxes if int(b[5]) == 0]
-                    if not person_boxes:
-                        if self.status_callback:
-                            self.status_callback(f"⚠️ No people detected in frame {frame_idx}")
-                        frame_idx += 1
-                        if progress_callback and total_frames > 0:
-                            progress_percent = int((frame_idx / total_frames) * 100)
-                            progress_callback(progress_percent)
-                        continue
-                    for (x1, y1, x2, y2) in person_boxes:
-                        x1e, y1e, x2e, y2e = self._expand_and_clip_bbox(x1, y1, x2, y2, w, h, margin_ratio=0.25)
-                        roi_pose = mp.solutions.pose.Pose(static_image_mode=False, min_detection_confidence=0.7, min_tracking_confidence=0.7, model_complexity=2)
-                        locked_rois.append({"x1": x1e, "y1": y1e, "x2": x2e, "y2": y2e, "lost": 0, "pose": roi_pose})
+                # Seed ROIs using shared pipeline
+                locked_rois = self._seed_rois_if_needed(image_rgb, w, h, locked_rois, margin_ratio=0.25)
 
                 # If still none, skip frame
                 if not locked_rois:
@@ -160,52 +220,15 @@ class PoseProcessor:
                         progress_callback(progress_percent)
                     continue
 
-                # Process each locked ROI
-                for person_id, roi in enumerate(locked_rois):
-                    x1e, y1e, x2e, y2e = roi["x1"], roi["y1"], roi["x2"], roi["y2"]
-                    cropped = image_rgb[y1e:y2e, x1e:x2e]
-                    result = roi["pose"].process(cropped)
-
-                    if result.pose_landmarks:
-                        roi["lost"] = 0
-                        row = [frame_idx, person_id]
-                        for lmk in result.pose_landmarks.landmark:
-                            # Transform coordinates back to original frame and normalize to [0,1]
-                            orig_x = ((lmk.x * (x2e - x1e)) + x1e) / w
-                            orig_y = ((lmk.y * (y2e - y1e)) + y1e) / h
-                            row.extend([orig_x, orig_y, lmk.z, lmk.visibility])
-                        if person_id not in keypoints_by_person:
-                            keypoints_by_person[person_id] = []
-                        keypoints_by_person[person_id].append(row)
-                    else:
-                        roi["lost"] += 1
-                        if roi["lost"] >= 10:
-                            # Re-seed this ROI using nearest current YOLO detection
-                            results = self.yolo.predict(image_rgb, size=640)
-                            boxes = results.xyxy[0]
-                            person_boxes = [b[:4].int().tolist() for b in boxes if int(b[5]) == 0]
-                            if person_boxes:
-                                cx, cy = _roi_center(x1e, y1e, x2e, y2e)
-                                best = None
-                                best_d = None
-                                for (rx1, ry1, rx2, ry2) in person_boxes:
-                                    rcx, rcy = _roi_center(rx1, ry1, rx2, ry2)
-                                    d = (rcx - cx) * (rcx - cx) + (rcy - cy) * (rcy - cy)
-                                    if best is None or d < best_d:
-                                        best = (rx1, ry1, rx2, ry2)
-                                        best_d = d
-                                if best is not None:
-                                    nx1, ny1, nx2, ny2 = self._expand_and_clip_bbox(best[0], best[1], best[2], best[3], w, h, margin_ratio=0.25)
-                                    # Close old Pose and create a new one tied to the new ROI
-                                    try:
-                                        roi_pose = roi.get("pose")
-                                        if roi_pose is not None:
-                                            roi_pose.close()
-                                    except Exception:
-                                        pass
-                                    roi["x1"], roi["y1"], roi["x2"], roi["y2"] = nx1, ny1, nx2, ny2
-                                    roi["pose"] = mp.solutions.pose.Pose(static_image_mode=False, min_detection_confidence=0.7, min_tracking_confidence=0.7, model_complexity=2)
-                                    roi["lost"] = 0
+                # Process using shared multiperson step
+                mp_outputs, locked_rois = self._process_multiperson_frame(image_rgb, w, h, locked_rois)
+                for person_id, mp_landmarks in mp_outputs:
+                    row = [frame_idx, person_id]
+                    for lmk in mp_landmarks.landmark:
+                        row.extend([lmk.x, lmk.y, lmk.z, lmk.visibility])
+                    if person_id not in keypoints_by_person:
+                        keypoints_by_person[person_id] = []
+                    keypoints_by_person[person_id].append(row)
 
             else:
                 # Single-person mode
@@ -224,6 +247,9 @@ class PoseProcessor:
                 progress_callback(progress_percent)
 
         cap.release()
+
+        # Cleanup ROI Pose instances to free resources (match embedding behavior)
+        self._cleanup_locked_rois(locked_rois)
         
         
         # Define DataFrame column names
@@ -282,10 +308,6 @@ class PoseProcessor:
         # Each ROI holds its own MediaPipe Pose instance
         locked_rois = []  # Each item: {"x1":int,"y1":int,"x2":int,"y2":int,"lost":int, "pose": Pose}
 
-        def _roi_center(x1, y1, x2, y2):
-            cx = 0.5 * (x1 + x2)
-            cy = 0.5 * (y1 + y2)
-            return cx, cy
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
@@ -294,18 +316,8 @@ class PoseProcessor:
             image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
             if self.enable_multi_person_pose:
-                # Ensure YOLO is loaded
-                self._ensure_yolo()
-
-                # Seed locked ROIs once, with larger margin for stability
-                if not locked_rois:
-                    results = self.yolo.predict(image_rgb, size=640)
-                    boxes = results.xyxy[0]
-                    person_boxes = [b[:4].int().tolist() for b in boxes if int(b[5]) == 0]
-                    for (x1, y1, x2, y2) in person_boxes:
-                        x1e, y1e, x2e, y2e = self._expand_and_clip_bbox(x1, y1, x2, y2, w, h, margin_ratio=0.25)
-                        roi_pose = mp.solutions.pose.Pose(static_image_mode=False, min_detection_confidence=0.7, min_tracking_confidence=0.7, model_complexity=2)
-                        locked_rois.append({"x1": x1e, "y1": y1e, "x2": x2e, "y2": y2e, "lost": 0, "pose": roi_pose})
+                # Seed ROIs using shared pipeline
+                locked_rois = self._seed_rois_if_needed(image_rgb, w, h, locked_rois, margin_ratio=0.25)
 
                 # If no ROIs found, write frame and continue
                 if not locked_rois:
@@ -316,66 +328,21 @@ class PoseProcessor:
                         progress_callback(progress_percent)
                     continue
 
-                # Process each locked ROI without re-running YOLO every frame
-                for roi in locked_rois:
-                    x1e, y1e, x2e, y2e = roi["x1"], roi["y1"], roi["x2"], roi["y2"]
-                    # Draw ROI rectangle for inspection
+                # Process using shared multiperson step and draw
+                mp_outputs, locked_rois = self._process_multiperson_frame(image_rgb, w, h, locked_rois)
+                for _, mp_landmarks in mp_outputs:
                     try:
-                        cv2.rectangle(frame, (x1e, y1e), (x2e, y2e), (255, 255, 0), 2)
-                    except Exception:
-                        pass
-
-                    cropped = image_rgb[y1e:y2e, x1e:x2e]
-                    result = roi["pose"].process(cropped)
-
-                    if result.pose_landmarks:
-                        roi["lost"] = 0
-                        try:
-                            original_landmarks = result.pose_landmarks
-                            # Map back to full-frame
-                            for lmk in original_landmarks.landmark:
-                                lmk.x = (lmk.x * (x2e - x1e) + x1e) / w
-                                lmk.y = (lmk.y * (y2e - y1e) + y1e) / h
-                            self.drawing_utils.draw_landmarks(
-                                frame, 
-                                original_landmarks, 
-                                mp.solutions.pose.POSE_CONNECTIONS,
-                                landmark_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(color=(0, 255, 0), thickness=3, circle_radius=3),
-                                connection_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(color=(255, 0, 0), thickness=2)
-                            )
-                        except Exception as e:
-                            if self.status_callback:
-                                self.status_callback(f"❌ Error drawing landmarks: {e}")
-                            print(f"Error drawing landmarks: {e}")
-                    else:
-                        roi["lost"] += 1
-                        if roi["lost"] >= 10:
-                            # Re-seed this ROI using nearest current YOLO detection
-                            results = self.yolo.predict(image_rgb, size=640)
-                            boxes = results.xyxy[0]
-                            person_boxes = [b[:4].int().tolist() for b in boxes if int(b[5]) == 0]
-                            if person_boxes:
-                                cx, cy = _roi_center(x1e, y1e, x2e, y2e)
-                                best = None
-                                best_d = None
-                                for (rx1, ry1, rx2, ry2) in person_boxes:
-                                    rcx, rcy = _roi_center(rx1, ry1, rx2, ry2)
-                                    d = (rcx - cx) * (rcx - cx) + (rcy - cy) * (rcy - cy)
-                                    if best is None or d < best_d:
-                                        best = (rx1, ry1, rx2, ry2)
-                                        best_d = d
-                                if best is not None:
-                                    nx1, ny1, nx2, ny2 = self._expand_and_clip_bbox(best[0], best[1], best[2], best[3], w, h, margin_ratio=0.25)
-                                    # Close old Pose and create a new one tied to the new ROI
-                                    try:
-                                        roi_pose = roi.get("pose")
-                                        if roi_pose is not None:
-                                            roi_pose.close()
-                                    except Exception:
-                                        pass
-                                    roi["x1"], roi["y1"], roi["x2"], roi["y2"] = nx1, ny1, nx2, ny2
-                                    roi["pose"] = mp.solutions.pose.Pose(static_image_mode=False, min_detection_confidence=0.7, min_tracking_confidence=0.7, model_complexity=2)
-                                    roi["lost"] = 0
+                        self.drawing_utils.draw_landmarks(
+                            frame,
+                            mp_landmarks,
+                            mp.solutions.pose.POSE_CONNECTIONS,
+                            landmark_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(color=(0, 255, 0), thickness=3, circle_radius=3),
+                            connection_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(color=(255, 0, 0), thickness=2)
+                        )
+                    except Exception as e:
+                        if self.status_callback:
+                            self.status_callback(f"❌ Error drawing landmarks: {e}")
+                        print(f"Error drawing landmarks: {e}")
 
             else:
                 # Single-person mode
@@ -410,11 +377,5 @@ class PoseProcessor:
         cap.release()
         out.release()
         # Cleanup ROI Pose instances
-        try:
-            for roi in locked_rois:
-                roi_pose = roi.get("pose")
-                if roi_pose is not None:
-                    roi_pose.close()
-        except Exception:
-            pass
+        self._cleanup_locked_rois(locked_rois)
         return out_path
