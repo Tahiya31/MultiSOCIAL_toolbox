@@ -16,6 +16,7 @@ import wx
 import librosa
 import torch
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
+ 
 
 # Import the core pose processing class
 from pose import PoseProcessor
@@ -147,15 +148,16 @@ class VideoToWavConverter(wx.Frame):
     def __init__(self, *args, **kw):
         super(VideoToWavConverter, self).__init__(*args, **kw)
         
-        self.Maximize(True)  # Make window full screen responsive
+        # Start at designed size; prevent shrinking below baseline
+        self._baseline_size = None  # will be captured on first resize to drive responsive scaling
         
         pnl = GradientPanel(self)
         vbox = wx.BoxSizer(wx.VERTICAL)
         
-        #status update
-        self.statusLabel = wx.StaticText(pnl, label="", style=wx.ALIGN_CENTER)
+        #status update (top)
+        self.statusLabel = wx.StaticText(pnl, label="", style=wx.ALIGN_CENTER_HORIZONTAL)
         self.statusLabel.SetForegroundColour('#FFFFFF')
-        vbox.Add(self.statusLabel, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+        vbox.Add(self.statusLabel, flag=wx.EXPAND|wx.ALL, border=10)
         
         # Add extra space above the title
         vbox.Add((0, 30))  # Add a 30-pixel high spacer, adjust as needed
@@ -199,19 +201,19 @@ class VideoToWavConverter(wx.Frame):
         
         
         # Title
-        title = wx.StaticText(pnl, label="Welcome to", style=wx.ALIGN_CENTER)
+        self.title = wx.StaticText(pnl, label="Welcome to", style=wx.ALIGN_CENTER)
         title_font = wx.Font(20, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
-        title.SetFont(title_font)
-        title.SetForegroundColour('#FFFFFF')
-        vbox.Add(title, flag=wx.ALIGN_CENTER | wx.BOTTOM, border=10)
+        self.title.SetFont(title_font)
+        self.title.SetForegroundColour('#FFFFFF')
+        vbox.Add(self.title, flag=wx.ALIGN_CENTER | wx.BOTTOM, border=10)
 
         # Logo
-        logo = wx.StaticText(pnl, label="MultiSOCIAL Toolbox", style=wx.ALIGN_CENTER)
+        self.logoLabel = wx.StaticText(pnl, label="MultiSOCIAL Toolbox", style=wx.ALIGN_CENTER)
         font = wx.Font(24, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD)
-        logo.SetFont(font)
-        logo.SetForegroundColour('#FFFFFF')
+        self.logoLabel.SetFont(font)
+        self.logoLabel.SetForegroundColour('#FFFFFF')
 
-        vbox.Add(logo, flag=wx.ALIGN_CENTER|wx.TOP, border=5)  # Adjusted the top border
+        vbox.Add(self.logoLabel, flag=wx.ALIGN_CENTER|wx.TOP, border=5)  # Adjusted the top border
 
         # File Picker
         #self.filePicker = wx.FilePickerCtrl(pnl, message="Select a video or an audio file", wildcard="Video files (*.mp4;*.avi;*.mov;*.mkv)|*.mp4;*.avi;*.mov;*.mkv|WAV files (*.wav)|*.wav")
@@ -221,10 +223,10 @@ class VideoToWavConverter(wx.Frame):
         vbox.Add(self.folderPicker, flag=wx.EXPAND | wx.ALL, border=10,proportion=0)
 
         # Placeholder above buttons
-        placeholder_above = wx.StaticText(pnl, label="If you have a video file:")
+        self.placeholderVideoLabel = wx.StaticText(pnl, label="If you have a video file:")
         placeholder_above_font = wx.Font(20, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
-        placeholder_above.SetFont(placeholder_above_font)
-        vbox.Add(placeholder_above, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+        self.placeholderVideoLabel.SetFont(placeholder_above_font)
+        vbox.Add(self.placeholderVideoLabel, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
 
         # Toggle for multi-person pose (video option)
         self.multiPersonCheckbox = wx.CheckBox(pnl, label="Enable Multi-Person Pose")
@@ -291,9 +293,9 @@ class VideoToWavConverter(wx.Frame):
         vbox.Add(hbox_embed_pose, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
         
         # Placeholder middle
-        placeholder_middle = wx.StaticText(pnl, label="If you have an audio file:")
-        placeholder_middle.SetFont(placeholder_font)
-        vbox.Add(placeholder_middle, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
+        self.placeholderAudioLabel = wx.StaticText(pnl, label="If you have an audio file:")
+        self.placeholderAudioLabel.SetFont(placeholder_font)
+        vbox.Add(self.placeholderAudioLabel, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
 
         # Extract Audio Features Button with Placeholder
         hbox_extract_audio = wx.BoxSizer(wx.HORIZONTAL)
@@ -332,21 +334,83 @@ class VideoToWavConverter(wx.Frame):
         vbox.Add(hbox_extract_transcripts, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
         
         
-        #status update
-        self.statusLabel = wx.StaticText(pnl, label="", style=wx.ALIGN_CENTER)
+        #status update (bottom, red)
+        self.statusLabel = wx.StaticText(pnl, label="", style=wx.ALIGN_CENTER_HORIZONTAL)
         self.statusLabel.SetForegroundColour('#800000')
-        vbox.Add(self.statusLabel, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+        vbox.Add(self.statusLabel, flag=wx.EXPAND|wx.ALL, border=10)
 
         # Progress Bar
         self.progress = wx.Gauge(pnl, range=100, style=wx.GA_HORIZONTAL)
         vbox.Add(self.progress, proportion=1, flag=wx.EXPAND|wx.ALL, border=12)
         
         pnl.SetSizer(vbox)
+        pnl.Layout()
         
-        self.SetSize((400, 800))  # Adjusted the size to accommodate new elements
+        # Capture a design baseline size from the layout's minimum so we scale relative to intended UI, not the maximized size
+        best_min = vbox.CalcMin()
+        # Ensure we have a sensible floor similar to initially set size
+        self._baseline_size = (max(400, best_min.width), max(800, best_min.height))
+        self.SetMinSize(self._baseline_size)
+        
+        # Bind resize handler to make the UI responsive
+        self.Bind(wx.EVT_SIZE, self.on_resize)
+        
+        self.SetSize(self._baseline_size)
         self.SetTitle('MultiSOCIAL Toolbox')
         self.Centre()
         
+    def _scale_font(self, base_point_size, scale):
+        new_size = max(9, int(round(base_point_size * scale)))
+        return wx.Font(new_size, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
+
+    def _scale_bold_font(self, base_point_size, scale):
+        new_size = max(10, int(round(base_point_size * scale)))
+        return wx.Font(new_size, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD)
+
+    def on_resize(self, event):
+        # Establish baseline once
+        if self._baseline_size is None:
+            self._baseline_size = self.GetSize()
+        cur_w, cur_h = self.GetSize()
+        base_w, base_h = self._baseline_size
+        # Compute scale preserving aspect
+        # Do not scale down below baseline; allow growth only and use scrollbars when smaller
+        scale_w = max(cur_w / max(1, base_w), 1.0)
+        scale_h = max(cur_h / max(1, base_h), 1.0)
+        scale = min(scale_w, scale_h, 2.0)
+
+        # Scale title and logo fonts
+        try:
+            self.title.SetFont(self._scale_font(20, scale))
+            self.logoLabel.SetFont(self._scale_bold_font(24, scale))
+            self.placeholderVideoLabel.SetFont(self._scale_font(20, scale))
+            self.placeholderAudioLabel.SetFont(self._scale_font(20, scale))
+            self.multiPersonCheckbox.SetFont(self._scale_font(14, scale))
+            # Buttons
+            button_font = self._scale_font(16, scale)
+            self.convertBtn.SetFont(button_font)
+            self.extractFeaturesBtn.SetFont(button_font)
+            self.embedFeaturesBtn.SetFont(button_font)
+            self.extractAudioFeaturesBtn.SetFont(button_font)
+            self.extractTranscriptsBtn.SetFont(button_font)
+            # Status label: scale font and wrap to panel width for responsiveness
+            if hasattr(self, 'statusLabel') and self.statusLabel:
+                self.statusLabel.SetFont(self._scale_font(12, scale))
+                try:
+                    wrap_width = max(200, int(cur_w * 0.9))
+                    self.statusLabel.Wrap(wrap_width)
+                except Exception:
+                    pass
+            # Progress bar height scaling
+            if hasattr(self, 'progress') and self.progress:
+                self.progress.SetMinSize((-1, max(14, int(18 * scale))))
+        except Exception:
+            pass
+
+        # Relayout after scaling
+        self.Layout()
+        event.Skip()
+
     def set_status_message(self, message):
         """Safely update the status label from any thread."""
         if hasattr(self, 'statusLabel'):
