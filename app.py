@@ -41,6 +41,104 @@ class GradientPanel(wx.Panel):
         dc.GradientFillLinear(rect, '#00695C', '#2E7D32', wx.NORTH)  # Dark Teal to Medium Forest Green
 
 
+class ElevatedLogoPanel(wx.Panel):
+    def __init__(self, parent, logo_bitmap):
+        super(ElevatedLogoPanel, self).__init__(parent)
+        self.logo_bitmap = logo_bitmap
+        self.Bind(wx.EVT_PAINT, self.OnPaint)
+        self.Bind(wx.EVT_ENTER_WINDOW, self.OnMouseEnter)
+        self.Bind(wx.EVT_LEAVE_WINDOW, self.OnMouseLeave)
+        self.hover = False
+        self.scale_factor = 1.0
+        # Simple cache to avoid regenerating the circular bitmap too often
+        self._cached_diameter = None
+        self._cached_circular_bitmap = None
+
+    def _create_circular_bitmap(self, src_bitmap: wx.Bitmap, diameter: int) -> wx.Bitmap:
+        """Return a circular-masked bitmap of the requested diameter.
+        Alpha outside the circle is set to 0 so corners are transparent.
+        """
+        if diameter <= 0:
+            return src_bitmap
+
+        # Return cached if same diameter
+        if self._cached_diameter == diameter and self._cached_circular_bitmap is not None:
+            return self._cached_circular_bitmap
+
+        image = src_bitmap.ConvertToImage()
+        image = image.Scale(diameter, diameter, wx.IMAGE_QUALITY_HIGH)
+
+        if not image.HasAlpha():
+            image.InitAlpha()
+
+        radius = diameter / 2.0
+        cx = radius
+        cy = radius
+
+        # Apply circular alpha mask
+        for y in range(diameter):
+            for x in range(diameter):
+                dx = x - cx
+                dy = y - cy
+                if (dx * dx + dy * dy) <= (radius * radius):
+                    image.SetAlpha(x, y, 255)
+                else:
+                    image.SetAlpha(x, y, 0)
+
+        circ_bmp = wx.Bitmap(image)
+        self._cached_diameter = diameter
+        self._cached_circular_bitmap = circ_bmp
+        return circ_bmp
+ 
+    def OnPaint(self, event):
+        dc = wx.PaintDC(self)
+        rect = self.GetClientRect()
+
+        if not self.logo_bitmap:
+            return
+
+        # Determine circle diameter and center; add small padding so border doesn't clip
+        padding = 6
+        base_diameter = max(10, min(rect.width, rect.height) - padding * 2)
+        diameter = int(base_diameter * self.scale_factor)
+
+        # Center position
+        x = rect.x + (rect.width - diameter) // 2
+        y = rect.y + (rect.height - diameter) // 2
+
+        # Subtle shadow (fake blur via semi-transparent larger ellipse)
+        gc = wx.GraphicsContext.Create(dc)
+        if gc:
+            shadow_color = wx.Colour(0, 0, 0, 60)  # low alpha for soft shadow
+            gc.SetBrush(wx.Brush(shadow_color))
+            gc.SetPen(wx.Pen(shadow_color, 1))
+            gc.DrawEllipse(x + 3, y + 4, diameter, diameter)  # slight offset
+
+        # Prepare circular bitmap and draw
+        circ_bmp = self._create_circular_bitmap(self.logo_bitmap, diameter)
+        dc.DrawBitmap(circ_bmp, x, y, True)
+
+        # Black circular border
+        if gc:
+            gc.SetBrush(wx.TRANSPARENT_BRUSH)
+            gc.SetPen(wx.Pen(wx.Colour(0, 0, 0), 3))
+            gc.DrawEllipse(x, y, diameter, diameter)
+
+    def OnMouseEnter(self, event):
+        self.hover = True
+        self.scale_factor = 1.08  # pop a bit more on hover
+        self.SetCursor(wx.Cursor(wx.CURSOR_HAND))
+        self.Refresh()
+        event.Skip()
+     
+    def OnMouseLeave(self, event):
+        self.hover = False
+        self.scale_factor = 1.0
+        self.SetCursor(wx.Cursor(wx.CURSOR_ARROW))
+        self.Refresh()
+        event.Skip()
+
+
 class CustomTooltip(wx.PopupWindow):
     def __init__(self, parent, text):
         super(CustomTooltip, self).__init__(parent, wx.SIMPLE_BORDER)
@@ -169,16 +267,18 @@ class VideoToWavConverter(wx.Frame):
         # Top layout for logo and title
         top_box = wx.BoxSizer(wx.HORIZONTAL)
         
-        # Logo image
+        # Logo image with elevated presentation
         logo_path = "MultiSOCIAL_logo.png"  # Path to your logo image
         logo_image = wx.Image(logo_path, wx.BITMAP_TYPE_ANY)
         logo_image = logo_image.Scale(logo_size, logo_size, wx.IMAGE_QUALITY_HIGH)
         logo_bmp = wx.Bitmap(logo_image)
         
-        logo_bitmap = wx.StaticBitmap(pnl, bitmap = logo_bmp)
+        # Create elevated logo panel with shadow and rounded corners
+        elevated_logo = ElevatedLogoPanel(pnl, logo_bmp)
+        elevated_logo.SetMinSize((logo_size + 20, logo_size + 20))  # Add padding around logo
         
         top_box.AddStretchSpacer(1)
-        top_box.Add(logo_bitmap, flag=wx.ALIGN_CENTER | wx.ALL, border=10)
+        top_box.Add(elevated_logo, flag=wx.ALIGN_CENTER | wx.ALL, border=15)
         top_box.AddStretchSpacer(1)
 
         vbox.Add(top_box, flag=wx.EXPAND | wx.TOP | wx.BOTTOM, border=10)
@@ -233,6 +333,19 @@ class VideoToWavConverter(wx.Frame):
         self.multiPersonCheckbox.SetFont(wx.Font(14, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
         self.multiPersonCheckbox.SetForegroundColour('#FFFFFF')
         vbox.Add(self.multiPersonCheckbox, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+
+        # Frame threshold input for bounding box recalibration
+        frame_threshold_box = wx.BoxSizer(wx.HORIZONTAL)
+        frame_threshold_label = wx.StaticText(pnl, label="Frame Threshold for Bounding Box Recalibration:")
+        frame_threshold_label.SetFont(wx.Font(12, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+        frame_threshold_label.SetForegroundColour('#FFFFFF')
+        frame_threshold_box.Add(frame_threshold_label, flag=wx.ALIGN_CENTER_VERTICAL|wx.RIGHT, border=10)
+        
+        self.frameThresholdInput = wx.SpinCtrl(pnl, value="10", min=1, max=100)
+        self.frameThresholdInput.SetFont(wx.Font(12, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+        frame_threshold_box.Add(self.frameThresholdInput, flag=wx.ALIGN_CENTER_VERTICAL)
+        
+        vbox.Add(frame_threshold_box, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
 
         # Button Font
         button_font = wx.Font(16, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
@@ -386,6 +499,9 @@ class VideoToWavConverter(wx.Frame):
             self.placeholderVideoLabel.SetFont(self._scale_font(20, scale))
             self.placeholderAudioLabel.SetFont(self._scale_font(20, scale))
             self.multiPersonCheckbox.SetFont(self._scale_font(14, scale))
+            # Frame threshold elements
+            if hasattr(self, 'frameThresholdInput'):
+                self.frameThresholdInput.SetFont(self._scale_font(12, scale))
             # Buttons
             button_font = self._scale_font(16, scale)
             self.convertBtn.SetFont(button_font)
@@ -551,7 +667,7 @@ class VideoToWavConverter(wx.Frame):
         """Batch process all video files to extract pose features."""
         total_files = len(video_files)
         
-        pose_processor = PoseProcessor(self.extracted_pose_folder, status_callback=self.set_status_message)
+        pose_processor = PoseProcessor(self.extracted_pose_folder, status_callback=self.set_status_message, frame_threshold=self.frameThresholdInput.GetValue())
         pose_processor.set_multi_person_mode(self.multiPersonCheckbox.GetValue())
 
         for index, video_file in enumerate(video_files, start=1):
@@ -581,7 +697,7 @@ class VideoToWavConverter(wx.Frame):
         video_files = self.get_files_from_folder(folder_path, (".mp4", ".avi", ".mov"))
         
       
-        pose_processor = PoseProcessor(output_csv_folder=self.extracted_pose_folder,output_video_folder=self.embedded_pose_folder)
+        pose_processor = PoseProcessor(output_csv_folder=self.extracted_pose_folder, output_video_folder=self.embedded_pose_folder, frame_threshold=self.frameThresholdInput.GetValue())
         pose_processor.set_multi_person_mode(self.multiPersonCheckbox.GetValue())
         
         if not video_files:
