@@ -30,12 +30,16 @@ def ensure_yolov5_weights():
 
 # Core pose processor class
 class PoseProcessor:
-    def __init__(self, output_csv_folder, output_video_folder=None, status_callback=None, frame_threshold=10):
+    def __init__(self, output_csv_folder, output_video_folder=None, status_callback=None, frame_threshold=10, frame_stride=1, downscale_to=None):
         self.output_csv_folder = output_csv_folder
         self.output_video_folder = output_video_folder
         self.status_callback = status_callback  
         self.enable_multi_person_pose = False  # Default to single person mode
         self.frame_threshold = frame_threshold  # Configurable threshold for bounding box recalibration
+        # Optional performance knobs
+        self.frame_stride = max(1, int(frame_stride))
+        # downscale_to: tuple (target_width, target_height) or None
+        self.downscale_to = downscale_to if (isinstance(downscale_to, tuple) and len(downscale_to) == 2) else None
         # Frame counters for optional maintenance tasks
         self._frame_counter = 0
         # Disable periodic global reassignment to reduce jitter; set >0 to enable
@@ -308,12 +312,13 @@ class PoseProcessor:
     def extract_pose_features(self, video_path, progress_callback=None):
         """Extract pose features from video, saving one CSV per person."""
         cap = cv2.VideoCapture(video_path)
-        frame_idx = 0
+        raw_frame_idx = 0
+        frame_idx = 0  # processed frame index (after stride)
         keypoints_by_person = {} # Dictionary to store keypoints per person
         
         # Get video dimensions for coordinate normalization
-        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
         # Get total frame count for progress tracking
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -332,11 +337,28 @@ class PoseProcessor:
             ret, frame = cap.read()
             if not ret:
                 break
-              
+            # Frame downsampling (process every k-th frame)
+            if self.frame_stride > 1 and (raw_frame_idx % self.frame_stride) != 0:
+                raw_frame_idx += 1
+                continue
+
+            # Resolution downscaling (process at reduced size)
+            proc_frame = frame
+            if self.downscale_to is not None and orig_w > 0 and orig_h > 0:
+                target_w, target_h = self.downscale_to
+                # preserve aspect ratio by fitting within target box
+                scale = min(target_w / max(1, orig_w), target_h / max(1, orig_h))
+                new_w = max(1, int(orig_w * scale))
+                new_h = max(1, int(orig_h * scale))
+                if new_w != orig_w or new_h != orig_h:
+                    proc_frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            w = proc_frame.shape[1]
+            h = proc_frame.shape[0]
+
             if self.status_callback:
                 self.status_callback(f"📸 Extracting pose from: {os.path.basename(video_path)} (Frame {frame_idx + 1}/{total_frames})")
 
-            image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            image_rgb = cv2.cvtColor(proc_frame, cv2.COLOR_BGR2RGB)
 
             if self.enable_multi_person_pose:
                 # Seed ROIs using shared pipeline
@@ -369,6 +391,7 @@ class PoseProcessor:
                         row.extend([lmk.x, lmk.y, lmk.z, lmk.visibility])
                     keypoints_by_person[0] = keypoints_by_person.get(0, []) + [row]
 
+            raw_frame_idx += 1
             frame_idx += 1
             
             # Update progress if callback provided
@@ -416,8 +439,8 @@ class PoseProcessor:
 
         cap = cv2.VideoCapture(video_path)
         fps = int(cap.get(cv2.CAP_PROP_FPS))
-        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
         # Get total frame count for progress tracking
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -431,8 +454,16 @@ class PoseProcessor:
         suffix = "_multi" if self.enable_multi_person_pose else ""
         filename = os.path.splitext(os.path.basename(video_path))[0] + f"{suffix}_pose.mp4"
         out_path = os.path.join(self.output_video_folder, filename)
-        out = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+        # Determine processing size
+        proc_w, proc_h = orig_w, orig_h
+        if self.downscale_to is not None and orig_w > 0 and orig_h > 0:
+            target_w, target_h = self.downscale_to
+            scale = min(target_w / max(1, orig_w), target_h / max(1, orig_h))
+            proc_w = max(1, int(orig_w * scale))
+            proc_h = max(1, int(orig_h * scale))
+        out = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (proc_w, proc_h))
 
+        raw_frame_idx = 0
         frame_idx = 0
         # Maintain locked ROIs across frames for multi-person mode
         # Each ROI holds its own MediaPipe Pose instance
@@ -443,15 +474,36 @@ class PoseProcessor:
             if not ret:
                 break
 
-            image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # Frame downsampling
+            if self.frame_stride > 1 and (raw_frame_idx % self.frame_stride) != 0:
+                # Still write a frame (without new overlay) to maintain FPS
+                # If downscaling is enabled, resize to proc size
+                if self.downscale_to is not None and (frame.shape[1] != proc_w or frame.shape[0] != proc_h):
+                    frame_out = cv2.resize(frame, (proc_w, proc_h), interpolation=cv2.INTER_AREA)
+                else:
+                    frame_out = frame
+                out.write(frame_out)
+                raw_frame_idx += 1
+                frame_idx += 1
+                if progress_callback and total_frames > 0:
+                    progress_percent = int((frame_idx / total_frames) * 100)
+                    progress_callback(progress_percent)
+                continue
+
+            # Resolution downscaling
+            proc_frame = frame
+            if (proc_w != frame.shape[1]) or (proc_h != frame.shape[0]):
+                proc_frame = cv2.resize(frame, (proc_w, proc_h), interpolation=cv2.INTER_AREA)
+
+            image_rgb = cv2.cvtColor(proc_frame, cv2.COLOR_BGR2RGB)
 
             if self.enable_multi_person_pose:
                 # Seed ROIs using shared pipeline
-                locked_rois = self._seed_rois_if_needed(image_rgb, w, h, locked_rois, margin_ratio=0.25)
+                locked_rois = self._seed_rois_if_needed(image_rgb, proc_w, proc_h, locked_rois, margin_ratio=0.25)
 
                 # If no ROIs found, write frame and continue
                 if not locked_rois:
-                    out.write(frame)
+                    out.write(proc_frame)
                     frame_idx += 1
                     if progress_callback and total_frames > 0:
                         progress_percent = int((frame_idx / total_frames) * 100)
@@ -459,11 +511,11 @@ class PoseProcessor:
                     continue
 
                 # Process using shared multiperson step and draw
-                mp_outputs, locked_rois = self._process_multiperson_frame(image_rgb, w, h, locked_rois)
+                mp_outputs, locked_rois = self._process_multiperson_frame(image_rgb, proc_w, proc_h, locked_rois)
                 for _, mp_landmarks in mp_outputs:
                     try:
                         self.drawing_utils.draw_landmarks(
-                            frame,
+                            proc_frame,
                             mp_landmarks,
                             mp.solutions.pose.POSE_CONNECTIONS,
                             landmark_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(color=(0, 255, 0), thickness=3, circle_radius=3),
@@ -495,8 +547,9 @@ class PoseProcessor:
                     if self.status_callback:
                         self.status_callback("⚠️ No landmarks detected (single-person mode)")
 
-            out.write(frame)
+            out.write(proc_frame)
             
+            raw_frame_idx += 1
             frame_idx += 1
             
             # Update progress if callback provided

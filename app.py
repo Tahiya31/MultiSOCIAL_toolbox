@@ -334,6 +334,26 @@ class VideoToWavConverter(wx.Frame):
         self.multiPersonCheckbox.SetForegroundColour('#FFFFFF')
         vbox.Add(self.multiPersonCheckbox, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
 
+        # Downsampling controls
+        ds_box = wx.BoxSizer(wx.HORIZONTAL)
+        # Frame stride
+        ds_label = wx.StaticText(pnl, label="Process every k-th frame:")
+        ds_label.SetFont(wx.Font(12, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+        ds_label.SetForegroundColour('#FFFFFF')
+        ds_box.Add(ds_label, flag=wx.ALIGN_CENTER_VERTICAL|wx.RIGHT, border=8)
+
+        self.frameStrideInput = wx.SpinCtrl(pnl, value="1", min=1, max=10)
+        self.frameStrideInput.SetFont(wx.Font(12, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+        ds_box.Add(self.frameStrideInput, flag=wx.ALIGN_CENTER_VERTICAL|wx.RIGHT, border=20)
+
+        # Resolution downscale checkbox (fixed 720p)
+        self.downscaleCheckbox = wx.CheckBox(pnl, label="Downscale to 720p for processing")
+        self.downscaleCheckbox.SetFont(wx.Font(12, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+        self.downscaleCheckbox.SetForegroundColour('#FFFFFF')
+        ds_box.Add(self.downscaleCheckbox, flag=wx.ALIGN_CENTER_VERTICAL)
+
+        vbox.Add(ds_box, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+
         # Frame threshold input for bounding box recalibration
         frame_threshold_box = wx.BoxSizer(wx.HORIZONTAL)
         frame_threshold_label = wx.StaticText(pnl, label="Frame Threshold for Bounding Box Recalibration:")
@@ -499,6 +519,10 @@ class VideoToWavConverter(wx.Frame):
             self.placeholderVideoLabel.SetFont(self._scale_font(20, scale))
             self.placeholderAudioLabel.SetFont(self._scale_font(20, scale))
             self.multiPersonCheckbox.SetFont(self._scale_font(14, scale))
+            if hasattr(self, 'frameStrideInput'):
+                self.frameStrideInput.SetFont(self._scale_font(12, scale))
+            if hasattr(self, 'downscaleCheckbox'):
+                self.downscaleCheckbox.SetFont(self._scale_font(12, scale))
             # Frame threshold elements
             if hasattr(self, 'frameThresholdInput'):
                 self.frameThresholdInput.SetFont(self._scale_font(12, scale))
@@ -667,7 +691,15 @@ class VideoToWavConverter(wx.Frame):
         """Batch process all video files to extract pose features."""
         total_files = len(video_files)
         
-        pose_processor = PoseProcessor(self.extracted_pose_folder, status_callback=self.set_status_message, frame_threshold=self.frameThresholdInput.GetValue())
+        # Read processing options
+        stride_val = 1
+        try:
+            stride_val = max(1, int(self.frameStrideInput.GetValue()))
+        except Exception:
+            stride_val = 1
+        downscale_to = (1280, 720) if (hasattr(self, 'downscaleCheckbox') and self.downscaleCheckbox.GetValue()) else None
+
+        pose_processor = PoseProcessor(self.extracted_pose_folder, status_callback=self.set_status_message, frame_threshold=self.frameThresholdInput.GetValue(), frame_stride=stride_val, downscale_to=downscale_to)
         pose_processor.set_multi_person_mode(self.multiPersonCheckbox.GetValue())
 
         for index, video_file in enumerate(video_files, start=1):
@@ -697,7 +729,14 @@ class VideoToWavConverter(wx.Frame):
         video_files = self.get_files_from_folder(folder_path, (".mp4", ".avi", ".mov"))
         
       
-        pose_processor = PoseProcessor(output_csv_folder=self.extracted_pose_folder, output_video_folder=self.embedded_pose_folder, frame_threshold=self.frameThresholdInput.GetValue())
+        stride_val = 1
+        try:
+            stride_val = max(1, int(self.frameStrideInput.GetValue()))
+        except Exception:
+            stride_val = 1
+        downscale_to = (1280, 720) if (hasattr(self, 'downscaleCheckbox') and self.downscaleCheckbox.GetValue()) else None
+
+        pose_processor = PoseProcessor(output_csv_folder=self.extracted_pose_folder, output_video_folder=self.embedded_pose_folder, frame_threshold=self.frameThresholdInput.GetValue(), frame_stride=stride_val, downscale_to=downscale_to)
         pose_processor.set_multi_person_mode(self.multiPersonCheckbox.GetValue())
         
         if not video_files:
