@@ -8,6 +8,8 @@ import os
 import cv2
 import mediapipe as mp
 import pandas as pd
+import numpy as np
+from scipy.optimize import linear_sum_assignment
 from yolov5 import YOLOv5
 
 def ensure_yolov5_weights():
@@ -28,11 +30,20 @@ def ensure_yolov5_weights():
 
 # Core pose processor class
 class PoseProcessor:
-    def __init__(self, output_csv_folder, output_video_folder=None, status_callback=None):
+    def __init__(self, output_csv_folder, output_video_folder=None, status_callback=None, frame_threshold=10):
         self.output_csv_folder = output_csv_folder
         self.output_video_folder = output_video_folder
         self.status_callback = status_callback  
         self.enable_multi_person_pose = False  # Default to single person mode
+        self.frame_threshold = frame_threshold  # Configurable threshold for bounding box recalibration
+        # Frame counters for optional maintenance tasks
+        self._frame_counter = 0
+        # Disable periodic global reassignment to reduce jitter; set >0 to enable
+        self._reassign_period = 0
+        # Lightweight periodic spawn-only check to detect new entrants without moving existing ROIs
+        self._spawn_period = 10
+        # Light smoothing for ROI box updates to reduce micro jitter
+        self.smooth_alpha = 0.5
         
         # Initialize Mediapipe Pose
         self.pose = mp.solutions.pose.Pose(static_image_mode=False, min_detection_confidence=0.7, min_tracking_confidence=0.7, model_complexity=1)
@@ -57,7 +68,7 @@ class PoseProcessor:
             for (x1, y1, x2, y2) in person_boxes:
                 x1e, y1e, x2e, y2e = self._expand_and_clip_bbox(x1, y1, x2, y2, image_width, image_height, margin_ratio=margin_ratio)
                 roi_pose = mp.solutions.pose.Pose(static_image_mode=False, min_detection_confidence=0.7, min_tracking_confidence=0.7, model_complexity=2)
-                locked_rois.append({"x1": x1e, "y1": y1e, "x2": x2e, "y2": y2e, "lost": 0, "pose": roi_pose})
+                locked_rois.append({"x1": x1e, "y1": y1e, "x2": x2e, "y2": y2e, "lost": 0, "pose": roi_pose, "overlap_streak": 0})
         return locked_rois
 
     def _process_multiperson_frame(self, image_rgb, image_width, image_height, locked_rois):
@@ -68,6 +79,9 @@ class PoseProcessor:
         outputs = []
         if not locked_rois:
             return outputs, locked_rois
+
+        # Track which ROIs need reseed this frame
+        rois_needing_reseed = []  # list of indices
 
         for person_id, roi in enumerate(locked_rois):
             x1e, y1e, x2e, y2e = roi["x1"], roi["y1"], roi["x2"], roi["y2"]
@@ -86,32 +100,120 @@ class PoseProcessor:
                     pass
             else:
                 roi["lost"] += 1
-                if roi["lost"] >= 10:
-                    # Reseed using nearest YOLO detection
-                    results = self.yolo.predict(image_rgb, size=640)
-                    boxes = results.xyxy[0]
-                    person_boxes = [b[:4].int().tolist() for b in boxes if int(b[5]) == 0]
-                    if person_boxes:
-                        cx, cy = self._roi_center(x1e, y1e, x2e, y2e)
-                        best = None
-                        best_d = None
-                        for (rx1, ry1, rx2, ry2) in person_boxes:
-                            rcx, rcy = self._roi_center(rx1, ry1, rx2, ry2)
-                            d = (rcx - cx) * (rcx - cx) + (rcy - cy) * (rcy - cy)
-                            if best is None or d < best_d:
-                                best = (rx1, ry1, rx2, ry2)
-                                best_d = d
-                        if best is not None:
-                            nx1, ny1, nx2, ny2 = self._expand_and_clip_bbox(best[0], best[1], best[2], best[3], image_width, image_height, margin_ratio=0.25)
+                if roi["lost"] >= self.frame_threshold:
+                    rois_needing_reseed.append(person_id)
+
+        # Perform a single reseed step using global one-to-one assignment
+        if rois_needing_reseed:
+            results = self.yolo.predict(image_rgb, size=640)
+            boxes = results.xyxy[0]
+            person_boxes = [b[:4].int().tolist() for b in boxes if int(b[5]) == 0]
+
+            # Reserve detections that belong to healthy ROIs so lost ROIs can't take them
+            healthy_indices = [i for i, r in enumerate(locked_rois) if r.get("lost", 0) == 0]
+            healthy_boxes = [(locked_rois[i]["x1"], locked_rois[i]["y1"], locked_rois[i]["x2"], locked_rois[i]["y2"]) for i in healthy_indices]
+            reserved_iou = 0.5
+            filtered_boxes = []
+            for (x1, y1, x2, y2) in person_boxes:
+                keep = True
+                for hb in healthy_boxes:
+                    if self._iou((x1, y1, x2, y2), hb) >= reserved_iou:
+                        keep = False
+                        break
+                if keep:
+                    filtered_boxes.append((x1, y1, x2, y2))
+            person_boxes = filtered_boxes
+
+            if person_boxes:
+                # Build blended cost matrix: normalized distance + lambda*(1 - IoU)
+                roi_centers = []
+                for idx in rois_needing_reseed:
+                    r = locked_rois[idx]
+                    roi_centers.append(self._roi_center(r["x1"], r["y1"], r["x2"], r["y2"]))
+
+                det_centers = [self._roi_center(x1, y1, x2, y2) for (x1, y1, x2, y2) in person_boxes]
+
+                diag = np.sqrt(image_width * image_width + image_height * image_height)
+                lambda_iou = 0.5
+                cost = np.zeros((len(rois_needing_reseed), len(person_boxes)), dtype=np.float32)
+                for i, (cx, cy) in enumerate(roi_centers):
+                    for j, (dcx, dcy) in enumerate(det_centers):
+                        dx = dcx - cx
+                        dy = dcy - cy
+                        dist_norm = np.sqrt(dx * dx + dy * dy) / max(1e-6, diag)
+                        # IoU between ROI box and detection box
+                        rr = locked_rois[rois_needing_reseed[i]]
+                        iou_val = self._iou((rr["x1"], rr["y1"], rr["x2"], rr["y2"]), tuple(person_boxes[j]))
+                        cost[i, j] = dist_norm + lambda_iou * (1.0 - float(iou_val))
+
+                # Hungarian assignment ensures one-to-one mapping
+                row_ind, col_ind = linear_sum_assignment(cost)
+
+                # Optional gating: ignore matches beyond a distance threshold (8% of image diagonal)
+                max_dist = 0.08 * diag
+
+                for r_i, c_j in zip(row_ind, col_ind):
+                    if r_i < len(rois_needing_reseed) and c_j < len(person_boxes):
+                        if cost[r_i, c_j] <= max_dist:
+                            roi_index = rois_needing_reseed[r_i]
+                            rx1, ry1, rx2, ry2 = person_boxes[c_j]
+                            nx1, ny1, nx2, ny2 = self._expand_and_clip_bbox(rx1, ry1, rx2, ry2, image_width, image_height, margin_ratio=0.25)
+                            # Final conflict check against healthy ROIs
+                            conflict = False
+                            for hb in healthy_boxes:
+                                if self._iou((nx1, ny1, nx2, ny2), hb) >= reserved_iou:
+                                    conflict = True
+                                    break
+                            if conflict:
+                                continue
+                            roi = locked_rois[roi_index]
                             try:
                                 roi_pose = roi.get("pose")
                                 if roi_pose is not None:
                                     roi_pose.close()
                             except Exception:
                                 pass
-                            roi["x1"], roi["y1"], roi["x2"], roi["y2"] = nx1, ny1, nx2, ny2
+                            sx1, sy1, sx2, sy2 = self._smooth_box((roi["x1"], roi["y1"], roi["x2"], roi["y2"]), (nx1, ny1, nx2, ny2), self.smooth_alpha)
+                            roi["x1"], roi["y1"], roi["x2"], roi["y2"] = sx1, sy1, sx2, sy2
                             roi["pose"] = mp.solutions.pose.Pose(static_image_mode=False, min_detection_confidence=0.7, min_tracking_confidence=0.7, model_complexity=2)
                             roi["lost"] = 0
+
+        # Increment frame counter for optional tasks (no global reassignment by default)
+        self._frame_counter += 1
+
+        # Post-assignment deduplication with short persistence using IoU
+        try:
+            n = len(locked_rois)
+            to_remove = set()
+            for i in range(n):
+                if i in to_remove:
+                    continue
+                for j in range(i + 1, n):
+                    if j in to_remove:
+                        continue
+                    iou_val = self._iou((locked_rois[i]["x1"], locked_rois[i]["y1"], locked_rois[i]["x2"], locked_rois[i]["y2"]),
+                                        (locked_rois[j]["x1"], locked_rois[j]["y1"], locked_rois[j]["x2"], locked_rois[j]["y2"]))
+                    if iou_val > 0.55:
+                        locked_rois[i]["overlap_streak"] = locked_rois[i].get("overlap_streak", 0) + 1
+                        locked_rois[j]["overlap_streak"] = locked_rois[j].get("overlap_streak", 0) + 1
+                        if locked_rois[i]["overlap_streak"] >= 3 and locked_rois[j]["overlap_streak"] >= 3:
+                            drop = i if locked_rois[i]["lost"] >= locked_rois[j]["lost"] else j
+                            try:
+                                roi_pose = locked_rois[drop].get("pose")
+                                if roi_pose is not None:
+                                    roi_pose.close()
+                            except Exception:
+                                pass
+                            to_remove.add(drop)
+                    else:
+                        locked_rois[i]["overlap_streak"] = 0
+                        locked_rois[j]["overlap_streak"] = 0
+
+            if to_remove:
+                locked_rois = [r for idx, r in enumerate(locked_rois) if idx not in to_remove]
+        except Exception:
+            pass
+
         return outputs, locked_rois
 
     def _cleanup_locked_rois(self, locked_rois):
@@ -157,6 +259,34 @@ class PoseProcessor:
             ey2 = min(image_height * 1.0, ey1 + 1.0)
 
         return int(ex1), int(ey1), int(ex2), int(ey2)
+
+    def _smooth_box(self, old_box, new_box, alpha):
+        """EMA smoothing between old and new box; returns integer box."""
+        ox1, oy1, ox2, oy2 = old_box
+        nx1, ny1, nx2, ny2 = new_box
+        sx1 = int(alpha * nx1 + (1.0 - alpha) * ox1)
+        sy1 = int(alpha * ny1 + (1.0 - alpha) * oy1)
+        sx2 = int(alpha * nx2 + (1.0 - alpha) * ox2)
+        sy2 = int(alpha * ny2 + (1.0 - alpha) * oy2)
+        return sx1, sy1, sx2, sy2
+
+    def _iou(self, a, b):
+        """Compute IoU between boxes a and b given as (x1,y1,x2,y2)."""
+        ax1, ay1, ax2, ay2 = a
+        bx1, by1, bx2, by2 = b
+        inter_x1 = max(ax1, bx1)
+        inter_y1 = max(ay1, by1)
+        inter_x2 = min(ax2, bx2)
+        inter_y2 = min(ay2, by2)
+        inter_w = max(0, inter_x2 - inter_x1)
+        inter_h = max(0, inter_y2 - inter_y1)
+        inter_area = inter_w * inter_h
+        area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+        area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
+        union = area_a + area_b - inter_area
+        if union <= 0:
+            return 0.0
+        return float(inter_area) / float(union)
 
     def set_multi_person_mode(self, enabled: bool):
         """Enable or disable multi-person pose mode."""
