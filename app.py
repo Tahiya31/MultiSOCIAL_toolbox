@@ -33,10 +33,11 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # Make sure the system uses the GPU
 class GradientPanel(wx.Panel):
     def __init__(self, parent):
         super(GradientPanel, self).__init__(parent)
+        self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
         self.Bind(wx.EVT_PAINT, self.OnPaint)
 
     def OnPaint(self, event):
-        dc = wx.PaintDC(self)
+        dc = wx.AutoBufferedPaintDC(self)
         rect = self.GetClientRect()
         dc.GradientFillLinear(rect, '#00695C', '#2E7D32', wx.NORTH)  # Dark Teal to Medium Forest Green
 
@@ -44,6 +45,7 @@ class GradientPanel(wx.Panel):
 class ElevatedLogoPanel(wx.Panel):
     def __init__(self, parent, logo_bitmap):
         super(ElevatedLogoPanel, self).__init__(parent)
+        self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
         self.logo_bitmap = logo_bitmap
         self.Bind(wx.EVT_PAINT, self.OnPaint)
         self.Bind(wx.EVT_ENTER_WINDOW, self.OnMouseEnter)
@@ -91,7 +93,7 @@ class ElevatedLogoPanel(wx.Panel):
         return circ_bmp
  
     def OnPaint(self, event):
-        dc = wx.PaintDC(self)
+        dc = wx.AutoBufferedPaintDC(self)
         rect = self.GetClientRect()
 
         if not self.logo_bitmap:
@@ -169,8 +171,10 @@ class CustomTooltip(wx.PopupWindow):
 class InfoIcon(wx.StaticText):
     def __init__(self, parent, tooltip_text):
         super(InfoIcon, self).__init__(parent, label="ℹ", style=wx.ALIGN_CENTER)
+        self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
         self.tooltip_text = tooltip_text
         self.tooltip = None
+        self._top_level = self.GetTopLevelParent()
         
         # Style the info icon
         self.SetFont(wx.Font(12, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
@@ -183,9 +187,15 @@ class InfoIcon(wx.StaticText):
         self.Bind(wx.EVT_LEAVE_WINDOW, self.OnMouseLeave)
         self.Bind(wx.EVT_MOTION, self.OnMouseMove)
         self.Bind(wx.EVT_PAINT, self.OnPaint)
+        # Hide tooltip when the window moves/resizes to avoid misplacement
+        if self._top_level:
+            self._top_level.Bind(wx.EVT_MOVE, self._on_parent_move_or_resize)
+            self._top_level.Bind(wx.EVT_SIZE, self._on_parent_move_or_resize)
+        # Cleanup bindings on destroy
+        self.Bind(wx.EVT_WINDOW_DESTROY, self._on_destroy)
     
     def OnPaint(self, event):
-        dc = wx.PaintDC(self)
+        dc = wx.AutoBufferedPaintDC(self)
         rect = self.GetClientRect()
         
         # Draw circular background
@@ -229,6 +239,24 @@ class InfoIcon(wx.StaticText):
             self.tooltip.Position((tooltip_x, tooltip_y), (0, 0))
             self.tooltip.Show()
 
+    def _on_parent_move_or_resize(self, event):
+        if self.tooltip:
+            try:
+                self.tooltip.Hide()
+            except Exception:
+                pass
+        event.Skip()
+
+    def _on_destroy(self, event):
+        # Unbind move/size handlers when this icon is destroyed
+        try:
+            if self._top_level:
+                self._top_level.Unbind(wx.EVT_MOVE, handler=self._on_parent_move_or_resize)
+                self._top_level.Unbind(wx.EVT_SIZE, handler=self._on_parent_move_or_resize)
+        except Exception:
+            pass
+        event.Skip()
+
 
 class TooltipButton(wx.Button):
     def __init__(self, parent, label, tooltip_text):
@@ -252,10 +280,7 @@ class VideoToWavConverter(wx.Frame):
         pnl = GradientPanel(self)
         vbox = wx.BoxSizer(wx.VERTICAL)
         
-        #status update (top)
-        self.statusLabel = wx.StaticText(pnl, label="", style=wx.ALIGN_CENTER_HORIZONTAL)
-        self.statusLabel.SetForegroundColour('#FFFFFF')
-        vbox.Add(self.statusLabel, flag=wx.EXPAND|wx.ALL, border=10)
+        # (removed top status label to avoid duplication)
         
         # Add extra space above the title
         vbox.Add((0, 30))  # Add a 30-pixel high spacer, adjust as needed
@@ -425,6 +450,16 @@ class VideoToWavConverter(wx.Frame):
 
         vbox.Add(hbox_embed_pose, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
         
+        # Verify Consistency Button
+        hbox_verify = wx.BoxSizer(wx.HORIZONTAL)
+        self.verifyBtn = TooltipButton(pnl, 'Verify Consistency', 'Verifies that embedded videos match extracted pose CSVs and saves a report with worst-frame thumbnails.')
+        self.verifyBtn.SetFont(button_font)
+        self.verifyBtn.Bind(wx.EVT_BUTTON, self.on_verify_consistency)
+        hbox_verify.Add(self.verifyBtn, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
+        info_icon = self.verifyBtn.add_info_icon(pnl)
+        hbox_verify.Add(info_icon, flag=wx.ALIGN_CENTER|wx.LEFT, border=5)
+        vbox.Add(hbox_verify, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
+
         # Placeholder middle
         self.placeholderAudioLabel = wx.StaticText(pnl, label="If you have an audio file:")
         self.placeholderAudioLabel.SetFont(placeholder_font)
@@ -539,6 +574,10 @@ class VideoToWavConverter(wx.Frame):
                 try:
                     wrap_width = max(200, int(cur_w * 0.9))
                     self.statusLabel.Wrap(wrap_width)
+                    # Re-apply centering after Wrap, which can reset alignment
+                    self.statusLabel.SetWindowStyleFlag(
+                        self.statusLabel.GetWindowStyle() | wx.ALIGN_CENTER_HORIZONTAL
+                    )
                 except Exception:
                     pass
             # Progress bar height scaling
@@ -636,6 +675,101 @@ class VideoToWavConverter(wx.Frame):
 
         wx.MessageBox("Video to audio conversion completed!", "Success", wx.OK | wx.ICON_INFORMATION)
         self.update_progress(0)  # Reset progress bar
+
+    def on_verify_consistency(self, event):
+        folder_path = self.folderPicker.GetPath()
+        if not folder_path:
+            wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        # Ensure folders and also create verification output dirs
+        self.ensure_output_folders(folder_path)
+        if not self.extracted_pose_folder or not self.embedded_pose_folder:
+            wx.MessageBox("No pose or embedded outputs found. Extract and embed first.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        verification_dir = os.path.join(folder_path, "verification")
+        os.makedirs(verification_dir, exist_ok=True)
+        worst_frames_root = os.path.join(verification_dir, "worst_frames")
+        os.makedirs(worst_frames_root, exist_ok=True)
+
+        # Collect embedded videos and match CSVs by basename
+        embedded_videos = self.get_files_from_folder(self.embedded_pose_folder, (".mp4", ".avi", ".mov"))
+        if not embedded_videos:
+            wx.MessageBox("No embedded videos found in embedded_pose/", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        # Launch background verification to keep UI responsive
+        thread = threading.Thread(target=self._verify_consistency_batch, args=(embedded_videos, verification_dir, worst_frames_root))
+        thread.start()
+
+    def _verify_consistency_batch(self, embedded_videos, verification_dir, worst_frames_root):
+        from verify_pose_embedding import verify, save_report
+        import glob
+
+        summary = []
+        total = len(embedded_videos)
+        for i, video in enumerate(embedded_videos, start=1):
+            base = os.path.splitext(os.path.basename(video))[0]
+            # Remove trailing "_pose" if present to get CSV base
+            csv_base = base.replace("_pose", "")
+            csv_pattern = os.path.join(self.extracted_pose_folder, f"{csv_base}*_ID_*.csv")
+            csv_paths = sorted(glob.glob(csv_pattern))
+            if not csv_paths:
+                # Try single-person default
+                single_csv = os.path.join(self.extracted_pose_folder, f"{csv_base}_ID_0.csv")
+                if os.path.exists(single_csv):
+                    csv_paths = [single_csv]
+
+            if not csv_paths:
+                self.set_status_message(f"⚠️ No CSVs found for {base}; skipping")
+                continue
+
+            self.set_status_message(f"🔎 Verifying: {os.path.basename(video)}")
+            try:
+                worst_dir = os.path.join(worst_frames_root, base)
+                report = verify(
+                    video_path=video,
+                    csv_paths=csv_paths,
+                    stride=max(1, int(self.frameStrideInput.GetValue())),
+                    max_worst=10,
+                    worst_dir=worst_dir,
+                    processed_only=True,
+                    metric='both',
+                    hit_threshold=0.8,
+                    ssim_threshold=0.98,
+                    window=5,
+                    conf_threshold=0.0,
+                )
+                out_json = os.path.join(verification_dir, f"{base}_report.json")
+                out_csv = os.path.join(verification_dir, f"{base}_worst.csv")
+                save_report(report, out_json, out_csv)
+                summary.append({
+                    "basename": base,
+                    "frames_compared": report.get("frames_compared"),
+                    "mean_hit_rate": report.get("mean_hit_rate"),
+                    "min_hit_rate": report.get("min_hit_rate"),
+                    "mean_ssim": report.get("mean_ssim"),
+                    "min_ssim": report.get("min_ssim"),
+                })
+            except Exception as e:
+                self.set_status_message(f"❌ Verification failed for {base}: {e}")
+
+            # Progress update
+            overall = int((i / max(1, total)) * 100)
+            self.update_progress(overall)
+
+        # Write summary JSON
+        try:
+            import json
+            summary_path = os.path.join(verification_dir, "summary.json")
+            with open(summary_path, 'w') as f:
+                json.dump(summary, f, indent=2)
+        except Exception:
+            pass
+
+        wx.CallAfter(wx.MessageBox, "Verification completed! See the 'verification' folder for reports.", "Success", wx.OK | wx.ICON_INFORMATION)
+        self.update_progress(0)
 
     def convert_to_wav(self, filepath, progress_callback=None):
         """Convert a single video file to WAV using ffmpeg."""
