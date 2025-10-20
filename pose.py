@@ -468,84 +468,113 @@ class PoseProcessor:
         # Maintain locked ROIs across frames for multi-person mode
         # Each ROI holds its own MediaPipe Pose instance
         locked_rois = []  # Each item: {"x1":int,"y1":int,"x2":int,"y2":int,"lost":int, "pose": Pose}
+        
+        # Cache last detected landmarks to redraw on skipped frames (avoids flicker)
+        last_multi_landmarks = []  # list of mp_landmarks for multi-person mode
+        last_single_landmarks = None  # mp_landmarks for single-person mode
 
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
                 break
 
-            # Frame downsampling
-            if self.frame_stride > 1 and (raw_frame_idx % self.frame_stride) != 0:
-                # Still write a frame (without new overlay) to maintain FPS
-                # If downscaling is enabled, resize to proc size
-                if self.downscale_to is not None and (frame.shape[1] != proc_w or frame.shape[0] != proc_h):
-                    frame_out = cv2.resize(frame, (proc_w, proc_h), interpolation=cv2.INTER_AREA)
-                else:
-                    frame_out = frame
-                out.write(frame_out)
-                raw_frame_idx += 1
-                frame_idx += 1
-                if progress_callback and total_frames > 0:
-                    progress_percent = int((frame_idx / total_frames) * 100)
-                    progress_callback(progress_percent)
-                continue
-
             # Resolution downscaling
             proc_frame = frame
             if (proc_w != frame.shape[1]) or (proc_h != frame.shape[0]):
                 proc_frame = cv2.resize(frame, (proc_w, proc_h), interpolation=cv2.INTER_AREA)
 
-            image_rgb = cv2.cvtColor(proc_frame, cv2.COLOR_BGR2RGB)
+            # Check if this frame should be processed for pose detection
+            should_process_pose = (self.frame_stride == 1) or (raw_frame_idx % self.frame_stride == 0)
+            
+            if should_process_pose:
+                # Process pose detection on this frame
+                image_rgb = cv2.cvtColor(proc_frame, cv2.COLOR_BGR2RGB)
 
-            if self.enable_multi_person_pose:
-                # Seed ROIs using shared pipeline
-                locked_rois = self._seed_rois_if_needed(image_rgb, proc_w, proc_h, locked_rois, margin_ratio=0.25)
+                if self.enable_multi_person_pose:
+                    # Seed ROIs using shared pipeline
+                    locked_rois = self._seed_rois_if_needed(image_rgb, proc_w, proc_h, locked_rois, margin_ratio=0.25)
 
-                # If no ROIs found, write frame and continue
-                if not locked_rois:
-                    out.write(proc_frame)
-                    frame_idx += 1
-                    if progress_callback and total_frames > 0:
-                        progress_percent = int((frame_idx / total_frames) * 100)
-                        progress_callback(progress_percent)
-                    continue
+                    # If no ROIs found, write frame and continue
+                    if not locked_rois:
+                        out.write(proc_frame)
+                        frame_idx += 1
+                        if progress_callback and total_frames > 0:
+                            progress_percent = int((frame_idx / total_frames) * 100)
+                            progress_callback(progress_percent)
+                        continue
 
-                # Process using shared multiperson step and draw
-                mp_outputs, locked_rois = self._process_multiperson_frame(image_rgb, proc_w, proc_h, locked_rois)
-                for _, mp_landmarks in mp_outputs:
+                    # Process using shared multiperson step and draw
+                    mp_outputs, locked_rois = self._process_multiperson_frame(image_rgb, proc_w, proc_h, locked_rois)
+                    for _, mp_landmarks in mp_outputs:
+                        try:
+                            self.drawing_utils.draw_landmarks(
+                                proc_frame,
+                                mp_landmarks,
+                                mp.solutions.pose.POSE_CONNECTIONS,
+                                landmark_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(color=(0, 255, 0), thickness=3, circle_radius=3),
+                                connection_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(color=(255, 0, 0), thickness=2)
+                            )
+                        except Exception as e:
+                            if self.status_callback:
+                                self.status_callback(f"❌ Error drawing landmarks: {e}")
+                            print(f"Error drawing landmarks: {e}")
+                    # Cache last landmarks for skipped frames redraw
                     try:
+                        last_multi_landmarks = [lm for _, lm in mp_outputs]
+                    except Exception:
+                        pass
+
+                else:
+                    # Single-person mode
+                    result = self.pose.process(image_rgb)
+                    if result.pose_landmarks:
+                        # Debug output to verify landmarks are being detected
+                        if self.status_callback:
+                            self.status_callback(f"🎯 Drawing {len(result.pose_landmarks.landmark)} landmarks (single-person mode)")
+                        
+                        # Draw landmarks with visible style
                         self.drawing_utils.draw_landmarks(
-                            proc_frame,
-                            mp_landmarks,
+                            proc_frame, 
+                            result.pose_landmarks, 
                             mp.solutions.pose.POSE_CONNECTIONS,
                             landmark_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(color=(0, 255, 0), thickness=3, circle_radius=3),
                             connection_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(color=(255, 0, 0), thickness=2)
                         )
-                    except Exception as e:
+                        # Cache last single-person landmarks
+                        last_single_landmarks = result.pose_landmarks
+                    else:
+                        # Debug output when no landmarks detected in single-person mode
                         if self.status_callback:
-                            self.status_callback(f"❌ Error drawing landmarks: {e}")
-                        print(f"Error drawing landmarks: {e}")
-
+                            self.status_callback("⚠️ No landmarks detected (single-person mode)")
+                        # Clear cached single-person landmarks when not detected
+                        last_single_landmarks = None
             else:
-                # Single-person mode
-                result = self.pose.process(image_rgb)
-                if result.pose_landmarks:
-                    # Debug output to verify landmarks are being detected
-                    if self.status_callback:
-                        self.status_callback(f"🎯 Drawing {len(result.pose_landmarks.landmark)} landmarks (single-person mode)")
-                    
-                    # Draw landmarks with visible style
-                    self.drawing_utils.draw_landmarks(
-                        frame, 
-                        result.pose_landmarks, 
-                        mp.solutions.pose.POSE_CONNECTIONS,
-                        landmark_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(color=(0, 255, 0), thickness=3, circle_radius=3),
-                        connection_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(color=(255, 0, 0), thickness=2)
-                    )
+                # Redraw last cached landmarks on skipped frames to maintain visual consistency
+                if self.enable_multi_person_pose:
+                    if last_multi_landmarks:
+                        for mp_landmarks in last_multi_landmarks:
+                            try:
+                                self.drawing_utils.draw_landmarks(
+                                    proc_frame,
+                                    mp_landmarks,
+                                    mp.solutions.pose.POSE_CONNECTIONS,
+                                    landmark_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(color=(0, 255, 0), thickness=3, circle_radius=3),
+                                    connection_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(color=(255, 0, 0), thickness=2)
+                                )
+                            except Exception:
+                                pass
                 else:
-                    # Debug output when no landmarks detected in single-person mode
-                    if self.status_callback:
-                        self.status_callback("⚠️ No landmarks detected (single-person mode)")
+                    if last_single_landmarks is not None:
+                        try:
+                            self.drawing_utils.draw_landmarks(
+                                proc_frame,
+                                last_single_landmarks,
+                                mp.solutions.pose.POSE_CONNECTIONS,
+                                landmark_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(color=(0, 255, 0), thickness=3, circle_radius=3),
+                                connection_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(color=(255, 0, 0), thickness=2)
+                            )
+                        except Exception:
+                            pass
 
             out.write(proc_frame)
             
