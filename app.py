@@ -956,7 +956,8 @@ class VideoToWavConverter(wx.Frame):
         audio_processor = AudioProcessor(
             output_audio_features_folder=None,  # Not needed for transcript extraction
             output_transcripts_folder=self.extracted_transcripts_folder,
-            status_callback=self.set_status_message
+            status_callback=self.set_status_message,
+            auth_token="YOUR_HUGGING_FACE_TOKEN"  # Your Hugging Face token
         )
 
         # Run transcription in a separate thread
