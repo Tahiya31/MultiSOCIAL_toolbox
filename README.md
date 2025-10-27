@@ -124,7 +124,7 @@ We thank the authors and developers of ``MediaPipe``, ``OpenSMILE``, ``YOLOv5`` 
 
 ## Team
 
-``MultiSOCIAL toolbox`` is developed by Tahiya Chowdhury, Veronica Romero, and Alexandra Paxton``.
+``MultiSOCIAL toolbox`` is developed by Tahiya Chowdhury, Veronica Romero, Alexandra Paxton and Muneeb Nafees.
 
 ## Disclaimer
 
