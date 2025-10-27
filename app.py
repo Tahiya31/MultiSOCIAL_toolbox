@@ -11,15 +11,11 @@ import threading
 
 # Third-party libraries (assumed pre-installed via requirements.txt)
 import ffmpeg
-import opensmile
 import wx
-import librosa
-import torch
-from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
- 
 
-# Import the core pose processing class
+# Import the core processing classes
 from pose import PoseProcessor
+from audio import AudioProcessor
 
 # Set up GPU environment specially for Mediapipe (specific for Saturn Cloud), if you use some other high performance computing platform check compatibility before usage
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # Make sure the system uses the GPU
@@ -917,63 +913,29 @@ class VideoToWavConverter(wx.Frame):
             wx.MessageBox("No WAV files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
             return
 
-        thread = threading.Thread(target=self.extract_audio_features_batch, args=(audio_files,))
+        # Initialize audio processor
+        audio_processor = AudioProcessor(
+            output_audio_features_folder=self.extracted_audio_folder,
+            output_transcripts_folder=None,  # Not needed for feature extraction
+            status_callback=self.set_status_message
+        )
+
+        thread = threading.Thread(target=self.extract_audio_features_batch, args=(audio_files, audio_processor))
         thread.start()
 
-    def extract_audio_features_batch(self, audio_files):
+    def extract_audio_features_batch(self, audio_files, audio_processor):
         """Batch process all audio files to extract features."""
-        total_files = len(audio_files)
-
-        for i, audio_file in enumerate(audio_files):
-            self.set_status_message(f"🎧 Extracting audio from: {os.path.basename(audio_file)}")
-            print(f"Extracting features from: {audio_file}")
-            
-            # Create progress callback for this audio file
-            def make_progress_callback(audio_index, total_audios):
-                def progress_callback(extraction_progress):
-                    # Calculate overall progress: (audio_index-1)/total_audios + extraction_progress/total_audios
-                    overall_progress = int(((audio_index - 1) / total_audios) * 100 + (extraction_progress / total_audios))
-                    self.update_progress(overall_progress)
-                return progress_callback
-            
-            self.extract_audio_features(audio_file, progress_callback=make_progress_callback(i + 1, total_files))
-
-        wx.MessageBox("Audio feature extraction completed!", "Success", wx.OK | wx.ICON_INFORMATION)
-        self.update_progress(0)  # Reset progress bar
-
-    def extract_audio_features(self, filepath, progress_callback=None):
-        """Extracts audio features from a single WAV file."""
+        def progress_callback(progress):
+            self.update_progress(progress)
+        
         try:
-            if progress_callback:
-                progress_callback(0)
-            
-            feature_set_name = opensmile.FeatureSet.ComParE_2016
-            feature_level_name = opensmile.FeatureLevel.LowLevelDescriptors
-
-            if progress_callback:
-                progress_callback(25)
-            
-            smile = opensmile.Smile(feature_set=feature_set_name, feature_level=feature_level_name)
-            y, sr = librosa.load(filepath)
-            
-            if progress_callback:
-                progress_callback(50)
-            
-            features = smile.process_signal(y, sr)
-            
-            if progress_callback:
-                progress_callback(75)
-
-            output_csv = os.path.join(self.extracted_audio_folder, os.path.splitext(os.path.basename(filepath))[0] + ".csv")
-            features.to_csv(output_csv, index=False)
-            
-            if progress_callback:
-                progress_callback(100)
-
-            print(f"Saved audio features: {output_csv}")
-
+            audio_processor.extract_audio_features_batch(audio_files, progress_callback=progress_callback)
+            wx.CallAfter(wx.MessageBox, "Audio feature extraction completed!", "Success", wx.OK | wx.ICON_INFORMATION)
         except Exception as e:
-            wx.MessageBox(f'Error extracting audio features from {filepath}: {e}', 'Error', wx.OK | wx.ICON_ERROR)
+            wx.CallAfter(wx.MessageBox, f"Error during audio feature extraction: {e}", "Error", wx.OK | wx.ICON_ERROR)
+        finally:
+            self.update_progress(0)  # Reset progress bar
+
 
 
     def on_extract_transcripts(self, event):
@@ -990,106 +952,31 @@ class VideoToWavConverter(wx.Frame):
             wx.MessageBox("No WAV files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
             return
 
+        # Initialize audio processor
+        audio_processor = AudioProcessor(
+            output_audio_features_folder=None,  # Not needed for transcript extraction
+            output_transcripts_folder=self.extracted_transcripts_folder,
+            status_callback=self.set_status_message
+        )
+
         # Run transcription in a separate thread
-        thread = threading.Thread(target=self.extract_transcripts_batch, args=(audio_files,))
+        thread = threading.Thread(target=self.extract_transcripts_batch, args=(audio_files, audio_processor))
         thread.start()
 
 
-    def extract_transcripts_batch(self, audio_files):
+    def extract_transcripts_batch(self, audio_files, audio_processor):
         """Batch process all audio files to generate transcripts."""
-        total_files = len(audio_files)
-
-        #print(f"Found {total_files} WAV files for transcription.")
-
-        for i, audio_file in enumerate(audio_files):
-            #print(f"Starting transcription for: {audio_file}")
-            #file_name = os.path.basename(audio_file)
-            self.set_status_message(f"🗣️ Transcribing: {os.path.basename(audio_file)}")
-            
-            # Create progress callback for this audio file
-            def make_progress_callback(audio_index, total_audios):
-                def progress_callback(transcription_progress):
-                    # Calculate overall progress: (audio_index-1)/total_audios + transcription_progress/total_audios
-                    overall_progress = int(((audio_index - 1) / total_audios) * 100 + (transcription_progress / total_audios))
-                    self.update_progress(overall_progress)
-                return progress_callback
+        def progress_callback(progress):
+            self.update_progress(progress)
         
-            try:
-                self.extract_transcripts(audio_file, progress_callback=make_progress_callback(i + 1, total_files))
-            except Exception as e:
-                print(f"Error processing {audio_file}: {e}")
-
-        #print("All transcriptions completed.")
-        #self.set_status_message("Transcription complete.")
-        wx.MessageBox("Transcription extraction completed!", "Success", wx.OK | wx.ICON_INFORMATION)
-        self.update_progress(0)  # Reset progress bar
-
-    def extract_transcripts(self, filepath, progress_callback=None):
-        """Transcribes a single WAV file using Whisper."""
         try:
-            if progress_callback:
-                progress_callback(0)
-            
-            print(f"Loading Whisper model for {filepath}...")
-            device = "cuda:0" if torch.cuda.is_available() else "cpu"
-            torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-
-            if progress_callback:
-                progress_callback(10)
-
-            model_id = "distil-whisper/distil-large-v3"
-
-            if progress_callback:
-                progress_callback(20)
-
-            model = AutoModelForSpeechSeq2Seq.from_pretrained(
-                model_id, torch_dtype=torch_dtype, low_cpu_mem_usage=True, use_safetensors=True
-            )
-            model.to(device)
-
-            if progress_callback:
-                progress_callback(40)
-
-            processor = AutoProcessor.from_pretrained(model_id)
-
-            if progress_callback:
-                progress_callback(50)
-
-            pipe = pipeline(
-                "automatic-speech-recognition",
-                model=model,
-                tokenizer=processor.tokenizer,
-                feature_extractor=processor.feature_extractor,
-                max_new_tokens=128,
-                chunk_length_s=25,
-                batch_size=16,
-                torch_dtype=torch_dtype,
-                device=device,
-            )
-
-            if progress_callback:
-                progress_callback(70)
-
-            print(f"Transcribing {filepath}...")
-            result = pipe(filepath)
-            transcript = result['text']
-
-            if progress_callback:
-                progress_callback(90)
-
-            output_txt = os.path.join(self.extracted_transcripts_folder, os.path.splitext(os.path.basename(filepath))[0] + ".txt")
-
-            with open(output_txt, 'w') as f:
-                f.write(transcript)
-
-            if progress_callback:
-                progress_callback(100)
-
-            print(f"Saved transcript: {output_txt}")
-
+            audio_processor.extract_transcripts_batch(audio_files, progress_callback=progress_callback)
+            wx.CallAfter(wx.MessageBox, "Transcription extraction completed!", "Success", wx.OK | wx.ICON_INFORMATION)
         except Exception as e:
-            print(f" Error transcribing {filepath}: {e}")
-            wx.MessageBox(f'Error transcribing {filepath}: {e}', 'Error', wx.OK | wx.ICON_ERROR)
+            wx.CallAfter(wx.MessageBox, f"Error during transcript extraction: {e}", "Error", wx.OK | wx.ICON_ERROR)
+        finally:
+            self.update_progress(0)  # Reset progress bar
+
 
 
 
