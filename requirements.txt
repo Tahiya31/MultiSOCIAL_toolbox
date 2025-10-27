@@ -21,6 +21,7 @@ datasets[audio]
 librosa
 opensmile
 ffmpeg-python
+pyannote-audio
 
 # Object detection
 yolov5
