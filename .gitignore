@@ -207,3 +207,6 @@ __marimo__/
 
 # Virtual environment
 venv/
+
+# Pretrained models
+/pretrained_models/
