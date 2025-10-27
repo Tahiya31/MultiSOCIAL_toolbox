@@ -1,21 +1,23 @@
-'''
-This is the script for extracting audio features and transcripts from audio files
-using OpenSMILE and Whisper
+"""
+Audio processing module for MultiSOCIAL Toolbox.
 
-'''
+This module provides functionality for:
+- Audio feature extraction using OpenSMILE
+- Speech transcription using Whisper
+- Speaker diarization using PyAnnote
+- Speaker-transcript alignment
+"""
 
 import os
 import torch
 import librosa
 import opensmile
-import pandas as pd
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
-
-
+from pyannote.audio import Pipeline
 
 
 class AudioProcessor:
-    def __init__(self, output_audio_features_folder, output_transcripts_folder, status_callback=None):
+    def __init__(self, output_audio_features_folder, output_transcripts_folder, status_callback=None, enable_speaker_diarization=True, auth_token=None):
         """
         Initialize the AudioProcessor.
         
@@ -23,10 +25,14 @@ class AudioProcessor:
             output_audio_features_folder (str): Path to folder for saving audio features CSV files
             output_transcripts_folder (str): Path to folder for saving transcript text files
             status_callback (callable, optional): Callback function for status updates
+            enable_speaker_diarization (bool): Whether to enable speaker diarization for transcripts
+            auth_token (str, optional): Hugging Face auth token for pyannote (required for speaker diarization)
         """
         self.output_audio_features_folder = output_audio_features_folder
         self.output_transcripts_folder = output_transcripts_folder
         self.status_callback = status_callback
+        self.enable_speaker_diarization = enable_speaker_diarization
+        self.auth_token = auth_token
         
         # Ensure output directories exist (only if they are not None)
         if self.output_audio_features_folder is not None:
@@ -42,6 +48,9 @@ class AudioProcessor:
         self.whisper_model = None
         self.whisper_processor = None
         self.whisper_pipe = None
+        
+        # Speaker diarizer will be loaded lazily when needed
+        self.speaker_diarizer = None
 
     def set_status_message(self, message):
         """Safely update status message using callback if available."""
@@ -194,7 +203,7 @@ class AudioProcessor:
         if progress_callback:
             progress_callback(55)
 
-        # Create pipeline
+        # Create pipeline with explicit configuration to avoid warnings
         self.whisper_pipe = pipeline(
             "automatic-speech-recognition",
             model=self.whisper_model,
@@ -205,14 +214,44 @@ class AudioProcessor:
             batch_size=16,
             torch_dtype=self.torch_dtype,
             device=self.device,
+            # Add return_timestamps for better processing
+            return_timestamps=True
         )
 
         if progress_callback:
             progress_callback(70)
 
+    def _load_speaker_diarizer(self, progress_callback=None):
+        """Load the PyAnnote speaker diarization model (lazy loading)"""
+        if self.speaker_diarizer is not None:
+            return
+            
+        try:
+            if progress_callback:
+                progress_callback(5)
+                
+            print("Loading PyAnnote speaker diarization model...")
+            # Use PyAnnote diarization
+            self.speaker_diarizer = PyAnnoteSpeakerDiarizer(progress_callback, self.auth_token)
+            
+            if progress_callback:
+                progress_callback(15)
+                
+        except Exception as e:
+            raise Exception(f"Failed to load PyAnnote speaker diarization model: {str(e)}")
+    
+    def preload_speaker_diarizer(self):
+        """Pre-load the speaker diarization model to avoid delays during first use"""
+        try:
+            print("Pre-loading PyAnnote speaker diarization model...")
+            self._load_speaker_diarizer()
+            print("✓ PyAnnote model pre-loaded successfully")
+        except Exception as e:
+            print(f"Warning: Could not pre-load PyAnnote model: {e}")
+
     def extract_transcript(self, filepath, progress_callback=None):
         """
-        Extract transcript from a single WAV file using Whisper.
+        Extract transcript from a single WAV file using Whisper with optional speaker diarization.
         
         Args:
             filepath (str): Path to the WAV file
@@ -235,12 +274,37 @@ class AudioProcessor:
 
             print(f"Transcribing {filepath}...")
             
-            # Transcribe audio
+            # Transcribe audio with timestamps
             result = self.whisper_pipe(filepath)
             transcript = result['text']
+            
+            # Store the full result for timestamped segments
+            self.whisper_result = result
+
+            if progress_callback:
+                progress_callback(50)
+
+            # Perform speaker diarization if enabled
+            speaker_segments = None
+            if self.enable_speaker_diarization:
+                try:
+                    print(f"Performing speaker diarization for {filepath}...")
+                    self._load_speaker_diarizer(progress_callback)
+                    speaker_segments = self.speaker_diarizer.diarize_speakers(filepath, progress_callback)
+                    print(f"Found {len(speaker_segments)} speaker segments")
+                except Exception as e:
+                    print(f"Speaker diarization failed: {str(e)}")
+                    print("Continuing with transcript only...")
+                    speaker_segments = None
 
             if progress_callback:
                 progress_callback(90)
+
+            # Format transcript with speaker labels if available
+            if speaker_segments and len(speaker_segments) > 0:
+                formatted_transcript = self._format_transcript_with_speakers(transcript, speaker_segments)
+            else:
+                formatted_transcript = transcript
 
             # Save transcript to text file
             output_txt = os.path.join(
@@ -249,7 +313,7 @@ class AudioProcessor:
             )
 
             with open(output_txt, 'w') as f:
-                f.write(transcript)
+                f.write(formatted_transcript)
 
             if progress_callback:
                 progress_callback(100)
@@ -261,6 +325,171 @@ class AudioProcessor:
             error_msg = f'Error transcribing {filepath}: {e}'
             print(error_msg)
             raise Exception(error_msg)
+
+    def _format_transcript_with_speakers(self, transcript, speaker_segments):
+        """
+        Format transcript with speaker labels based on speaker segments.
+        
+        Args:
+            transcript (str): Raw transcript from Whisper
+            speaker_segments (list): List of speaker segments with timestamps
+            
+        Returns:
+            str: Formatted transcript with speaker labels
+        """
+        if not speaker_segments:
+            return transcript
+            
+        # Create a formatted transcript with speaker labels
+        formatted_lines = []
+        formatted_lines.append("=== TRANSCRIPT WITH SPEAKER LABELS ===\n")
+        
+        # Add speaker segments overview
+        formatted_lines.append("Speaker Segments:")
+        for segment in speaker_segments:
+            start_time = f"{int(segment['start']//60):02d}:{segment['start']%60:06.3f}"
+            end_time = f"{int(segment['end']//60):02d}:{segment['end']%60:06.3f}"
+            formatted_lines.append(f"  {segment['speaker']}: {start_time} --> {end_time}")
+        
+        formatted_lines.append("\n=== ALIGNED TRANSCRIPT ===\n")
+        
+        # Get Whisper's timestamped segments for alignment
+        try:
+            # Extract timestamped segments from Whisper result
+            whisper_segments = self._extract_whisper_segments(transcript)
+            
+            if whisper_segments:
+                # Align Whisper segments with speaker segments
+                aligned_transcript = self._align_segments_with_speakers(whisper_segments, speaker_segments)
+                formatted_lines.append(aligned_transcript)
+            else:
+                # Fallback to raw transcript if no timestamps available
+                formatted_lines.append("Raw Transcript:")
+                formatted_lines.append(transcript)
+                
+        except Exception as e:
+            print(f"Warning: Could not align transcript with speakers: {e}")
+            formatted_lines.append("Raw Transcript:")
+            formatted_lines.append(transcript)
+        
+        return "\n".join(formatted_lines)
+    
+    def _extract_whisper_segments(self, transcript):
+        """
+        Extract timestamped segments from Whisper result.
+        
+        Args:
+            transcript (str): Raw transcript from Whisper
+            
+        Returns:
+            list: List of (start_time, end_time, text) tuples
+        """
+        # Use the stored Whisper result if available
+        if hasattr(self, 'whisper_result') and self.whisper_result:
+            result = self.whisper_result
+            
+            # Check if we have chunked output with timestamps
+            if 'chunks' in result and result['chunks']:
+                segments = []
+                for chunk in result['chunks']:
+                    if 'timestamp' in chunk and chunk['timestamp'] is not None:
+                        start_time = chunk['timestamp'][0] if chunk['timestamp'][0] is not None else 0.0
+                        end_time = chunk['timestamp'][1] if chunk['timestamp'][1] is not None else start_time + 1.0
+                        text = chunk['text'].strip()
+                        
+                        if text:
+                            segments.append({
+                                'start': start_time,
+                                'end': end_time,
+                                'text': text
+                            })
+                
+                if segments:  # Only return if we found valid segments
+                    return segments
+        
+        # Fallback: create approximation from transcript
+        sentences = transcript.split('. ')
+        segments = []
+        current_time = 0.0
+        
+        for sentence in sentences:
+            if sentence.strip():
+                # Estimate duration based on text length (rough approximation)
+                duration = max(1.0, len(sentence) * 0.1)  # ~0.1 seconds per character
+                end_time = current_time + duration
+                
+                segments.append({
+                    'start': current_time,
+                    'end': end_time,
+                    'text': sentence.strip() + ('.' if not sentence.endswith('.') else '')
+                })
+                current_time = end_time
+        
+        return segments
+    
+    def _align_segments_with_speakers(self, whisper_segments, speaker_segments):
+        """
+        Align Whisper transcript segments with speaker segments.
+        
+        Args:
+            whisper_segments (list): List of Whisper segments with timestamps
+            speaker_segments (list): List of speaker segments with timestamps
+            
+        Returns:
+            str: Aligned transcript with speaker labels
+        """
+        aligned_lines = []
+        
+        for whisper_seg in whisper_segments:
+            # Find which speaker was talking during this time segment
+            speaker = self._find_speaker_for_time(
+                whisper_seg['start'], 
+                whisper_seg['end'], 
+                speaker_segments
+            )
+            
+            # Format the line with speaker label
+            start_time = f"{int(whisper_seg['start']//60):02d}:{whisper_seg['start']%60:06.3f}"
+            end_time = f"{int(whisper_seg['end']//60):02d}:{whisper_seg['end']%60:06.3f}"
+            
+            aligned_lines.append(f"{speaker}: [{start_time} - {end_time}] {whisper_seg['text']}")
+        
+        return "\n".join(aligned_lines)
+    
+    def _find_speaker_for_time(self, start_time, end_time, speaker_segments):
+        """
+        Find which speaker was talking during a given time period.
+        
+        Args:
+            start_time (float): Start time of the segment
+            end_time (float): End time of the segment
+            speaker_segments (list): List of speaker segments
+            
+        Returns:
+            str: Speaker label for the time period
+        """
+        if not speaker_segments:
+            return "UNKNOWN"
+            
+        # Find the speaker segment that overlaps most with the given time period
+        best_speaker = "UNKNOWN"
+        best_overlap = 0
+        
+        for seg in speaker_segments:
+            try:
+                # Calculate overlap between the time periods
+                overlap_start = max(start_time, seg['start'])
+                overlap_end = min(end_time, seg['end'])
+                overlap_duration = max(0, overlap_end - overlap_start)
+                
+                if overlap_duration > best_overlap:
+                    best_overlap = overlap_duration
+                    best_speaker = seg['speaker']
+            except (KeyError, TypeError) as e:
+                print(f"Warning: Invalid speaker segment format: {e}")
+                continue
+        
+        return best_speaker
 
     def extract_transcripts_batch(self, audio_files, progress_callback=None):
         """
@@ -332,3 +561,119 @@ class AudioProcessor:
         
         if extract_transcript:
             self.extract_transcripts_batch(audio_files, progress_callback)
+
+
+# PyAnnote-based SpeakerDiarizer
+class PyAnnoteSpeakerDiarizer:
+    """
+    Speaker diarization class using pyannote-audio to identify speakers in audio files.
+    Requires Hugging Face auth token for model access.
+    """
+    
+    def __init__(self, progress_callback=None, auth_token=None):
+        """
+        Initialize the PyAnnoteSpeakerDiarizer.
+        
+        Args:
+            progress_callback (callable, optional): Callback function for progress updates
+            auth_token (str, optional): Hugging Face auth token for model access
+        """
+        self.progress_callback = progress_callback
+        self.auth_token = auth_token
+        self.diarization_pipeline = None
+        
+    def _load_diarization_model(self):
+        """Load the speaker diarization model (lazy loading)"""
+        if self.diarization_pipeline is not None:
+            return
+            
+        try:
+            if self.progress_callback:
+                self.progress_callback(5)
+                
+            # Load the pre-trained speaker diarization pipeline
+            # Note: You need to accept the license at https://huggingface.co/pyannote/speaker-diarization
+            if self.auth_token:
+                self.diarization_pipeline = Pipeline.from_pretrained(
+                    "pyannote/speaker-diarization",
+                    use_auth_token=self.auth_token
+                )
+            else:
+                self.diarization_pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization")
+            
+            if self.progress_callback:
+                self.progress_callback(20)
+                
+        except Exception as e:
+            raise Exception(f"Failed to load pyannote diarization model: {str(e)}")
+    
+    def diarize_speakers(self, filepath, progress_callback=None):
+        """
+        Perform speaker diarization on an audio file using pyannote.
+        
+        Args:
+            filepath (str): Path to the audio file
+            progress_callback (callable, optional): Callback function for progress updates
+            
+        Returns:
+            list: List of speaker segments with timestamps
+        """
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"Audio file not found: {filepath}")
+            
+        if progress_callback:
+            progress_callback(0)
+            
+        try:
+            # Load diarization model
+            self._load_diarization_model()
+            
+            if progress_callback:
+                progress_callback(10)
+                
+            # Perform diarization
+            print("PyAnnote is processing audio (this may take 2-5 minutes on first run)...")
+            diarization = self.diarization_pipeline(filepath)
+            print("PyAnnote processing completed!")
+            
+            if progress_callback:
+                progress_callback(50)
+                
+            # Convert to list of speaker segments
+            speaker_segments = []
+            for turn, _, speaker in diarization.itertracks(yield_label=True):
+                speaker_segments.append({
+                    'start': float(turn.start),
+                    'end': float(turn.end),
+                    'speaker': str(speaker),
+                    'duration': float(turn.end - turn.start)
+                })
+            
+            if progress_callback:
+                progress_callback(90)
+                
+            return speaker_segments
+            
+        except Exception as e:
+            raise Exception(f"PyAnnote speaker diarization failed: {str(e)}")
+    
+    def format_speaker_segments(self, speaker_segments):
+        """
+        Format speaker segments into a readable string.
+        
+        Args:
+            speaker_segments (list): List of speaker segments
+            
+        Returns:
+            str: Formatted speaker segments
+        """
+        if not speaker_segments:
+            return "No speakers detected"
+            
+        formatted_segments = []
+        for segment in speaker_segments:
+            start_time = f"{int(segment['start']//60):02d}:{segment['start']%60:06.3f}"
+            end_time = f"{int(segment['end']//60):02d}:{segment['end']%60:06.3f}"
+            formatted_segments.append(f"{segment['speaker']}: {start_time} --> {end_time}")
+            
+        return "\n".join(formatted_segments)
