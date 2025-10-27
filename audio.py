@@ -8,7 +8,10 @@ import os
 import torch
 import librosa
 import opensmile
+import pandas as pd
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
+
+
 
 
 class AudioProcessor:
@@ -56,6 +59,9 @@ class AudioProcessor:
         Returns:
             str: Path to the saved CSV file with features
         """
+        if self.output_audio_features_folder is None:
+            raise ValueError("Audio features output folder not configured")
+            
         try:
             if progress_callback:
                 progress_callback(0)
@@ -65,24 +71,43 @@ class AudioProcessor:
             feature_level_name = opensmile.FeatureLevel.LowLevelDescriptors
 
             if progress_callback:
-                progress_callback(25)
+                progress_callback(10)
             
             # Initialize OpenSMILE processor
             smile = opensmile.Smile(feature_set=feature_set_name, feature_level=feature_level_name)
+            
+            if progress_callback:
+                progress_callback(20)
             
             # Load audio file using librosa
             y, sr = librosa.load(filepath)
             
             if progress_callback:
-                progress_callback(50)
+                progress_callback(40)
             
             # Extract features using OpenSMILE
             features = smile.process_signal(y, sr)
             
             if progress_callback:
-                progress_callback(75)
+                progress_callback(70)
 
-            # Save features to CSV
+            # Add timestamp columns as the leftmost columns
+            # Calculate precise frame duration based on actual audio length
+            audio_duration = len(y) / sr  # Total audio duration in seconds
+            num_frames = len(features)
+            frame_duration = audio_duration / num_frames  # Actual frame duration
+            
+            # Create timestamps for each frame
+            timestamps_seconds = [i * frame_duration for i in range(num_frames)]
+            timestamps_milliseconds = [t * 1000 for t in timestamps_seconds]  # Convert to milliseconds
+            timestamps_formatted = [f"{int(t//60):02d}:{t%60:06.3f}" for t in timestamps_seconds]  # MM:SS.mmm format
+            
+            # Insert timestamp columns at the beginning
+            features.insert(0, 'Timestamp_Seconds', timestamps_seconds)
+            features.insert(1, 'Timestamp_Milliseconds', timestamps_milliseconds)
+            features.insert(2, 'Timestamp_Formatted', timestamps_formatted)
+            
+            # Save features to CSV with original OpenSMILE column names and timestamps
             output_csv = os.path.join(
                 self.output_audio_features_folder, 
                 os.path.splitext(os.path.basename(filepath))[0] + ".csv"
@@ -140,12 +165,12 @@ class AudioProcessor:
             return  # Already loaded
             
         if progress_callback:
-            progress_callback(10)
+            progress_callback(5)
 
         model_id = "distil-whisper/distil-large-v3"
 
         if progress_callback:
-            progress_callback(20)
+            progress_callback(10)
 
         # Load model
         self.whisper_model = AutoModelForSpeechSeq2Seq.from_pretrained(
@@ -154,6 +179,10 @@ class AudioProcessor:
             low_cpu_mem_usage=True, 
             use_safetensors=True
         )
+        
+        if progress_callback:
+            progress_callback(25)
+            
         self.whisper_model.to(self.device)
 
         if progress_callback:
@@ -163,7 +192,7 @@ class AudioProcessor:
         self.whisper_processor = AutoProcessor.from_pretrained(model_id)
 
         if progress_callback:
-            progress_callback(50)
+            progress_callback(55)
 
         # Create pipeline
         self.whisper_pipe = pipeline(
@@ -192,6 +221,9 @@ class AudioProcessor:
         Returns:
             str: Path to the saved transcript file
         """
+        if self.output_transcripts_folder is None:
+            raise ValueError("Transcripts output folder not configured")
+            
         try:
             if progress_callback:
                 progress_callback(0)
