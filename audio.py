@@ -274,9 +274,30 @@ class AudioProcessor:
 
             print(f"Transcribing {filepath}...")
             
-            # Transcribe audio with timestamps
-            result = self.whisper_pipe(filepath)
+            # Transcribe audio with timestamps (request at call time for reliability)
+            result = self.whisper_pipe(
+                filepath,
+                return_timestamps="word",  # finer timestamps when supported
+                generate_kwargs={"task": "transcribe"}
+            )
             transcript = result['text']
+            # Debug: summarize timestamps presence
+            try:
+                if isinstance(result, dict):
+                    print("Whisper output keys:", list(result.keys()))
+                    if 'chunks' in result and isinstance(result['chunks'], list):
+                        print(f"Whisper chunks count: {len(result['chunks'])}")
+                        for i, c in enumerate(result['chunks'][:3]):
+                            ts = c.get('timestamp') or c.get('timestamps') or (c.get('start'), c.get('end'))
+                            print(f"  chunk[{i}] ts={ts} text='{(c.get('text') or '').strip()[:60]}'")
+                    elif 'segments' in result and isinstance(result['segments'], list):
+                        print(f"Whisper segments count: {len(result['segments'])}")
+                        for i, s in enumerate(result['segments'][:3]):
+                            print(f"  segment[{i}] start={s.get('start')} end={s.get('end')} text='{(s.get('text') or '').strip()[:60]}'")
+                    else:
+                        print("Whisper output does not include 'chunks' or 'segments'.")
+            except Exception as _dbg_e:
+                print(f"Whisper debug print failed: {_dbg_e}")
             
             # Store the full result for timestamped segments
             self.whisper_result = result
@@ -388,23 +409,72 @@ class AudioProcessor:
         if hasattr(self, 'whisper_result') and self.whisper_result:
             result = self.whisper_result
             
-            # Check if we have chunked output with timestamps
-            if 'chunks' in result and result['chunks']:
+            # Preferred: pipeline returns 'chunks' with timestamp tuples
+            if isinstance(result, dict) and 'chunks' in result and result['chunks']:
                 segments = []
                 for chunk in result['chunks']:
-                    if 'timestamp' in chunk and chunk['timestamp'] is not None:
-                        start_time = chunk['timestamp'][0] if chunk['timestamp'][0] is not None else 0.0
-                        end_time = chunk['timestamp'][1] if chunk['timestamp'][1] is not None else start_time + 1.0
-                        text = chunk['text'].strip()
-                        
-                        if text:
-                            segments.append({
-                                'start': start_time,
-                                'end': end_time,
-                                'text': text
-                            })
+                    text = (chunk.get('text') or '').strip()
+                    if not text:
+                        continue
+
+                    # Support multiple timestamp schemas observed across transformers versions
+                    start_time = None
+                    end_time = None
+
+                    # Schema 1: 'timestamp': (start, end)
+                    ts_tuple = chunk.get('timestamp')
+                    if ts_tuple is not None and isinstance(ts_tuple, (list, tuple)) and len(ts_tuple) >= 2:
+                        start_time = ts_tuple[0] if ts_tuple[0] is not None else 0.0
+                        end_time = ts_tuple[1] if ts_tuple[1] is not None else (start_time + 0.1)
+
+                    # Schema 2: 'timestamps': {'start': x, 'end': y}
+                    if start_time is None or end_time is None:
+                        ts_obj = chunk.get('timestamps') or chunk.get('time_stamps')
+                        if isinstance(ts_obj, dict):
+                            s = ts_obj.get('start')
+                            e = ts_obj.get('end')
+                            if s is not None and e is not None:
+                                start_time = float(s)
+                                end_time = float(e)
+
+                    # Schema 3: direct fields 'start'/'end' (some outputs)
+                    if start_time is None or end_time is None:
+                        if 'start' in chunk and 'end' in chunk:
+                            start_time = float(chunk['start'])
+                            end_time = float(chunk['end'])
+
+                    # Final guard defaults
+                    if start_time is None:
+                        start_time = 0.0
+                    if end_time is None or end_time <= start_time:
+                        end_time = start_time + 0.1
+
+                    segments.append({
+                        'start': start_time,
+                        'end': end_time,
+                        'text': text
+                    })
                 
-                if segments:  # Only return if we found valid segments
+                if segments:
+                    return segments
+
+            # Alternative: some versions expose 'segments' list
+            if isinstance(result, dict) and 'segments' in result and result['segments']:
+                segments = []
+                for seg in result['segments']:
+                    text = (seg.get('text') or '').strip()
+                    if not text:
+                        continue
+                    try:
+                        start_time = float(seg.get('start', 0.0))
+                        end_time = float(seg.get('end', start_time + 1.0))
+                    except Exception:
+                        start_time = 0.0
+                        end_time = 1.0
+                    if end_time <= start_time:
+                        end_time = start_time + 0.1
+                    segments.append({'start': start_time, 'end': end_time, 'text': text})
+                if segments:
                     return segments
         
         # Fallback: create approximation from transcript
@@ -429,32 +499,64 @@ class AudioProcessor:
     
     def _align_segments_with_speakers(self, whisper_segments, speaker_segments):
         """
-        Align Whisper transcript segments with speaker segments.
+        Align Whisper transcript segments with speaker segments and merge
+        consecutive chunks by the same speaker into longer utterances.
         
         Args:
             whisper_segments (list): List of Whisper segments with timestamps
             speaker_segments (list): List of speaker segments with timestamps
             
         Returns:
-            str: Aligned transcript with speaker labels
+            str: Aligned transcript with speaker labels (merged by speaker)
         """
-        aligned_lines = []
-        
-        for whisper_seg in whisper_segments:
-            # Find which speaker was talking during this time segment
-            speaker = self._find_speaker_for_time(
-                whisper_seg['start'], 
-                whisper_seg['end'], 
-                speaker_segments
-            )
-            
-            # Format the line with speaker label
-            start_time = f"{int(whisper_seg['start']//60):02d}:{whisper_seg['start']%60:06.3f}"
-            end_time = f"{int(whisper_seg['end']//60):02d}:{whisper_seg['end']%60:06.3f}"
-            
-            aligned_lines.append(f"{speaker}: [{start_time} - {end_time}] {whisper_seg['text']}")
-        
-        return "\n".join(aligned_lines)
+        # Label each ASR chunk with a speaker
+        labeled = []
+        for seg in whisper_segments:
+            speaker = self._find_speaker_for_time(seg['start'], seg['end'], speaker_segments)
+            labeled.append({
+                'speaker': speaker,
+                'start': float(seg['start']),
+                'end': float(seg['end']),
+                'text': seg['text']
+            })
+
+        if not labeled:
+            return ""
+
+        # Merge consecutive chunks from the same speaker with small gaps
+        gap_merge_threshold = 0.5  # seconds
+        merged = []
+        for item in labeled:
+            if not merged:
+                merged.append(item.copy())
+                continue
+            prev = merged[-1]
+            same_speaker = (item['speaker'] == prev['speaker'])
+            small_gap = (item['start'] - prev['end']) <= gap_merge_threshold
+            if same_speaker and small_gap:
+                prev['end'] = max(prev['end'], item['end'])
+                # Simple whitespace join; avoid double spaces
+                prev_text = (prev['text'] or '').strip()
+                item_text = (item['text'] or '').strip()
+                if prev_text and item_text:
+                    prev['text'] = prev_text + ' ' + item_text
+                elif item_text:
+                    prev['text'] = item_text
+                # else keep prev['text'] as is
+            else:
+                merged.append(item.copy())
+
+        # Format merged lines
+        lines = []
+        for m in merged:
+            # Skip empty text entries
+            if not (m.get('text') or '').strip():
+                continue
+            start_time = f"{int(m['start']//60):02d}:{m['start']%60:06.3f}"
+            end_time = f"{int(m['end']//60):02d}:{m['end']%60:06.3f}"
+            lines.append(f"{m['speaker']}: [{start_time} - {end_time}] {m['text']}")
+
+        return "\n".join(lines)
     
     def _find_speaker_for_time(self, start_time, end_time, speaker_segments):
         """
@@ -471,24 +573,46 @@ class AudioProcessor:
         if not speaker_segments:
             return "UNKNOWN"
             
-        # Find the speaker segment that overlaps most with the given time period
-        best_speaker = "UNKNOWN"
-        best_overlap = 0
-        
+        # Prefer speaker whose segment contains the midpoint (handles overlaps)
+        midpoint = (start_time + end_time) / 2.0
+        containing = []
         for seg in speaker_segments:
             try:
-                # Calculate overlap between the time periods
+                if seg['start'] <= midpoint <= seg['end']:
+                    containing.append(seg)
+            except (KeyError, TypeError):
+                continue
+        if containing:
+            # If multiple contain midpoint (overlapped speech), prefer the shorter segment (more specific)
+            chosen = min(containing, key=lambda s: (s['end'] - s['start'], s['start']))
+            return chosen.get('speaker', 'UNKNOWN')
+
+        # Fallback: choose maximal overlap; tie-break by highest coverage ratio then shorter segment
+        best_speaker = "UNKNOWN"
+        best_overlap = 0.0
+        best_coverage = -1.0
+        best_len = float('inf')
+        for seg in speaker_segments:
+            try:
+                seg_len = max(1e-6, seg['end'] - seg['start'])
                 overlap_start = max(start_time, seg['start'])
                 overlap_end = min(end_time, seg['end'])
-                overlap_duration = max(0, overlap_end - overlap_start)
-                
-                if overlap_duration > best_overlap:
+                overlap_duration = max(0.0, overlap_end - overlap_start)
+                if overlap_duration <= 0.0:
+                    continue
+                coverage = overlap_duration / seg_len
+                # Primary: larger overlap, Secondary: higher coverage, Tertiary: shorter segment
+                if (
+                    overlap_duration > best_overlap or
+                    (abs(overlap_duration - best_overlap) < 1e-9 and coverage > best_coverage) or
+                    (abs(overlap_duration - best_overlap) < 1e-9 and abs(coverage - best_coverage) < 1e-9 and seg_len < best_len)
+                ):
                     best_overlap = overlap_duration
-                    best_speaker = seg['speaker']
-            except (KeyError, TypeError) as e:
-                print(f"Warning: Invalid speaker segment format: {e}")
+                    best_coverage = coverage
+                    best_len = seg_len
+                    best_speaker = seg.get('speaker', 'UNKNOWN')
+            except (KeyError, TypeError):
                 continue
-        
         return best_speaker
 
     def extract_transcripts_batch(self, audio_files, progress_callback=None):
