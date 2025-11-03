@@ -21,6 +21,7 @@ datasets[audio]
 librosa
 opensmile
 ffmpeg-python
+imageio-ffmpeg
 pyannote-audio
 
 # Object detection

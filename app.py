@@ -12,6 +12,7 @@ import threading
 # Third-party libraries (assumed pre-installed via requirements.txt)
 import ffmpeg
 import wx
+import shutil
 
 # Import the core processing classes
 from pose import PoseProcessor
@@ -51,6 +52,29 @@ def ensure_video_playable(input_path, output_path=None):
         return output_path
     except Exception:
         return None
+
+
+def ensure_ffmpeg_available():
+    """Ensure an ffmpeg executable is available for ffmpeg-python.
+
+    Tries system PATH first, then imageio-ffmpeg fallback. If found via imageio,
+    prepend its directory to PATH for this process so ffmpeg-python can launch it.
+    Returns True if available, else False.
+    """
+    # System ffmpeg available?
+    if shutil.which("ffmpeg"):
+        return True
+    # Try bundled binary from imageio-ffmpeg
+    try:
+        import imageio_ffmpeg  # type: ignore
+        exe_path = imageio_ffmpeg.get_ffmpeg_exe()
+        if exe_path and os.path.exists(exe_path):
+            exe_dir = os.path.dirname(exe_path)
+            os.environ["PATH"] = exe_dir + os.pathsep + os.environ.get("PATH", "")
+            return True
+    except Exception:
+        pass
+    return False
 
 
 class GradientPanel(wx.Panel):
@@ -1009,6 +1033,19 @@ class VideoToWavConverter(wx.Frame):
 
 
 def main():
+    # Ensure ffmpeg is available before the UI starts doing conversions
+    if not ensure_ffmpeg_available():
+        msg = (
+            "ffmpeg was not found. Install it or let the app use a bundled one.\n\n"
+            "macOS: brew install ffmpeg\n"
+            "Linux: sudo apt-get install ffmpeg\n"
+            "Windows: choco install ffmpeg\n\n"
+            "Alternatively, ensure imageio-ffmpeg is installed (already in requirements)."
+        )
+        try:
+            wx.MessageBox(msg, "ffmpeg not found", wx.OK | wx.ICON_ERROR)
+        except Exception:
+            print(msg)
     app = wx.App()
     frm = VideoToWavConverter(None)
     frm.Show()
