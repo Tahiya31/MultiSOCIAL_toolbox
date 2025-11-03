@@ -89,18 +89,48 @@ class PoseProcessor:
         cy = 0.5 * (y1 + y2)
         return cx, cy
 
-    def _seed_rois_if_needed(self, image_rgb, image_width, image_height, locked_rois, margin_ratio=0.25):
-        """Ensure YOLO is initialized and seed ROIs when none exist."""
+    def _seed_rois_if_needed(self, image_rgb, image_width, image_height, locked_rois, margin_ratio=0.25, force_spawn_check=False):
+        """Ensure YOLO is initialized and seed ROIs when none exist, or periodically check for new people."""
         # Ensure YOLO is loaded
         self._ensure_yolo()
-        if not locked_rois:
+        
+        # Always run detection if no ROIs exist
+        # OR if force_spawn_check is True (periodic check for new people)
+        should_detect = (not locked_rois) or force_spawn_check
+        
+        if should_detect:
             results = self.yolo.predict(image_rgb, size=640)
             boxes = results.xyxy[0]
             person_boxes = [b[:4].int().tolist() for b in boxes if int(b[5]) == 0]
-            for (x1, y1, x2, y2) in person_boxes:
-                x1e, y1e, x2e, y2e = self._expand_and_clip_bbox(x1, y1, x2, y2, image_width, image_height, margin_ratio=margin_ratio)
-                roi_pose = mp.solutions.pose.Pose(static_image_mode=False, min_detection_confidence=0.7, min_tracking_confidence=0.7, model_complexity=2)
-                locked_rois.append({"x1": x1e, "y1": y1e, "x2": x2e, "y2": y2e, "lost": 0, "pose": roi_pose, "overlap_streak": 0})
+            
+            # If we already have ROIs, only add NEW people (not overlapping with existing)
+            if locked_rois:
+                new_people = []
+                for (x1, y1, x2, y2) in person_boxes:
+                    x1e, y1e, x2e, y2e = self._expand_and_clip_bbox(x1, y1, x2, y2, image_width, image_height, margin_ratio=margin_ratio)
+                    # Check if this detection overlaps significantly with any existing ROI
+                    is_new = True
+                    for roi in locked_rois:
+                        iou = self._iou((x1e, y1e, x2e, y2e), (roi["x1"], roi["y1"], roi["x2"], roi["y2"]))
+                        if iou > 0.3:  # 30% overlap means it's the same person
+                            is_new = False
+                            break
+                    if is_new:
+                        new_people.append((x1e, y1e, x2e, y2e))
+                
+                # Add new people to the tracking list
+                for (x1e, y1e, x2e, y2e) in new_people:
+                    roi_pose = mp.solutions.pose.Pose(static_image_mode=False, min_detection_confidence=0.7, min_tracking_confidence=0.7, model_complexity=2)
+                    locked_rois.append({"x1": x1e, "y1": y1e, "x2": x2e, "y2": y2e, "lost": 0, "pose": roi_pose, "overlap_streak": 0})
+                    if self.status_callback:
+                        self.status_callback(f"🆕 New person detected! Now tracking {len(locked_rois)} people")
+            else:
+                # No existing ROIs, add all detected people
+                for (x1, y1, x2, y2) in person_boxes:
+                    x1e, y1e, x2e, y2e = self._expand_and_clip_bbox(x1, y1, x2, y2, image_width, image_height, margin_ratio=margin_ratio)
+                    roi_pose = mp.solutions.pose.Pose(static_image_mode=False, min_detection_confidence=0.7, min_tracking_confidence=0.7, model_complexity=2)
+                    locked_rois.append({"x1": x1e, "y1": y1e, "x2": x2e, "y2": y2e, "lost": 0, "pose": roi_pose, "overlap_streak": 0})
+        
         return locked_rois
 
     def _process_multiperson_frame(self, image_rgb, image_width, image_height, locked_rois):
@@ -389,8 +419,10 @@ class PoseProcessor:
             image_rgb = cv2.cvtColor(proc_frame, cv2.COLOR_BGR2RGB)
 
             if self.enable_multi_person_pose:
-                # Seed ROIs using shared pipeline
-                locked_rois = self._seed_rois_if_needed(image_rgb, w, h, locked_rois, margin_ratio=0.25)
+                # Seed ROIs using shared pipeline with periodic new-person detection
+                # Check for new people every _spawn_period frames (default 10)
+                force_check = (self._spawn_period > 0) and (frame_idx % self._spawn_period == 0)
+                locked_rois = self._seed_rois_if_needed(image_rgb, w, h, locked_rois, margin_ratio=0.25, force_spawn_check=force_check)
 
                 # If still none, skip frame
                 if not locked_rois:
@@ -552,8 +584,10 @@ class PoseProcessor:
                 image_rgb = cv2.cvtColor(proc_frame, cv2.COLOR_BGR2RGB)
 
                 if self.enable_multi_person_pose:
-                    # Seed ROIs using shared pipeline
-                    locked_rois = self._seed_rois_if_needed(image_rgb, proc_w, proc_h, locked_rois, margin_ratio=0.25)
+                    # Seed ROIs using shared pipeline with periodic new-person detection
+                    # Check for new people every _spawn_period frames (default 10)
+                    force_check = (self._spawn_period > 0) and (frame_idx % self._spawn_period == 0)
+                    locked_rois = self._seed_rois_if_needed(image_rgb, proc_w, proc_h, locked_rois, margin_ratio=0.25, force_spawn_check=force_check)
 
                     # If no ROIs found, write frame and continue
                     if not locked_rois:
