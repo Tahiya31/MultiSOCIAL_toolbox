@@ -13,6 +13,7 @@ import threading
 import ffmpeg
 import wx
 import shutil
+import unicodedata
 
 # Import the core processing classes
 from pose import PoseProcessor
@@ -87,6 +88,39 @@ class GradientPanel(wx.Panel):
         dc = wx.AutoBufferedPaintDC(self)
         rect = self.GetClientRect()
         dc.GradientFillLinear(rect, '#00695C', '#2E7D32', wx.NORTH)  # Dark Teal to Medium Forest Green
+
+
+class GlassPanel(wx.Panel):
+    """A translucent rounded-rectangle container used to group options.
+
+    Children should be added to its internal BoxSizer via SetSizer as usual.
+    """
+    def __init__(self, parent, corner_radius=10, fill_rgba=(20, 20, 20, 160)):
+        super(GlassPanel, self).__init__(parent, style=wx.BORDER_NONE)
+        self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
+        self.corner_radius = corner_radius
+        self.fill_rgba = fill_rgba
+        self.Bind(wx.EVT_PAINT, self.OnPaint)
+
+    def OnPaint(self, event):
+        dc = wx.AutoBufferedPaintDC(self)
+        gc = wx.GraphicsContext.Create(dc)
+        rect = self.GetClientRect()
+        if not gc:
+            return
+        # Inset so the rounded border isn't clipped
+        inset = 6
+        x = rect.x + inset
+        y = rect.y + inset
+        w = max(0, rect.width - inset * 2)
+        h = max(0, rect.height - inset * 2)
+        r = self.corner_radius
+        path = gc.CreatePath()
+        path.AddRoundedRectangle(x, y, w, h, r)
+        rcol = wx.Colour(*self.fill_rgba)
+        gc.SetBrush(wx.Brush(rcol))
+        gc.SetPen(wx.Pen(wx.Colour(255, 255, 255, 40), 1))
+        gc.DrawPath(path)
 
 
 class ElevatedLogoPanel(wx.Panel):
@@ -192,27 +226,29 @@ class CustomTooltip(wx.PopupWindow):
     def __init__(self, parent, text):
         super(CustomTooltip, self).__init__(parent, wx.SIMPLE_BORDER)
         self.text = text
-        self.SetBackgroundColour('#D3D3D3')  # Light gray to match buttons
-        self.SetForegroundColour('#FFFFFF')  # White text to match buttons
+        # Darker, higher-contrast tooltip
+        self.SetBackgroundColour('#1E1E1E')
+        self.SetForegroundColour('#F5F5F5')
         
         # Create a panel for the tooltip content
         panel = wx.Panel(self)
-        panel.SetBackgroundColour('#D3D3D3')  # Light gray background
+        panel.SetBackgroundColour('#1E1E1E')
         
         # Create text control for the tooltip with word wrapping
         self.text_ctrl = wx.StaticText(panel, label=text, style=wx.ALIGN_LEFT)
-        self.text_ctrl.SetFont(wx.Font(10, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
-        self.text_ctrl.SetForegroundColour('#FFFFFF')  # White text
-        self.text_ctrl.Wrap(300)  # Wrap text at 300 pixels width
+        self.text_ctrl.SetFont(wx.Font(11, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_MEDIUM))
+        self.text_ctrl.SetForegroundColour('#F5F5F5')
+        self.text_ctrl.Wrap(340)
         
         # Layout
         sizer = wx.BoxSizer(wx.VERTICAL)
-        sizer.Add(self.text_ctrl, flag=wx.ALL, border=8)
+        sizer.Add(self.text_ctrl, flag=wx.ALL, border=10)
         panel.SetSizer(sizer)
         
         # Size the tooltip
         panel.Fit()
-        self.SetSize(panel.GetSize())
+        # Add a subtle border by enlarging slightly and drawing via parent window border
+        self.SetSize(panel.GetSize() + wx.Size(6, 6))
 
 
 class InfoIcon(wx.StaticText):
@@ -283,6 +319,15 @@ class InfoIcon(wx.StaticText):
             tooltip_x = parent_pos.x + icon_rect.x + icon_rect.width + 2
             tooltip_y = parent_pos.y + icon_rect.y
             
+            # Clamp within visible display bounds to avoid overflow
+            try:
+                screen_w, screen_h = wx.GetDisplaySize()
+                tip_w, tip_h = self.tooltip.GetSize()
+                tooltip_x = max(0, min(tooltip_x, screen_w - tip_w - 8))
+                tooltip_y = max(0, min(tooltip_y, screen_h - tip_h - 8))
+            except Exception:
+                pass
+            
             self.tooltip.Position((tooltip_x, tooltip_y), (0, 0))
             self.tooltip.Show()
 
@@ -328,11 +373,14 @@ class VideoToWavConverter(wx.Frame):
         vbox = wx.BoxSizer(wx.VERTICAL)
         
         # (removed top status label to avoid duplication)
+
+        # File extensions constants
+        self.VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv")
+        self.AUDIO_EXTENSIONS = (".wav",)
         
         # Add extra space above the title
-        vbox.Add((0, 30))  # Add a 30-pixel high spacer, adjust as needed
-		
-		  
+        vbox.Add((0, 20))  # Add a 20-pixel high spacer
+        
         new_width, new_height = wx.GetDisplaySize()
         logo_size = min(int(new_height * 0.08), 150)
         
@@ -354,23 +402,6 @@ class VideoToWavConverter(wx.Frame):
         top_box.AddStretchSpacer(1)
 
         vbox.Add(top_box, flag=wx.EXPAND | wx.TOP | wx.BOTTOM, border=10)
-
-        # GitHub link
-        #github_link = hl.HyperlinkCtrl(pnl, id=wx.ID_ANY, label="GitHub", url="https://github.com")
-        #github_icon_path = "github_icon.png"  # Path to your GitHub icon image
-        #github_bmp = wx.Bitmap(github_icon_path, wx.BITMAP_TYPE_ANY)
-        #github_bitmap = wx.StaticBitmap(pnl, bitmap=github_bmp)
-
-        # Horizontal box sizer to arrange logo and GitHub link
-        #hbox = wx.BoxSizer(wx.HORIZONTAL)
-        #hbox.AddStretchSpacer(1) 
-        #hbox.Add(logo_bitmap, flag=wx.ALL|wx.ALIGN_LEFT, border=5)
-        #hbox.AddStretchSpacer(1)  # Add stretchable space between logo and GitHub link
-        #vbox.Add(hbox, proportion=1, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
-        
-        #hbox.Add(github_link, flag=wx.ALL|wx.ALIGN_RIGHT, border=5)
-        #hbox.Add(github_bitmap, flag=wx.ALL|wx.ALIGN_RIGHT, border=5)
-        
         
         # Title
         self.title = wx.StaticText(pnl, label="Welcome to", style=wx.ALIGN_CENTER)
@@ -387,57 +418,82 @@ class VideoToWavConverter(wx.Frame):
 
         vbox.Add(self.logoLabel, flag=wx.ALIGN_CENTER|wx.TOP, border=5)  # Adjusted the top border
 
-        # File Picker
-        #self.filePicker = wx.FilePickerCtrl(pnl, message="Select a video or an audio file", wildcard="Video files (*.mp4;*.avi;*.mov;*.mkv)|*.mp4;*.avi;*.mov;*.mkv|WAV files (*.wav)|*.wav")
-        #vbox.Add(self.filePicker, flag=wx.EXPAND|wx.ALL, border=14)
-        # Folder Picker
-        self.folderPicker = wx.DirPickerCtrl(pnl, message="Select a folder containing media files")
-        vbox.Add(self.folderPicker, flag=wx.EXPAND | wx.ALL, border=10,proportion=0)
+        # Mode toggle buttons (Video / Audio)
+        mode_box = wx.BoxSizer(wx.HORIZONTAL)
+        self.videoModeBtn = wx.Button(pnl, label="Video Options", size=(140, 35))
+        self.audioModeBtn = wx.Button(pnl, label="Audio Options", size=(140, 35))
+        # Style the buttons
+        mode_btn_font = wx.Font(11, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD)
+        self.videoModeBtn.SetFont(mode_btn_font)
+        self.audioModeBtn.SetFont(mode_btn_font)
+        self.videoModeBtn.Bind(wx.EVT_BUTTON, lambda evt: self.switch_mode('video'))
+        self.audioModeBtn.Bind(wx.EVT_BUTTON, lambda evt: self.switch_mode('audio'))
+        mode_box.AddStretchSpacer(1)
+        mode_box.Add(self.videoModeBtn, flag=wx.ALL, border=5)
+        mode_box.Add(self.audioModeBtn, flag=wx.ALL, border=5)
+        mode_box.AddStretchSpacer(1)
+        vbox.Add(mode_box, flag=wx.EXPAND|wx.TOP|wx.BOTTOM, border=10)
 
-        # Placeholder above buttons
-        self.placeholderVideoLabel = wx.StaticText(pnl, label="If you have a video file:")
+        # Folder Picker and caption
+        self.folderCaption = wx.StaticText(pnl, label="Select a folder containing VIDEO files", style=wx.ALIGN_CENTER)
+        self.folderCaption.SetFont(wx.Font(13, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+        self.folderCaption.SetForegroundColour('#FFFFFF')
+        vbox.Add(self.folderCaption, flag=wx.ALIGN_CENTER|wx.LEFT|wx.RIGHT|wx.TOP, border=8)
+        self.folderPicker = wx.DirPickerCtrl(pnl, message="Select a folder containing media files")
+        self.folderPicker.Bind(wx.EVT_DIRPICKER_CHANGED, self.on_folder_changed)
+        vbox.Add(self.folderPicker, flag=wx.EXPAND | wx.ALL, border=10, proportion=0)
+
+        # Panels for Video and Audio options (translucent, centered)
+        self.videoPanel = GlassPanel(pnl)
+        self.audioPanel = GlassPanel(pnl)
+        video_sizer = wx.BoxSizer(wx.VERTICAL)
+        audio_sizer = wx.BoxSizer(wx.VERTICAL)
+
+        # Placeholder above buttons (Video panel)
+        self.placeholderVideoLabel = wx.StaticText(self.videoPanel, label="If you have a video file:")
         placeholder_above_font = wx.Font(20, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
         self.placeholderVideoLabel.SetFont(placeholder_above_font)
-        vbox.Add(self.placeholderVideoLabel, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+        video_sizer.AddSpacer(8)
+        video_sizer.Add(self.placeholderVideoLabel, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
 
         # Toggle for multi-person pose (video option)
-        self.multiPersonCheckbox = wx.CheckBox(pnl, label="Enable Multi-Person Pose")
+        self.multiPersonCheckbox = wx.CheckBox(self.videoPanel, label="Enable Multi-Person Pose")
         self.multiPersonCheckbox.SetFont(wx.Font(14, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
         self.multiPersonCheckbox.SetForegroundColour('#FFFFFF')
-        vbox.Add(self.multiPersonCheckbox, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+        video_sizer.Add(self.multiPersonCheckbox, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
 
         # Downsampling controls
         ds_box = wx.BoxSizer(wx.HORIZONTAL)
         # Frame stride
-        ds_label = wx.StaticText(pnl, label="Process every k-th frame:")
+        ds_label = wx.StaticText(self.videoPanel, label="Process every k-th frame:")
         ds_label.SetFont(wx.Font(12, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
         ds_label.SetForegroundColour('#FFFFFF')
         ds_box.Add(ds_label, flag=wx.ALIGN_CENTER_VERTICAL|wx.RIGHT, border=8)
 
-        self.frameStrideInput = wx.SpinCtrl(pnl, value="1", min=1, max=10)
+        self.frameStrideInput = wx.SpinCtrl(self.videoPanel, value="1", min=1, max=10)
         self.frameStrideInput.SetFont(wx.Font(12, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
         ds_box.Add(self.frameStrideInput, flag=wx.ALIGN_CENTER_VERTICAL|wx.RIGHT, border=20)
 
         # Resolution downscale checkbox (fixed 720p)
-        self.downscaleCheckbox = wx.CheckBox(pnl, label="Downscale to 720p for processing")
+        self.downscaleCheckbox = wx.CheckBox(self.videoPanel, label="Downscale to 720p for processing")
         self.downscaleCheckbox.SetFont(wx.Font(12, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
         self.downscaleCheckbox.SetForegroundColour('#FFFFFF')
         ds_box.Add(self.downscaleCheckbox, flag=wx.ALIGN_CENTER_VERTICAL)
 
-        vbox.Add(ds_box, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+        video_sizer.Add(ds_box, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
 
         # Frame threshold input for bounding box recalibration
         frame_threshold_box = wx.BoxSizer(wx.HORIZONTAL)
-        frame_threshold_label = wx.StaticText(pnl, label="Frame Threshold for Bounding Box Recalibration:")
+        frame_threshold_label = wx.StaticText(self.videoPanel, label="Frame Threshold for Bounding Box Recalibration:")
         frame_threshold_label.SetFont(wx.Font(12, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
         frame_threshold_label.SetForegroundColour('#FFFFFF')
         frame_threshold_box.Add(frame_threshold_label, flag=wx.ALIGN_CENTER_VERTICAL|wx.RIGHT, border=10)
         
-        self.frameThresholdInput = wx.SpinCtrl(pnl, value="10", min=1, max=100)
+        self.frameThresholdInput = wx.SpinCtrl(self.videoPanel, value="10", min=1, max=100)
         self.frameThresholdInput.SetFont(wx.Font(12, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
         frame_threshold_box.Add(self.frameThresholdInput, flag=wx.ALIGN_CENTER_VERTICAL)
         
-        vbox.Add(frame_threshold_box, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+        video_sizer.Add(frame_threshold_box, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
 
         # Button Font
         button_font = wx.Font(16, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
@@ -445,39 +501,33 @@ class VideoToWavConverter(wx.Frame):
 
         # Convert Button with Placeholder
         hbox_convert = wx.BoxSizer(wx.HORIZONTAL)
-        #placeholder_convert = wx.StaticText(pnl, label="If you have a video file:")
-        #placeholder_convert.SetFont(placeholder_font)
-        #hbox_convert.Add(placeholder_convert, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
         
-        self.convertBtn = TooltipButton(pnl, 'Convert video to audio', 
+        self.convertBtn = TooltipButton(self.videoPanel, 'Convert video to audio', 
                                        'Converts video files (.mp4, .avi, .mov, .mkv) to audio files (.wav) for further processing')
         self.convertBtn.SetFont(button_font)
         self.convertBtn.Bind(wx.EVT_BUTTON, self.on_convert)
         hbox_convert.Add(self.convertBtn, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
         
         # Add info icon
-        info_icon = self.convertBtn.add_info_icon(pnl)
+        info_icon = self.convertBtn.add_info_icon(self.videoPanel)
         hbox_convert.Add(info_icon, flag=wx.ALIGN_CENTER|wx.LEFT, border=5)
         
-        vbox.Add(hbox_convert, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
+        video_sizer.Add(hbox_convert, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
 
         # Extract Pose Features Button with Placeholder
         hbox_extract_pose = wx.BoxSizer(wx.HORIZONTAL)
-        #placeholder_pose = wx.StaticText(pnl, label="To extract pose features:")
-        #placeholder_pose.SetFont(placeholder_font)
-        #hbox_extract_pose.Add(placeholder_pose, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
 
-        self.extractFeaturesBtn = TooltipButton(pnl, 'Extract Pose Features', 
+        self.extractFeaturesBtn = TooltipButton(self.videoPanel, 'Extract Pose Features', 
                                                'Extracts human pose landmarks and features from video files using MediaPipe. Supports single and multi-person detection.')
         self.extractFeaturesBtn.SetFont(button_font)
         self.extractFeaturesBtn.Bind(wx.EVT_BUTTON, self.on_extract_features)
         hbox_extract_pose.Add(self.extractFeaturesBtn, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
         
         # Add info icon
-        info_icon = self.extractFeaturesBtn.add_info_icon(pnl)
+        info_icon = self.extractFeaturesBtn.add_info_icon(self.videoPanel)
         hbox_extract_pose.Add(info_icon, flag=wx.ALIGN_CENTER|wx.LEFT, border=5)
 
-        vbox.Add(hbox_extract_pose, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
+        video_sizer.Add(hbox_extract_pose, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
         
         # Embed Pose Features Button with Placeholder
         hbox_embed_pose = wx.BoxSizer(wx.HORIZONTAL)
@@ -485,32 +535,40 @@ class VideoToWavConverter(wx.Frame):
         #placeholder_pose.SetFont(placeholder_font)
         #hbox_extract_pose.Add(placeholder_pose, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
 
-        self.embedFeaturesBtn = TooltipButton(pnl, 'Embed Pose Features', 
+        self.embedFeaturesBtn = TooltipButton(self.videoPanel, 'Embed Pose Features', 
                                              'Creates vector embeddings from extracted pose features for machine learning and analysis purposes.')
         self.embedFeaturesBtn.SetFont(button_font)
         self.embedFeaturesBtn.Bind(wx.EVT_BUTTON, self.on_embed_poses)
         hbox_embed_pose.Add(self.embedFeaturesBtn, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
         
         # Add info icon
-        info_icon = self.embedFeaturesBtn.add_info_icon(pnl)
+        info_icon = self.embedFeaturesBtn.add_info_icon(self.videoPanel)
         hbox_embed_pose.Add(info_icon, flag=wx.ALIGN_CENTER|wx.LEFT, border=5)
 
-        vbox.Add(hbox_embed_pose, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
+        video_sizer.Add(hbox_embed_pose, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
         
         # Verify Consistency Button
         hbox_verify = wx.BoxSizer(wx.HORIZONTAL)
-        self.verifyBtn = TooltipButton(pnl, 'Verify Consistency', 'Verifies that embedded videos match extracted pose CSVs and saves a report with worst-frame thumbnails.')
+        self.verifyBtn = TooltipButton(self.videoPanel, 'Verify Consistency', 'Verifies that embedded videos match extracted pose CSVs and saves a report with worst-frame thumbnails.')
         self.verifyBtn.SetFont(button_font)
         self.verifyBtn.Bind(wx.EVT_BUTTON, self.on_verify_consistency)
         hbox_verify.Add(self.verifyBtn, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
-        info_icon = self.verifyBtn.add_info_icon(pnl)
+        info_icon = self.verifyBtn.add_info_icon(self.videoPanel)
         hbox_verify.Add(info_icon, flag=wx.ALIGN_CENTER|wx.LEFT, border=5)
-        vbox.Add(hbox_verify, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
+        video_sizer.Add(hbox_verify, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
+        video_sizer.AddSpacer(8)
 
-        # Placeholder middle
-        self.placeholderAudioLabel = wx.StaticText(pnl, label="If you have an audio file:")
+        # Placeholder middle (Audio panel)
+        self.placeholderAudioLabel = wx.StaticText(self.audioPanel, label="If you have an audio file:")
         self.placeholderAudioLabel.SetFont(placeholder_font)
-        vbox.Add(self.placeholderAudioLabel, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
+        audio_sizer.AddSpacer(8)
+        audio_sizer.Add(self.placeholderAudioLabel, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
+
+        # Audio diarization toggle
+        self.diarizationCheckbox = wx.CheckBox(self.audioPanel, label="Enable speaker diarization (requires Hugging Face token)")
+        self.diarizationCheckbox.SetFont(wx.Font(12, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+        self.diarizationCheckbox.SetForegroundColour('#FFFFFF')
+        audio_sizer.Add(self.diarizationCheckbox, flag=wx.ALIGN_CENTER|wx.ALL, border=6)
 
         # Extract Audio Features Button with Placeholder
         hbox_extract_audio = wx.BoxSizer(wx.HORIZONTAL)
@@ -518,17 +576,17 @@ class VideoToWavConverter(wx.Frame):
         #placeholder_audio.SetFont(placeholder_font)
         #hbox_extract_audio.Add(placeholder_audio, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
 
-        self.extractAudioFeaturesBtn = TooltipButton(pnl, 'Extract Audio Features', 
+        self.extractAudioFeaturesBtn = TooltipButton(self.audioPanel, 'Extract Audio Features', 
                                                     'Extracts acoustic features from audio files (.wav) including MFCC, spectral features, and prosodic characteristics.')
         self.extractAudioFeaturesBtn.SetFont(button_font)
         self.extractAudioFeaturesBtn.Bind(wx.EVT_BUTTON, self.on_extract_audio_features)
         hbox_extract_audio.Add(self.extractAudioFeaturesBtn, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
         
         # Add info icon
-        info_icon = self.extractAudioFeaturesBtn.add_info_icon(pnl)
+        info_icon = self.extractAudioFeaturesBtn.add_info_icon(self.audioPanel)
         hbox_extract_audio.Add(info_icon, flag=wx.ALIGN_CENTER|wx.LEFT, border=5)
 
-        vbox.Add(hbox_extract_audio, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
+        audio_sizer.Add(hbox_extract_audio, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
 
         # Extract Transcripts Button with Placeholder
         hbox_extract_transcripts = wx.BoxSizer(wx.HORIZONTAL)
@@ -536,27 +594,44 @@ class VideoToWavConverter(wx.Frame):
         #placeholder_transcripts.SetFont(placeholder_font)
         #hbox_extract_transcripts.Add(placeholder_transcripts, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
 
-        self.extractTranscriptsBtn = TooltipButton(pnl, 'Extract Transcripts', 
+        self.extractTranscriptsBtn = TooltipButton(self.audioPanel, 'Extract Transcripts', 
                                                   'Converts speech in audio files (.wav) to text transcripts using automatic speech recognition (ASR) technology.')
         self.extractTranscriptsBtn.SetFont(button_font)
         self.extractTranscriptsBtn.Bind(wx.EVT_BUTTON, self.on_extract_transcripts)
         hbox_extract_transcripts.Add(self.extractTranscriptsBtn, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
         
         # Add info icon
-        info_icon = self.extractTranscriptsBtn.add_info_icon(pnl)
+        info_icon = self.extractTranscriptsBtn.add_info_icon(self.audioPanel)
         hbox_extract_transcripts.Add(info_icon, flag=wx.ALIGN_CENTER|wx.LEFT, border=5)
+        audio_sizer.Add(hbox_extract_transcripts, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
+        audio_sizer.AddSpacer(8)
 
-        vbox.Add(hbox_extract_transcripts, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
+        # Assemble panels
+        self.videoPanel.SetSizer(video_sizer)
+        self.audioPanel.SetSizer(audio_sizer)
+        # Add panels directly with proper spacing and stretch to push footer to bottom
+        vbox.AddSpacer(8)  # Small spacer before options panel
+        vbox.Add(self.videoPanel, proportion=0, flag=wx.ALIGN_CENTER|wx.LEFT|wx.RIGHT, border=12)
+        vbox.Add(self.audioPanel, proportion=0, flag=wx.ALIGN_CENTER|wx.LEFT|wx.RIGHT, border=12)
+        vbox.AddStretchSpacer(1)  # Push status and progress bar to bottom
         
-        
-        #status update (bottom, red)
+        # Status update (bottom, centered and bold)
         self.statusLabel = wx.StaticText(pnl, label="", style=wx.ALIGN_CENTER_HORIZONTAL)
-        self.statusLabel.SetForegroundColour('#800000')
+        self.statusLabel.SetForegroundColour('#FFFFFF')  # White for visibility on green gradient
+        try:
+            self.statusLabel.SetFont(wx.Font(13, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+        except Exception:
+            pass
         vbox.Add(self.statusLabel, flag=wx.EXPAND|wx.ALL, border=10)
 
-        # Progress Bar
-        self.progress = wx.Gauge(pnl, range=100, style=wx.GA_HORIZONTAL)
-        vbox.Add(self.progress, proportion=1, flag=wx.EXPAND|wx.ALL, border=12)
+        # Progress Bar with better visibility
+        self.progress = wx.Gauge(pnl, range=100, style=wx.GA_HORIZONTAL | wx.GA_SMOOTH)
+        self.progress.SetMinSize((-1, 20))
+        try:
+            self.progress.SetForegroundColour(wx.Colour(70, 180, 130))  # Green progress
+        except Exception:
+            pass
+        vbox.Add(self.progress, proportion=0, flag=wx.EXPAND|wx.ALL, border=12)
         
         pnl.SetSizer(vbox)
         pnl.Layout()
@@ -565,14 +640,141 @@ class VideoToWavConverter(wx.Frame):
         best_min = vbox.CalcMin()
         # Ensure we have a sensible floor similar to initially set size
         self._baseline_size = (max(400, best_min.width), max(800, best_min.height))
-        self.SetMinSize(self._baseline_size)
         
         # Bind resize handler to make the UI responsive
         self.Bind(wx.EVT_SIZE, self.on_resize)
         
-        self.SetSize(self._baseline_size)
+        # Constrain frame size to screen bounds with margins and valid min/max hints
+        screen_w, screen_h = wx.GetDisplaySize()
+        max_w = max(600, screen_w - 80)
+        max_h = max(600, screen_h - 80)
+        base_w, base_h = self._baseline_size
+        min_w = min(base_w, max_w)
+        min_h = min(base_h, max_h)
+        self.SetSizeHints(min_w, min_h, max_w, max_h)
+        self.SetSize((min_w, min_h))
         self.SetTitle('MultiSOCIAL Toolbox')
         self.Centre()
+
+        # --- Underline effect for mode buttons ---
+        # Use thin wx.Panel as underline (modern look)
+        self._video_underline = wx.Panel(pnl, size=(-1, 3))
+        self._video_underline.SetBackgroundColour("#A5D6A7")
+        self._audio_underline = wx.Panel(pnl, size=(-1, 3))
+        self._audio_underline.SetBackgroundColour("#A5D6A7")
+        # Place under each mode button using mode_box sizer
+        # Insert underlines after buttons in the mode_box
+        # Find index of video/audio buttons in mode_box
+        # mode_box: [Stretch, videoBtn, audioBtn, Stretch]
+        mode_box.Insert(2, self._audio_underline, flag=wx.EXPAND | wx.LEFT | wx.RIGHT, border=5)
+        mode_box.Insert(1, self._video_underline, flag=wx.EXPAND | wx.LEFT | wx.RIGHT, border=5)
+        # Hide both initially; will be shown by switch_mode
+        self._video_underline.Hide()
+        self._audio_underline.Hide()
+
+        # Default state
+        self.active_mode = 'video'
+        self.hf_token = None
+        self.switch_mode('video')
+        # Provide sensible initial min sizes for centered glass panels
+        self._update_panel_sizes()
+        # Initialize button enabled state
+        self.update_buttons_enabled()
+        # Ensure status label is wrapped and centered once the frame is realized
+        try:
+            wx.CallAfter(self._apply_status_wrap_and_center)
+        except Exception:
+            pass
+
+    def switch_mode(self, mode):
+        self.active_mode = mode
+        # Remove old button background coloring for modern look
+        self.videoModeBtn.SetBackgroundColour(wx.NullColour)
+        self.audioModeBtn.SetBackgroundColour(wx.NullColour)
+        self.videoModeBtn.SetForegroundColour(wx.Colour(0, 0, 0))
+        self.audioModeBtn.SetForegroundColour(wx.Colour(0, 0, 0))
+        # Underline logic
+        if mode == 'video':
+            self.videoPanel.Show()
+            self.audioPanel.Hide()
+            self.folderCaption.SetLabel("Select a folder containing VIDEO files")
+            self.videoModeBtn.Enable(False)
+            self.audioModeBtn.Enable(True)
+            # Underline: show under video, hide under audio
+            self._video_underline.Show()
+            self._audio_underline.Hide()
+        else:
+            self.videoPanel.Hide()
+            self.audioPanel.Show()
+            self.folderCaption.SetLabel("Select a folder containing AUDIO (.wav) files")
+            self.videoModeBtn.Enable(True)
+            self.audioModeBtn.Enable(False)
+            # Underline: show under audio, hide under video
+            self._video_underline.Hide()
+            self._audio_underline.Show()
+        # Refresh button and underline appearance
+        self.videoModeBtn.Refresh()
+        self.audioModeBtn.Refresh()
+        self._video_underline.Refresh()
+        self._audio_underline.Refresh()
+        # Update panel sizes and relayout
+        self._update_panel_sizes()
+        self.Layout()
+        # Relayout parent panel as well
+        pnl = self.GetChildren()[0] if self.GetChildren() else None
+        if pnl and hasattr(pnl, "Layout"):
+            pnl.Layout()
+        # Reset UX state on mode switch
+        if hasattr(self, 'statusLabel'):
+            self.statusLabel.SetLabel("")
+        self.update_progress(0)
+        self.update_buttons_enabled()
+
+    def on_folder_changed(self, event):
+        self.ensure_output_folders(self.folderPicker.GetPath())
+        self.update_buttons_enabled()
+
+    def _update_panel_sizes(self):
+        # Keep panels at a reasonable width fraction of the frame
+        if not hasattr(self, 'videoPanel') or not hasattr(self, 'audioPanel'):
+            return
+        try:
+            cur_w, cur_h = self.GetSize()
+            target_w = max(380, int(cur_w * 0.60))
+            # Cap to avoid overly wide panels on very large screens
+            target_w = min(target_w, 900)
+            # Let each panel size itself based on content, with a min/max cap
+            if self.videoPanel:
+                self.videoPanel.SetMinSize((target_w, -1))
+                self.videoPanel.SetMaxSize((target_w, -1))
+            if self.audioPanel:
+                self.audioPanel.SetMinSize((target_w, -1))
+                self.audioPanel.SetMaxSize((target_w, -1))
+        except Exception:
+            pass
+
+    def update_buttons_enabled(self):
+        folder_path = self.folderPicker.GetPath()
+        has_folder = bool(folder_path)
+        # Detect files
+        video_files = []
+        audio_files = []
+        try:
+            if has_folder:
+                video_files = self.get_files_from_folder(folder_path, self.VIDEO_EXTENSIONS)
+                audio_files = self.get_files_from_folder(folder_path, self.AUDIO_EXTENSIONS)
+        except Exception:
+            pass
+        # Video buttons
+        enable_video = has_folder and len(video_files) > 0
+        for btn in [getattr(self, 'convertBtn', None), getattr(self, 'extractFeaturesBtn', None), getattr(self, 'embedFeaturesBtn', None), getattr(self, 'verifyBtn', None)]:
+            if btn:
+                btn.Enable(enable_video)
+        # Audio buttons
+        enable_audio = has_folder and len(audio_files) > 0
+        for btn in [getattr(self, 'extractAudioFeaturesBtn', None), getattr(self, 'extractTranscriptsBtn', None)]:
+            if btn:
+                btn.Enable(enable_audio)
         
     def _scale_font(self, base_point_size, scale):
         new_size = max(9, int(round(base_point_size * scale)))
@@ -596,11 +798,30 @@ class VideoToWavConverter(wx.Frame):
 
         # Scale title and logo fonts
         try:
-            self.title.SetFont(self._scale_font(20, scale))
-            self.logoLabel.SetFont(self._scale_bold_font(24, scale))
-            self.placeholderVideoLabel.SetFont(self._scale_font(20, scale))
-            self.placeholderAudioLabel.SetFont(self._scale_font(20, scale))
-            self.multiPersonCheckbox.SetFont(self._scale_font(14, scale))
+            if hasattr(self, 'title') and self.title:
+                self.title.SetFont(self._scale_font(20, scale))
+            if hasattr(self, 'logoLabel') and self.logoLabel:
+                self.logoLabel.SetFont(self._scale_bold_font(24, scale))
+            if hasattr(self, 'placeholderVideoLabel') and self.placeholderVideoLabel:
+                self.placeholderVideoLabel.SetFont(self._scale_font(20, scale))
+            if hasattr(self, 'placeholderAudioLabel') and self.placeholderAudioLabel:
+                self.placeholderAudioLabel.SetFont(self._scale_font(20, scale))
+            if hasattr(self, 'folderCaption') and self.folderCaption:
+                self.folderCaption.SetFont(self._scale_font(13, scale))
+                try:
+                    wrap_width = max(240, int(cur_w * 0.6))
+                    self.folderCaption.Wrap(wrap_width)
+                except Exception:
+                    pass
+            # Mode toggle buttons
+            if hasattr(self, 'videoModeBtn') and self.videoModeBtn:
+                self.videoModeBtn.SetFont(self._scale_font(11, scale))
+            if hasattr(self, 'audioModeBtn') and self.audioModeBtn:
+                self.audioModeBtn.SetFont(self._scale_font(11, scale))
+            if hasattr(self, 'multiPersonCheckbox') and self.multiPersonCheckbox:
+                self.multiPersonCheckbox.SetFont(self._scale_font(14, scale))
+            if hasattr(self, 'diarizationCheckbox') and self.diarizationCheckbox:
+                self.diarizationCheckbox.SetFont(self._scale_font(12, scale))
             if hasattr(self, 'frameStrideInput'):
                 self.frameStrideInput.SetFont(self._scale_font(12, scale))
             if hasattr(self, 'downscaleCheckbox'):
@@ -608,13 +829,20 @@ class VideoToWavConverter(wx.Frame):
             # Frame threshold elements
             if hasattr(self, 'frameThresholdInput'):
                 self.frameThresholdInput.SetFont(self._scale_font(12, scale))
-            # Buttons
+            # Buttons (safely check existence)
             button_font = self._scale_font(16, scale)
-            self.convertBtn.SetFont(button_font)
-            self.extractFeaturesBtn.SetFont(button_font)
-            self.embedFeaturesBtn.SetFont(button_font)
-            self.extractAudioFeaturesBtn.SetFont(button_font)
-            self.extractTranscriptsBtn.SetFont(button_font)
+            if hasattr(self, 'convertBtn') and self.convertBtn:
+                self.convertBtn.SetFont(button_font)
+            if hasattr(self, 'extractFeaturesBtn') and self.extractFeaturesBtn:
+                self.extractFeaturesBtn.SetFont(button_font)
+            if hasattr(self, 'embedFeaturesBtn') and self.embedFeaturesBtn:
+                self.embedFeaturesBtn.SetFont(button_font)
+            if hasattr(self, 'verifyBtn') and self.verifyBtn:
+                self.verifyBtn.SetFont(button_font)
+            if hasattr(self, 'extractAudioFeaturesBtn') and self.extractAudioFeaturesBtn:
+                self.extractAudioFeaturesBtn.SetFont(button_font)
+            if hasattr(self, 'extractTranscriptsBtn') and self.extractTranscriptsBtn:
+                self.extractTranscriptsBtn.SetFont(button_font)
             # Status label: scale font and wrap to panel width for responsiveness
             if hasattr(self, 'statusLabel') and self.statusLabel:
                 self.statusLabel.SetFont(self._scale_font(12, scale))
@@ -622,9 +850,7 @@ class VideoToWavConverter(wx.Frame):
                     wrap_width = max(200, int(cur_w * 0.9))
                     self.statusLabel.Wrap(wrap_width)
                     # Re-apply centering after Wrap, which can reset alignment
-                    self.statusLabel.SetWindowStyleFlag(
-                        self.statusLabel.GetWindowStyle() | wx.ALIGN_CENTER_HORIZONTAL
-                    )
+                    self.statusLabel.SetWindowStyleFlag(wx.ALIGN_CENTER_HORIZONTAL)
                 except Exception:
                     pass
             # Progress bar height scaling
@@ -634,22 +860,89 @@ class VideoToWavConverter(wx.Frame):
             pass
 
         # Relayout after scaling
+        self._update_panel_sizes()
         self.Layout()
         event.Skip()
 
     def set_status_message(self, message):
-        """Safely update the status label from any thread."""
+        """Safely update the centered status label with emoji-free text prefixed by 'Status:'."""
         if hasattr(self, 'statusLabel'):
-            wx.CallAfter(self.statusLabel.SetLabel, message)
+            # Remove emojis and most symbol-like non-ASCII chars
+            try:
+                text = str(message)
+                sanitized = ''.join(
+                    ch for ch in text
+                    if not (ord(ch) > 127 and unicodedata.category(ch) in ('So', 'Sk', 'Cs'))
+                )
+            except Exception:
+                # Fallback: strip non-ascii
+                try:
+                    sanitized = str(message).encode('ascii', 'ignore').decode()
+                except Exception:
+                    sanitized = str(message)
+
+            final_text = f"Status: {sanitized}" if sanitized else "Status:"
+            wx.CallAfter(self.statusLabel.SetLabel, final_text)
+            # Wrap/center now (post event) and request layout
+            wx.CallAfter(self._apply_status_wrap_and_center)
+
+    def _apply_status_wrap_and_center(self):
+        """One place to wrap, center, and layout the status label based on current frame width."""
+        if not hasattr(self, 'statusLabel') or not self.statusLabel:
+            return
+        try:
+            cur_w = self.GetSize()[0]
+            wrap_width = max(300, int(cur_w * 0.9))
+            self.statusLabel.Wrap(wrap_width)
+        except Exception:
+            try:
+                self.statusLabel.Wrap(600)
+            except Exception:
+                pass
+        try:
+            self.statusLabel.SetWindowStyleFlag(wx.ALIGN_CENTER_HORIZONTAL)
+        except Exception:
+            pass
+        # --- Added layout/refresh logic to fix initial left alignment ---
+        try:
+            parent = self.statusLabel.GetParent()
+            if parent:
+                parent.Layout()
+            self.Layout()
+            self.Refresh()
+        except Exception:
+            pass
 
 
     def update_progress(self, value):
         """Update the progress bar."""
-        wx.CallAfter(self.progress.SetValue, value)
+        if hasattr(self, 'progress') and self.progress:
+            wx.CallAfter(self.progress.SetValue, value)
+
+    def make_overall_progress_cb(self, item_index, total_items):
+        """Return a callback mapping per-item percent (0-100) to overall percent (0-100)."""
+        total_items = max(1, int(total_items))
+        item_index = max(1, int(item_index))
+        def _cb(per_item_percent):
+            try:
+                per_item_fraction = float(per_item_percent) / 100.0
+            except Exception:
+                per_item_fraction = 0.0
+            overall = int((((item_index - 1) + per_item_fraction) / total_items) * 100)
+            self.update_progress(min(100, max(0, overall)))
+        return _cb
 
 
     def ensure_output_folders(self, folder_path):
         """Ensures output directories exist inside the selected folder only when needed."""
+        # Guard against empty/invalid path
+        if not folder_path or not os.path.exists(folder_path):
+            self.converted_audio_folder = None
+            self.extracted_pose_folder = None
+            self.embedded_pose_folder = None
+            self.extracted_audio_folder = None
+            self.extracted_transcripts_folder = None
+            return
     
         # Define folder paths
         self.converted_audio_folder = os.path.join(folder_path, "converted_audio")
@@ -661,8 +954,15 @@ class VideoToWavConverter(wx.Frame):
         # Check if the selected folder has video files
         video_files = self.get_files_from_folder(folder_path, (".mp4", ".avi", ".mov"))
         if video_files:
-            for folder in [self.converted_audio_folder, self.extracted_pose_folder, self.embedded_pose_folder]:
-                os.makedirs(folder, exist_ok=True)
+            try:
+                for folder in [self.converted_audio_folder, self.extracted_pose_folder, self.embedded_pose_folder]:
+                    os.makedirs(folder, exist_ok=True)
+            except (OSError, PermissionError) as e:
+                # Can't create folders, disable video processing
+                self.converted_audio_folder = None
+                self.extracted_pose_folder = None
+                self.embedded_pose_folder = None
+                wx.CallAfter(wx.MessageBox, f"Cannot create output folders: {e}", "Warning", wx.OK | wx.ICON_WARNING)
         else:
             self.converted_audio_folder = None
             self.extracted_pose_folder = None
@@ -671,8 +971,14 @@ class VideoToWavConverter(wx.Frame):
         # Check if the selected folder has audio files
         audio_files = self.get_files_from_folder(folder_path, (".wav",))
         if audio_files:
-            for folder in [self.extracted_audio_folder, self.extracted_transcripts_folder]:
-                os.makedirs(folder, exist_ok=True)
+            try:
+                for folder in [self.extracted_audio_folder, self.extracted_transcripts_folder]:
+                    os.makedirs(folder, exist_ok=True)
+            except (OSError, PermissionError) as e:
+                # Can't create folders, disable audio processing
+                self.extracted_audio_folder = None
+                self.extracted_transcripts_folder = None
+                wx.CallAfter(wx.MessageBox, f"Cannot create output folders: {e}", "Warning", wx.OK | wx.ICON_WARNING)
         else:
             self.extracted_audio_folder = None
             self.extracted_transcripts_folder = None
@@ -680,7 +986,13 @@ class VideoToWavConverter(wx.Frame):
             
     def get_files_from_folder(self, folder_path, extensions):
         """Retrieve files with the specified extensions from the folder."""
-        return [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith(extensions)]
+        try:
+            if not folder_path or not os.path.exists(folder_path) or not os.path.isdir(folder_path):
+                return []
+            return [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith(extensions)]
+        except (OSError, PermissionError, FileNotFoundError):
+            # Silently handle filesystem errors
+            return []
       
       
     def on_convert(self, event):
@@ -691,7 +1003,7 @@ class VideoToWavConverter(wx.Frame):
             return
 
         self.ensure_output_folders(folder_path)
-        video_files = self.get_files_from_folder(folder_path, (".mp4", ".avi", ".mov", ".mkv"))
+        video_files = self.get_files_from_folder(folder_path, self.VIDEO_EXTENSIONS)
 
         if not video_files:
             wx.MessageBox("No video files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
@@ -710,15 +1022,8 @@ class VideoToWavConverter(wx.Frame):
             file_name = os.path.basename(video_file)
             self.set_status_message(f"Converting to WAV: {file_name}")
             
-            # Create progress callback for this video
-            def make_progress_callback(video_index, total_videos):
-                def progress_callback(conversion_progress):
-                    # Calculate overall progress: (video_index-1)/total_videos + conversion_progress/total_videos
-                    overall_progress = int(((video_index - 1) / total_videos) * 100 + (conversion_progress / total_videos))
-                    self.update_progress(overall_progress)
-                return progress_callback
-            
-            self.convert_to_wav(video_file, progress_callback=make_progress_callback(i + 1, total_files))
+            # Overall progress callback (percent-based)
+            self.convert_to_wav(video_file, progress_callback=self.make_overall_progress_cb(i + 1, total_files))
 
         wx.MessageBox("Video to audio conversion completed!", "Success", wx.OK | wx.ICON_INFORMATION)
         self.update_progress(0)  # Reset progress bar
@@ -886,15 +1191,8 @@ class VideoToWavConverter(wx.Frame):
         for index, video_file in enumerate(video_files, start=1):
             self.set_status_message(f"📸 Extracting pose from: {os.path.basename(video_file)}")
             
-            # Create progress callback for this video
-            def make_progress_callback(video_index, total_videos):
-                def progress_callback(frame_progress):
-                    # Calculate overall progress: (video_index-1)/total_videos + frame_progress/total_videos
-                    overall_progress = int(((video_index - 1) / total_videos) * 100 + (frame_progress / total_videos))
-                    self.update_progress(overall_progress)
-                return progress_callback
-            
-            pose_processor.extract_pose_features(video_file, progress_callback=make_progress_callback(index, total_files))
+            # Overall progress callback (percent-based)
+            pose_processor.extract_pose_features(video_file, progress_callback=self.make_overall_progress_cb(index, total_files))
 
         wx.CallAfter(wx.MessageBox, "Pose feature extraction completed!", "Success", wx.OK | wx.ICON_INFORMATION)
         self.update_progress(0)  # Reset progress bar
@@ -917,7 +1215,7 @@ class VideoToWavConverter(wx.Frame):
             stride_val = 1
         downscale_to = (1280, 720) if (hasattr(self, 'downscaleCheckbox') and self.downscaleCheckbox.GetValue()) else None
 
-        pose_processor = PoseProcessor(output_csv_folder=self.extracted_pose_folder, output_video_folder=self.embedded_pose_folder, frame_threshold=self.frameThresholdInput.GetValue(), frame_stride=stride_val, downscale_to=downscale_to)
+        pose_processor = PoseProcessor(output_csv_folder=self.extracted_pose_folder, output_video_folder=self.embedded_pose_folder, status_callback=self.set_status_message, frame_threshold=self.frameThresholdInput.GetValue(), frame_stride=stride_val, downscale_to=downscale_to)
         pose_processor.set_multi_person_mode(self.multiPersonCheckbox.GetValue())
         
         if not video_files:
@@ -934,15 +1232,8 @@ class VideoToWavConverter(wx.Frame):
         for index, video_file in enumerate(video_files, start=1):
             self.set_status_message(f"🕺 Embedding poses for: {os.path.basename(video_file)}")
             
-            # Create progress callback for this video
-            def make_progress_callback(video_index, total_videos):
-                def progress_callback(frame_progress):
-                    # Calculate overall progress: (video_index-1)/total_videos + frame_progress/total_videos
-                    overall_progress = int(((video_index - 1) / total_videos) * 100 + (frame_progress / total_videos))
-                    self.update_progress(overall_progress)
-                return progress_callback
-            
-            pose_processor.embed_pose_video(video_file, progress_callback=make_progress_callback(index, total_files))
+            # Overall progress callback (percent-based)
+            pose_processor.embed_pose_video(video_file, progress_callback=self.make_overall_progress_cb(index, total_files))
 
         wx.CallAfter(wx.MessageBox, "Pose embedding completed!", "Success", wx.OK | wx.ICON_INFORMATION)
         self.update_progress(0)  # Reset progress bar
@@ -958,7 +1249,7 @@ class VideoToWavConverter(wx.Frame):
             return
 
         self.ensure_output_folders(folder_path)
-        audio_files = self.get_files_from_folder(folder_path, (".wav",))
+        audio_files = self.get_files_from_folder(folder_path, self.AUDIO_EXTENSIONS)
 
         if not audio_files:
             wx.MessageBox("No WAV files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
@@ -997,19 +1288,58 @@ class VideoToWavConverter(wx.Frame):
             return
 
         self.ensure_output_folders(folder_path)
-        audio_files = self.get_files_from_folder(folder_path, (".wav",))
+        audio_files = self.get_files_from_folder(folder_path, self.AUDIO_EXTENSIONS)
 
         if not audio_files:
             wx.MessageBox("No WAV files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
             return
 
+        # Determine diarization preference and collect token if needed
+        enable_diarization = False
+        if hasattr(self, 'diarizationCheckbox') and self.diarizationCheckbox.GetValue():
+            enable_diarization = True
+            if not self.hf_token:
+                dlg = wx.TextEntryDialog(
+                    self,
+                    message=(
+                        "Speaker diarization requires a Hugging Face token for pyannote.\n\n"
+                        "Please see the README for setup steps. Once complete, enter your token here:"
+                    ),
+                    caption="Enter Hugging Face Token"
+                )
+                if dlg.ShowModal() == wx.ID_OK:
+                    token_val = dlg.GetValue().strip()
+                    self.hf_token = token_val if token_val else None
+                dlg.Destroy()
+
+            if not self.hf_token:
+                wx.MessageBox(
+                    "No token provided. Continuing without speaker diarization.",
+                    "Info",
+                    wx.OK | wx.ICON_INFORMATION
+                )
+                enable_diarization = False
+
         # Initialize audio processor
         audio_processor = AudioProcessor(
-            output_audio_features_folder=None,  # Not needed for transcript extraction
+            output_audio_features_folder=None,
             output_transcripts_folder=self.extracted_transcripts_folder,
             status_callback=self.set_status_message,
-            auth_token="YOUR_HUGGING_FACE_TOKEN"  # Your Hugging Face token
+            enable_speaker_diarization=enable_diarization,
+            auth_token=self.hf_token if enable_diarization else None
         )
+
+        # If diarization requested, try preloading to validate token early
+        if enable_diarization:
+            try:
+                audio_processor.preload_speaker_diarizer()
+            except Exception as e:
+                wx.MessageBox(
+                    f"Speaker diarization could not be enabled: {e}\nContinuing with transcript only.",
+                    "Diarization Disabled",
+                    wx.OK | wx.ICON_WARNING
+                )
+                audio_processor.enable_speaker_diarization = False
 
         # Run transcription in a separate thread
         thread = threading.Thread(target=self.extract_transcripts_batch, args=(audio_files, audio_processor))
