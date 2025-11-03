@@ -82,6 +82,25 @@ You should see three folders within your input folder (containing video) now.
   * Once the transcript is extracted, a dialogue box will let you know the output file is ready.
   * You can find them in **transcripts** folder created before.
 
+### Optional: Speaker diarization with PyAnnote
+You can optionally label who is speaking in the transcript (speaker diarization). In the GUI, enable the checkbox for speaker diarization before running **Extract Transcripts**.
+
+- **If the checkbox is OFF**: Only Whisper runs and a plain transcript is saved.
+- **If the checkbox is ON**: Whisper runs and PyAnnote is used to add speaker labels. The first time, you will be prompted for a Hugging Face access token because PyAnnote models require one.
+
+How to get and use the Hugging Face token (one-time setup):
+1. Create/sign in to a Hugging Face account: ``https://huggingface.co``
+2. Accept the model licenses (both pages):
+   * ``https://huggingface.co/pyannote/speaker-diarization``
+   * ``https://huggingface.co/pyannote/segmentation``
+3. Create an access token: go to ``https://huggingface.co/settings/tokens`` → **New token** (scope: "Read") → copy the token.
+4. In MultiSOCIAL Toolbox, when prompted, paste the token and confirm. The app will remember it during the session.
+
+Notes:
+- If you cancel or the token is invalid, the app continues with transcript only (no diarization).
+- The first diarization run may download models and can take a few minutes.
+- Speaker labels are heuristic (e.g., ``SPEAKER_00``, ``SPEAKER_01``) and do not identify real names.
+
 # Troubleshooting
 
 * I am running into error in the **Convert video to audio** step that says ``An error occured [WinError 2]: The system cannot find the file specified.``
