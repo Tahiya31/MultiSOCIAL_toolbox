@@ -12,6 +12,34 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 from yolov5 import YOLOv5
 
+def _sanitize_frame_for_video(frame, expected_size=None):
+    """Ensure a frame is BGR, uint8, 3-channels and matches expected size for VideoWriter."""
+    if frame is None:
+        return None
+    f = frame
+    try:
+        if f.ndim == 2:
+            f = cv2.cvtColor(f, cv2.COLOR_GRAY2BGR)
+        elif f.ndim == 3 and f.shape[2] == 4:
+            f = cv2.cvtColor(f, cv2.COLOR_BGRA2BGR)
+        if f.dtype != np.uint8:
+            f = np.clip(f, 0, 255).astype(np.uint8)
+        if expected_size is not None and isinstance(expected_size, tuple) and len(expected_size) == 2:
+            exp_w, exp_h = expected_size
+            if f.shape[1] != exp_w or f.shape[0] != exp_h:
+                f = cv2.resize(f, (exp_w, exp_h), interpolation=cv2.INTER_AREA)
+    except Exception:
+        try:
+            f = np.array(f)
+            if f.ndim == 2:
+                f = np.stack([f, f, f], axis=-1)
+            elif f.ndim == 3 and f.shape[2] == 4:
+                f = f[:, :, :3]
+            f = np.clip(f, 0, 255).astype(np.uint8)
+        except Exception:
+            return frame
+    return f
+
 def ensure_yolov5_weights():
     """Ensure yolov5s weights exist without triggering network calls at import in other modules."""
     weights_path = "yolov5s.pt"
@@ -461,6 +489,8 @@ class PoseProcessor:
             scale = min(target_w / max(1, orig_w), target_h / max(1, orig_h))
             proc_w = max(1, int(orig_w * scale))
             proc_h = max(1, int(orig_h * scale))
+        if fps <= 0 or fps > 120:
+            fps = 25
         out = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (proc_w, proc_h))
 
         raw_frame_idx = 0
@@ -496,7 +526,8 @@ class PoseProcessor:
 
                     # If no ROIs found, write frame and continue
                     if not locked_rois:
-                        out.write(proc_frame)
+                        safe_frame = _sanitize_frame_for_video(proc_frame, (proc_w, proc_h))
+                        out.write(safe_frame)
                         frame_idx += 1
                         if progress_callback and total_frames > 0:
                             progress_percent = int((frame_idx / total_frames) * 100)
@@ -576,7 +607,8 @@ class PoseProcessor:
                         except Exception:
                             pass
 
-            out.write(proc_frame)
+            safe_frame = _sanitize_frame_for_video(proc_frame, (proc_w, proc_h))
+            out.write(safe_frame)
             
             raw_frame_idx += 1
             frame_idx += 1

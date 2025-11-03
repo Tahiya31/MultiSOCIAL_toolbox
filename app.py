@@ -25,6 +25,33 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # Make sure the system uses the GPU
 
 # (Optional) Helper for Windows FFmpeg setup was removed to avoid runtime installs
 
+def ensure_video_playable(input_path, output_path=None):
+    """Re-encode to H.264/yuv420p for broad compatibility (optional helper).
+
+    If output_path is None, creates a sibling file with suffix "_fixed.mp4".
+    Returns output path on success, else None.
+    """
+    try:
+        if output_path is None:
+            base, _ = os.path.splitext(input_path)
+            output_path = base + "_fixed.mp4"
+        (
+            ffmpeg
+            .input(input_path)
+            .output(
+                output_path,
+                vcodec='libx264',
+                pix_fmt='yuv420p',
+                movflags='+faststart',
+                acodec='copy'
+            )
+            .overwrite_output()
+            .run()
+        )
+        return output_path
+    except Exception:
+        return None
+
 
 class GradientPanel(wx.Panel):
     def __init__(self, parent):
