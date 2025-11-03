@@ -491,7 +491,35 @@ class PoseProcessor:
             proc_h = max(1, int(orig_h * scale))
         if fps <= 0 or fps > 120:
             fps = 25
-        out = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (proc_w, proc_h))
+        
+        # Try multiple codecs with validation to avoid green-screen corruption
+        out = None
+        codecs_to_try = [
+            ('avc1', 'H.264 (recommended for macOS)'),
+            ('mp4v', 'MPEG-4'),
+            ('XVID', 'Xvid'),
+            ('MJPG', 'Motion JPEG'),
+        ]
+        
+        for fourcc_str, desc in codecs_to_try:
+            try:
+                fourcc = cv2.VideoWriter_fourcc(*fourcc_str)
+                test_writer = cv2.VideoWriter(out_path, fourcc, fps, (proc_w, proc_h))
+                if test_writer.isOpened():
+                    out = test_writer
+                    if self.status_callback:
+                        self.status_callback(f"✓ Using codec: {desc}")
+                    break
+                else:
+                    test_writer.release()
+            except Exception:
+                pass
+        
+        if out is None or not out.isOpened():
+            error_msg = f"❌ Failed to create video writer for {out_path}. All codecs failed."
+            if self.status_callback:
+                self.status_callback(error_msg)
+            raise RuntimeError(error_msg)
 
         raw_frame_idx = 0
         frame_idx = 0
@@ -512,6 +540,9 @@ class PoseProcessor:
             proc_frame = frame
             if (proc_w != frame.shape[1]) or (proc_h != frame.shape[0]):
                 proc_frame = cv2.resize(frame, (proc_w, proc_h), interpolation=cv2.INTER_AREA)
+
+            # Prepare variable for the frame to write
+            frame_to_write = proc_frame
 
             # Check if this frame should be processed for pose detection
             should_process_pose = (self.frame_stride == 1) or (raw_frame_idx % self.frame_stride == 0)
@@ -534,12 +565,14 @@ class PoseProcessor:
                             progress_callback(progress_percent)
                         continue
 
+                    # Convert back to BGR for drawing
+                    image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
                     # Process using shared multiperson step and draw
                     mp_outputs, locked_rois = self._process_multiperson_frame(image_rgb, proc_w, proc_h, locked_rois)
                     for _, mp_landmarks in mp_outputs:
                         try:
                             self.drawing_utils.draw_landmarks(
-                                proc_frame,
+                                image_bgr,
                                 mp_landmarks,
                                 mp.solutions.pose.POSE_CONNECTIONS,
                                 landmark_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(color=(0, 255, 0), thickness=3, circle_radius=3),
@@ -554,6 +587,7 @@ class PoseProcessor:
                         last_multi_landmarks = [lm for _, lm in mp_outputs]
                     except Exception:
                         pass
+                    frame_to_write = image_bgr
 
                 else:
                     # Single-person mode
@@ -562,10 +596,11 @@ class PoseProcessor:
                         # Debug output to verify landmarks are being detected
                         if self.status_callback:
                             self.status_callback(f"🎯 Drawing {len(result.pose_landmarks.landmark)} landmarks (single-person mode)")
-                        
+                        # Convert back to BGR for drawing
+                        image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
                         # Draw landmarks with visible style
                         self.drawing_utils.draw_landmarks(
-                            proc_frame, 
+                            image_bgr, 
                             result.pose_landmarks, 
                             mp.solutions.pose.POSE_CONNECTIONS,
                             landmark_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(color=(0, 255, 0), thickness=3, circle_radius=3),
@@ -573,20 +608,23 @@ class PoseProcessor:
                         )
                         # Cache last single-person landmarks
                         last_single_landmarks = result.pose_landmarks
+                        frame_to_write = image_bgr
                     else:
                         # Debug output when no landmarks detected in single-person mode
                         if self.status_callback:
                             self.status_callback("⚠️ No landmarks detected (single-person mode)")
                         # Clear cached single-person landmarks when not detected
                         last_single_landmarks = None
+                        frame_to_write = proc_frame
             else:
                 # Redraw last cached landmarks on skipped frames to maintain visual consistency
                 if self.enable_multi_person_pose:
+                    image_bgr = proc_frame.copy()
                     if last_multi_landmarks:
                         for mp_landmarks in last_multi_landmarks:
                             try:
                                 self.drawing_utils.draw_landmarks(
-                                    proc_frame,
+                                    image_bgr,
                                     mp_landmarks,
                                     mp.solutions.pose.POSE_CONNECTIONS,
                                     landmark_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(color=(0, 255, 0), thickness=3, circle_radius=3),
@@ -594,11 +632,13 @@ class PoseProcessor:
                                 )
                             except Exception:
                                 pass
+                    frame_to_write = image_bgr
                 else:
+                    image_bgr = proc_frame.copy()
                     if last_single_landmarks is not None:
                         try:
                             self.drawing_utils.draw_landmarks(
-                                proc_frame,
+                                image_bgr,
                                 last_single_landmarks,
                                 mp.solutions.pose.POSE_CONNECTIONS,
                                 landmark_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(color=(0, 255, 0), thickness=3, circle_radius=3),
@@ -606,8 +646,9 @@ class PoseProcessor:
                             )
                         except Exception:
                             pass
+                    frame_to_write = image_bgr
 
-            safe_frame = _sanitize_frame_for_video(proc_frame, (proc_w, proc_h))
+            safe_frame = _sanitize_frame_for_video(frame_to_write, (proc_w, proc_h))
             out.write(safe_frame)
             
             raw_frame_idx += 1
