@@ -368,6 +368,8 @@ class VideoToWavConverter(wx.Frame):
         
         # Start at designed size; prevent shrinking below baseline
         self._baseline_size = None  # will be captured on first resize to drive responsive scaling
+        # Track if a background process is running to prevent UI resets during tab switches
+        self._process_running = False
         
         pnl = GradientPanel(self)
         vbox = wx.BoxSizer(wx.VERTICAL)
@@ -724,10 +726,11 @@ class VideoToWavConverter(wx.Frame):
         pnl = self.GetChildren()[0] if self.GetChildren() else None
         if pnl and hasattr(pnl, "Layout"):
             pnl.Layout()
-        # Reset UX state on mode switch
-        if hasattr(self, 'statusLabel'):
-            self.statusLabel.SetLabel("")
-        self.update_progress(0)
+        # Reset UX state on mode switch ONLY if no process is running
+        if not self._process_running:
+            if hasattr(self, 'statusLabel'):
+                self.statusLabel.SetLabel("")
+            self.update_progress(0)
         self.update_buttons_enabled()
 
     def on_folder_changed(self, event):
@@ -1015,18 +1018,22 @@ class VideoToWavConverter(wx.Frame):
 
     def convert_all_videos_to_wav(self, video_files):
         """Convert multiple videos to WAV format and save to output folder."""
-        total_files = len(video_files)
-    
-        for i, video_file in enumerate(video_files):
-            #print(f"Converting: {video_file}")
-            file_name = os.path.basename(video_file)
-            self.set_status_message(f"Converting to WAV: {file_name}")
-            
-            # Overall progress callback (percent-based)
-            self.convert_to_wav(video_file, progress_callback=self.make_overall_progress_cb(i + 1, total_files))
+        self._process_running = True
+        try:
+            total_files = len(video_files)
+        
+            for i, video_file in enumerate(video_files):
+                #print(f"Converting: {video_file}")
+                file_name = os.path.basename(video_file)
+                self.set_status_message(f"Converting to WAV: {file_name}")
+                
+                # Overall progress callback (percent-based)
+                self.convert_to_wav(video_file, progress_callback=self.make_overall_progress_cb(i + 1, total_files))
 
-        wx.MessageBox("Video to audio conversion completed!", "Success", wx.OK | wx.ICON_INFORMATION)
-        self.update_progress(0)  # Reset progress bar
+            wx.MessageBox("Video to audio conversion completed!", "Success", wx.OK | wx.ICON_INFORMATION)
+        finally:
+            self._process_running = False
+            self.update_progress(0)  # Reset progress bar
 
     def on_verify_consistency(self, event):
         folder_path = self.folderPicker.GetPath()
@@ -1059,69 +1066,73 @@ class VideoToWavConverter(wx.Frame):
         from verify_pose_embedding import verify, save_report
         import glob
 
-        summary = []
-        total = len(embedded_videos)
-        for i, video in enumerate(embedded_videos, start=1):
-            base = os.path.splitext(os.path.basename(video))[0]
-            # Remove trailing "_pose" if present to get CSV base
-            csv_base = base.replace("_pose", "")
-            csv_pattern = os.path.join(self.extracted_pose_folder, f"{csv_base}*_ID_*.csv")
-            csv_paths = sorted(glob.glob(csv_pattern))
-            if not csv_paths:
-                # Try single-person default
-                single_csv = os.path.join(self.extracted_pose_folder, f"{csv_base}_ID_0.csv")
-                if os.path.exists(single_csv):
-                    csv_paths = [single_csv]
-
-            if not csv_paths:
-                self.set_status_message(f"⚠️ No CSVs found for {base}; skipping")
-                continue
-
-            self.set_status_message(f"🔎 Verifying: {os.path.basename(video)}")
-            try:
-                worst_dir = os.path.join(worst_frames_root, base)
-                report = verify(
-                    video_path=video,
-                    csv_paths=csv_paths,
-                    stride=max(1, int(self.frameStrideInput.GetValue())),
-                    max_worst=10,
-                    worst_dir=worst_dir,
-                    processed_only=True,
-                    metric='both',
-                    hit_threshold=0.8,
-                    ssim_threshold=0.98,
-                    window=5,
-                    conf_threshold=0.0,
-                )
-                out_json = os.path.join(verification_dir, f"{base}_report.json")
-                out_csv = os.path.join(verification_dir, f"{base}_worst.csv")
-                save_report(report, out_json, out_csv)
-                summary.append({
-                    "basename": base,
-                    "frames_compared": report.get("frames_compared"),
-                    "mean_hit_rate": report.get("mean_hit_rate"),
-                    "min_hit_rate": report.get("min_hit_rate"),
-                    "mean_ssim": report.get("mean_ssim"),
-                    "min_ssim": report.get("min_ssim"),
-                })
-            except Exception as e:
-                self.set_status_message(f"❌ Verification failed for {base}: {e}")
-
-            # Progress update
-            overall = int((i / max(1, total)) * 100)
-            self.update_progress(overall)
-
-        # Write summary JSON
+        self._process_running = True
         try:
-            import json
-            summary_path = os.path.join(verification_dir, "summary.json")
-            with open(summary_path, 'w') as f:
-                json.dump(summary, f, indent=2)
-        except Exception:
-            pass
+            summary = []
+            total = len(embedded_videos)
+            for i, video in enumerate(embedded_videos, start=1):
+                base = os.path.splitext(os.path.basename(video))[0]
+                # Remove trailing "_pose" if present to get CSV base
+                csv_base = base.replace("_pose", "")
+                csv_pattern = os.path.join(self.extracted_pose_folder, f"{csv_base}*_ID_*.csv")
+                csv_paths = sorted(glob.glob(csv_pattern))
+                if not csv_paths:
+                    # Try single-person default
+                    single_csv = os.path.join(self.extracted_pose_folder, f"{csv_base}_ID_0.csv")
+                    if os.path.exists(single_csv):
+                        csv_paths = [single_csv]
 
-        wx.CallAfter(wx.MessageBox, "Verification completed! See the 'verification' folder for reports.", "Success", wx.OK | wx.ICON_INFORMATION)
-        self.update_progress(0)
+                if not csv_paths:
+                    self.set_status_message(f"⚠️ No CSVs found for {base}; skipping")
+                    continue
+
+                self.set_status_message(f"🔎 Verifying: {os.path.basename(video)}")
+                try:
+                    worst_dir = os.path.join(worst_frames_root, base)
+                    report = verify(
+                        video_path=video,
+                        csv_paths=csv_paths,
+                        stride=max(1, int(self.frameStrideInput.GetValue())),
+                        max_worst=10,
+                        worst_dir=worst_dir,
+                        processed_only=True,
+                        metric='both',
+                        hit_threshold=0.8,
+                        ssim_threshold=0.98,
+                        window=5,
+                        conf_threshold=0.0,
+                    )
+                    out_json = os.path.join(verification_dir, f"{base}_report.json")
+                    out_csv = os.path.join(verification_dir, f"{base}_worst.csv")
+                    save_report(report, out_json, out_csv)
+                    summary.append({
+                        "basename": base,
+                        "frames_compared": report.get("frames_compared"),
+                        "mean_hit_rate": report.get("mean_hit_rate"),
+                        "min_hit_rate": report.get("min_hit_rate"),
+                        "mean_ssim": report.get("mean_ssim"),
+                        "min_ssim": report.get("min_ssim"),
+                    })
+                except Exception as e:
+                    self.set_status_message(f"❌ Verification failed for {base}: {e}")
+
+                # Progress update
+                overall = int((i / max(1, total)) * 100)
+                self.update_progress(overall)
+
+            # Write summary JSON
+            try:
+                import json
+                summary_path = os.path.join(verification_dir, "summary.json")
+                with open(summary_path, 'w') as f:
+                    json.dump(summary, f, indent=2)
+            except Exception:
+                pass
+
+            wx.CallAfter(wx.MessageBox, "Verification completed! See the 'verification' folder for reports.", "Success", wx.OK | wx.ICON_INFORMATION)
+        finally:
+            self._process_running = False
+            self.update_progress(0)
 
     def convert_to_wav(self, filepath, progress_callback=None):
         """Convert a single video file to WAV using ffmpeg."""
@@ -1175,27 +1186,31 @@ class VideoToWavConverter(wx.Frame):
 
     def extract_pose_features_batch(self, video_files):
         """Batch process all video files to extract pose features."""
-        total_files = len(video_files)
-        
-        # Read processing options
-        stride_val = 1
+        self._process_running = True
         try:
-            stride_val = max(1, int(self.frameStrideInput.GetValue()))
-        except Exception:
-            stride_val = 1
-        downscale_to = (1280, 720) if (hasattr(self, 'downscaleCheckbox') and self.downscaleCheckbox.GetValue()) else None
-
-        pose_processor = PoseProcessor(self.extracted_pose_folder, status_callback=self.set_status_message, frame_threshold=self.frameThresholdInput.GetValue(), frame_stride=stride_val, downscale_to=downscale_to)
-        pose_processor.set_multi_person_mode(self.multiPersonCheckbox.GetValue())
-
-        for index, video_file in enumerate(video_files, start=1):
-            self.set_status_message(f"📸 Extracting pose from: {os.path.basename(video_file)}")
+            total_files = len(video_files)
             
-            # Overall progress callback (percent-based)
-            pose_processor.extract_pose_features(video_file, progress_callback=self.make_overall_progress_cb(index, total_files))
+            # Read processing options
+            stride_val = 1
+            try:
+                stride_val = max(1, int(self.frameStrideInput.GetValue()))
+            except Exception:
+                stride_val = 1
+            downscale_to = (1280, 720) if (hasattr(self, 'downscaleCheckbox') and self.downscaleCheckbox.GetValue()) else None
 
-        wx.CallAfter(wx.MessageBox, "Pose feature extraction completed!", "Success", wx.OK | wx.ICON_INFORMATION)
-        self.update_progress(0)  # Reset progress bar
+            pose_processor = PoseProcessor(self.extracted_pose_folder, status_callback=self.set_status_message, frame_threshold=self.frameThresholdInput.GetValue(), frame_stride=stride_val, downscale_to=downscale_to)
+            pose_processor.set_multi_person_mode(self.multiPersonCheckbox.GetValue())
+
+            for index, video_file in enumerate(video_files, start=1):
+                self.set_status_message(f"📸 Extracting pose from: {os.path.basename(video_file)}")
+                
+                # Overall progress callback (percent-based)
+                pose_processor.extract_pose_features(video_file, progress_callback=self.make_overall_progress_cb(index, total_files))
+
+            wx.CallAfter(wx.MessageBox, "Pose feature extraction completed!", "Success", wx.OK | wx.ICON_INFORMATION)
+        finally:
+            self._process_running = False
+            self.update_progress(0)  # Reset progress bar
             
            
     def on_embed_poses(self, event):
@@ -1227,16 +1242,20 @@ class VideoToWavConverter(wx.Frame):
         thread.start()
 
     def embed_pose_batch(self, video_files, pose_processor):
-        total_files = len(video_files)
+        self._process_running = True
+        try:
+            total_files = len(video_files)
 
-        for index, video_file in enumerate(video_files, start=1):
-            self.set_status_message(f"🕺 Embedding poses for: {os.path.basename(video_file)}")
-            
-            # Overall progress callback (percent-based)
-            pose_processor.embed_pose_video(video_file, progress_callback=self.make_overall_progress_cb(index, total_files))
+            for index, video_file in enumerate(video_files, start=1):
+                self.set_status_message(f"🕺 Embedding poses for: {os.path.basename(video_file)}")
+                
+                # Overall progress callback (percent-based)
+                pose_processor.embed_pose_video(video_file, progress_callback=self.make_overall_progress_cb(index, total_files))
 
-        wx.CallAfter(wx.MessageBox, "Pose embedding completed!", "Success", wx.OK | wx.ICON_INFORMATION)
-        self.update_progress(0)  # Reset progress bar
+            wx.CallAfter(wx.MessageBox, "Pose embedding completed!", "Success", wx.OK | wx.ICON_INFORMATION)
+        finally:
+            self._process_running = False
+            self.update_progress(0)  # Reset progress bar
 
 
     
@@ -1267,15 +1286,17 @@ class VideoToWavConverter(wx.Frame):
 
     def extract_audio_features_batch(self, audio_files, audio_processor):
         """Batch process all audio files to extract features."""
-        def progress_callback(progress):
-            self.update_progress(progress)
-        
+        self._process_running = True
         try:
+            def progress_callback(progress):
+                self.update_progress(progress)
+            
             audio_processor.extract_audio_features_batch(audio_files, progress_callback=progress_callback)
             wx.CallAfter(wx.MessageBox, "Audio feature extraction completed!", "Success", wx.OK | wx.ICON_INFORMATION)
         except Exception as e:
             wx.CallAfter(wx.MessageBox, f"Error during audio feature extraction: {e}", "Error", wx.OK | wx.ICON_ERROR)
         finally:
+            self._process_running = False
             self.update_progress(0)  # Reset progress bar
 
 
@@ -1348,15 +1369,17 @@ class VideoToWavConverter(wx.Frame):
 
     def extract_transcripts_batch(self, audio_files, audio_processor):
         """Batch process all audio files to generate transcripts."""
-        def progress_callback(progress):
-            self.update_progress(progress)
-        
+        self._process_running = True
         try:
+            def progress_callback(progress):
+                self.update_progress(progress)
+            
             audio_processor.extract_transcripts_batch(audio_files, progress_callback=progress_callback)
             wx.CallAfter(wx.MessageBox, "Transcription extraction completed!", "Success", wx.OK | wx.ICON_INFORMATION)
         except Exception as e:
             wx.CallAfter(wx.MessageBox, f"Error during transcript extraction: {e}", "Error", wx.OK | wx.ICON_ERROR)
         finally:
+            self._process_running = False
             self.update_progress(0)  # Reset progress bar
 
 
