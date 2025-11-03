@@ -8,11 +8,16 @@ set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 REM Choose venv directory name
 set "VENV_DIR=%SCRIPT_DIR%\.venv"
 
+REM Desired Python version (major.minor). Override by setting DESIRED_PYTHON env var before running.
+if "%DESIRED_PYTHON%"=="" (
+    set "DESIRED_PYTHON=3.11"
+)
+
 REM Check if Python 3.11 is available
-echo Checking for Python 3.11...
-python3.11 --version >nul 2>&1
+echo Checking for Python %DESIRED_PYTHON%...
+python%DESIRED_PYTHON% --version >nul 2>&1
 if %errorlevel% neq 0 (
-    echo ERROR: Python 3.11 is not installed or not in PATH
+    echo ERROR: Python %DESIRED_PYTHON% is not installed or not in PATH
     echo Please install Python 3.11 from https://www.python.org/downloads/
     echo Make sure to check "Add Python to PATH" during installation
     pause
@@ -20,18 +25,22 @@ if %errorlevel% neq 0 (
 )
 
 REM Display Python version for confirmation
-echo Found Python 3.11:
-python3.11 --version
+echo Found Python %DESIRED_PYTHON%:
+python%DESIRED_PYTHON% --version
 
 if exist "%VENV_DIR%" (
     echo Found existing virtual environment at: %VENV_DIR%
-    echo Checking Python version in virtual environment...
-    call "%VENV_DIR%\Scripts\activate.bat"
-    python --version
-    call "%VENV_DIR%\Scripts\deactivate.bat"
-) else (
-    echo Creating virtual environment with Python 3.11 at: %VENV_DIR%
-    python3.11 -m venv "%VENV_DIR%"
+    for /f "usebackq tokens=*" %%v in (`"%VENV_DIR%\Scripts\python.exe" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"`) do set VENV_PY_VER=%%v
+    echo venv Python: %VENV_PY_VER%
+    if not "%VENV_PY_VER%"=="%DESIRED_PYTHON%" (
+        echo Virtual environment uses %VENV_PY_VER%, expected %DESIRED_PYTHON%. Recreating venv...
+        rmdir /S /Q "%VENV_DIR%"
+    )
+)
+
+if not exist "%VENV_DIR%" (
+    echo Creating virtual environment with Python %DESIRED_PYTHON% at: %VENV_DIR%
+    python%DESIRED_PYTHON% -m venv "%VENV_DIR%"
     if %errorlevel% neq 0 (
         echo ERROR: Failed to create virtual environment
         pause

@@ -6,11 +6,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Choose venv directory name
 VENV_DIR="$SCRIPT_DIR/.venv"
+# Desired Python version (major.minor). Override by exporting DESIRED_PYTHON=3.10
+DESIRED_PYTHON="${DESIRED_PYTHON:-3.11}"
 
 # Check if Python 3.11 is available
-echo "Checking for Python 3.11..."
-if ! command -v python3.11 &> /dev/null; then
-    echo "ERROR: Python 3.11 is not installed or not in PATH"
+echo "Checking for Python ${DESIRED_PYTHON}..."
+if ! command -v python${DESIRED_PYTHON} &> /dev/null; then
+    echo "ERROR: Python ${DESIRED_PYTHON} is not installed or not in PATH"
     echo "Please install Python 3.11:"
     echo "  macOS: brew install python@3.11"
     echo "  Ubuntu/Debian: sudo apt install python3.11 python3.11-venv"
@@ -19,18 +21,23 @@ if ! command -v python3.11 &> /dev/null; then
 fi
 
 # Display Python version for confirmation
-echo "Found Python 3.11:"
-python3.11 --version
+echo "Found Python ${DESIRED_PYTHON}:"
+python${DESIRED_PYTHON} --version
 
 if [ -d "$VENV_DIR" ]; then
   echo "Found existing virtual environment at: $VENV_DIR"
   echo "Checking Python version in virtual environment..."
-  source "$VENV_DIR/bin/activate"
-  python --version
-  deactivate
-else
-  echo "Creating virtual environment with Python 3.11 at: $VENV_DIR"
-  if ! python3.11 -m venv "$VENV_DIR"; then
+  VENV_PY_VER=$("$VENV_DIR/bin/python" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' || echo "")
+  echo "venv Python: $VENV_PY_VER"
+  if [ "$VENV_PY_VER" != "$DESIRED_PYTHON" ]; then
+    echo "Virtual environment uses $VENV_PY_VER, expected $DESIRED_PYTHON. Recreating venv..."
+    rm -rf "$VENV_DIR"
+  fi
+fi
+
+if [ ! -d "$VENV_DIR" ]; then
+  echo "Creating virtual environment with Python ${DESIRED_PYTHON} at: $VENV_DIR"
+  if ! python${DESIRED_PYTHON} -m venv "$VENV_DIR"; then
     echo "ERROR: Failed to create virtual environment"
     exit 1
   fi
