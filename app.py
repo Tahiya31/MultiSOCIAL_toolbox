@@ -95,7 +95,7 @@ class GlassPanel(wx.Panel):
 
     Children should be added to its internal BoxSizer via SetSizer as usual.
     """
-    def __init__(self, parent, corner_radius=10, fill_rgba=(20, 20, 20, 160)):
+    def __init__(self, parent, corner_radius=10, fill_rgba=(20, 20, 20, 100)):
         super(GlassPanel, self).__init__(parent, style=wx.BORDER_NONE)
         self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
         self.corner_radius = corner_radius
@@ -633,7 +633,7 @@ class VideoToWavConverter(wx.Frame):
             self.progress.SetForegroundColour(wx.Colour(70, 180, 130))  # Green progress
         except Exception:
             pass
-        vbox.Add(self.progress, proportion=0, flag=wx.EXPAND|wx.ALL, border=12)
+        vbox.Add(self.progress, proportion=0, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
         
         pnl.SetSizer(vbox)
         pnl.Layout()
