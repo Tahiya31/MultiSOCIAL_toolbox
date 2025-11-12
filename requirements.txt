@@ -7,6 +7,7 @@ pandas
 opencv-python
 mediapipe
 matplotlib
+scikit-image
 
 # Deep learning / ASR
 # Use PyTorch version before 2.6 to avoid weights_only security issues
@@ -20,6 +21,8 @@ datasets[audio]
 librosa
 opensmile
 ffmpeg-python
+imageio-ffmpeg
+pyannote-audio
 
 # Object detection
 yolov5
