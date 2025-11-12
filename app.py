@@ -443,7 +443,7 @@ class VideoToWavConverter(wx.Frame):
         vbox.Add(self.folderCaption, flag=wx.ALIGN_CENTER|wx.LEFT|wx.RIGHT|wx.TOP, border=8)
         self.folderPicker = wx.DirPickerCtrl(pnl, message="Select a folder containing media files")
         self.folderPicker.Bind(wx.EVT_DIRPICKER_CHANGED, self.on_folder_changed)
-        vbox.Add(self.folderPicker, flag=wx.EXPAND | wx.ALL, border=10, proportion=0)
+        vbox.Add(self.folderPicker, flag=wx.ALIGN_CENTER | wx.ALL, border=10, proportion=0)
 
         # Panels for Video and Audio options (translucent, centered)
         self.videoPanel = GlassPanel(pnl)
@@ -753,6 +753,16 @@ class VideoToWavConverter(wx.Frame):
             if self.audioPanel:
                 self.audioPanel.SetMinSize((target_w, -1))
                 self.audioPanel.SetMaxSize((target_w, -1))
+            # Match folder picker width to glass panels
+            if hasattr(self, 'folderPicker') and self.folderPicker:
+                self.folderPicker.SetMinSize((target_w, -1))
+                self.folderPicker.SetMaxSize((target_w, -1))
+            # Match progress bar width to glass panels
+            if hasattr(self, 'progress') and self.progress:
+                current_min_size = self.progress.GetMinSize()
+                current_h = current_min_size.height if current_min_size.height > 0 else 20
+                self.progress.SetMinSize((target_w, current_h))
+                self.progress.SetMaxSize((target_w, current_h))
         except Exception:
             pass
 
