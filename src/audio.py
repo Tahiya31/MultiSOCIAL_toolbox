@@ -12,6 +12,7 @@ import os
 import torch
 import librosa
 import opensmile
+import gc
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 from pyannote.audio import Pipeline
 
@@ -41,8 +42,16 @@ class AudioProcessor:
             os.makedirs(self.output_transcripts_folder, exist_ok=True)
         
         # Initialize device for Whisper
-        self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
-        self.torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+        # Initialize device for Whisper
+        if torch.cuda.is_available():
+            self.device = "cuda:0"
+            self.torch_dtype = torch.float16
+        elif torch.backends.mps.is_available():
+            self.device = "mps"
+            self.torch_dtype = torch.float16
+        else:
+            self.device = "cpu"
+            self.torch_dtype = torch.float32
         
         # Whisper model will be loaded lazily when needed
         self.whisper_model = None
@@ -171,12 +180,18 @@ class AudioProcessor:
             progress_callback (callable, optional): Callback function for progress updates
         """
         if self.whisper_model is not None:
+            # If model exists but is on CPU when we have a better device, move it back
+            if self.device != "cpu" and self.whisper_model.device.type == "cpu":
+                print(f"Moving Whisper model back to {self.device}...")
+                self.whisper_model.to(self.device)
             return  # Already loaded
             
         if progress_callback:
             progress_callback(5)
 
-        model_id = "distil-whisper/distil-large-v3"
+        # Use standard large-v3-turbo for better speed/accuracy balance than distil
+        # or fallback to large-v3 if turbo is unavailable
+        model_id = "openai/whisper-large-v3-turbo"
 
         if progress_callback:
             progress_callback(10)
@@ -210,8 +225,8 @@ class AudioProcessor:
             tokenizer=self.whisper_processor.tokenizer,
             feature_extractor=self.whisper_processor.feature_extractor,
             max_new_tokens=128,
-            chunk_length_s=25,
-            batch_size=16,
+            chunk_length_s=30, # Standard chunk length for robustness
+            batch_size=8,
             torch_dtype=self.torch_dtype,
             device=self.device,
             # Add return_timestamps for better processing
@@ -220,6 +235,23 @@ class AudioProcessor:
 
         if progress_callback:
             progress_callback(70)
+
+    def _offload_whisper_model(self):
+        """Offload Whisper model to CPU to free up VRAM for diarization."""
+        if self.whisper_model is not None and self.device != "cpu":
+            print("Offloading Whisper model to CPU to free VRAM...")
+            self.whisper_model.to("cpu")
+            
+            # Explicitly clear cache based on device
+            if self.device == "mps":
+                try:
+                    torch.mps.empty_cache()
+                except AttributeError:
+                    pass
+            elif self.device.startswith("cuda"):
+                torch.cuda.empty_cache()
+                
+            gc.collect()
 
     def _load_speaker_diarizer(self, progress_callback=None):
         """Load the PyAnnote speaker diarization model (lazy loading)"""
@@ -232,7 +264,7 @@ class AudioProcessor:
                 
             print("Loading PyAnnote speaker diarization model...")
             # Use PyAnnote diarization
-            self.speaker_diarizer = PyAnnoteSpeakerDiarizer(progress_callback, self.auth_token)
+            self.speaker_diarizer = PyAnnoteSpeakerDiarizer(progress_callback, self.auth_token, device=self.device)
             
             if progress_callback:
                 progress_callback(15)
@@ -275,9 +307,11 @@ class AudioProcessor:
             print(f"Transcribing {filepath}...")
             
             # Transcribe audio with timestamps (request at call time for reliability)
+            # Note: return_timestamps=True (segment level) is generally more robust for alignment
+            # than word-level, especially with turbo models.
             result = self.whisper_pipe(
                 filepath,
-                return_timestamps="word",  # finer timestamps when supported
+                return_timestamps=True, 
                 generate_kwargs={"task": "transcribe"}
             )
             transcript = result['text']
@@ -309,9 +343,16 @@ class AudioProcessor:
             speaker_segments = None
             if self.enable_speaker_diarization:
                 try:
+                    # Offload Whisper to free up memory for Diarization
+                    self._offload_whisper_model()
+
                     print(f"Performing speaker diarization for {filepath}...")
                     self._load_speaker_diarizer(progress_callback)
                     speaker_segments = self.speaker_diarizer.diarize_speakers(filepath, progress_callback)
+                    
+                    # Offload diarizer to free memory for next Whisper run or general system use
+                    self.speaker_diarizer.offload_model()
+                    
                     print(f"Found {len(speaker_segments)} speaker segments")
                 except Exception as e:
                     print(f"Speaker diarization failed: {str(e)}")
@@ -361,19 +402,6 @@ class AudioProcessor:
         if not speaker_segments:
             return transcript
             
-        # Create a formatted transcript with speaker labels
-        formatted_lines = []
-        formatted_lines.append("=== TRANSCRIPT WITH SPEAKER LABELS ===\n")
-        
-        # Add speaker segments overview
-        formatted_lines.append("Speaker Segments:")
-        for segment in speaker_segments:
-            start_time = f"{int(segment['start']//60):02d}:{segment['start']%60:06.3f}"
-            end_time = f"{int(segment['end']//60):02d}:{segment['end']%60:06.3f}"
-            formatted_lines.append(f"  {segment['speaker']}: {start_time} --> {end_time}")
-        
-        formatted_lines.append("\n=== ALIGNED TRANSCRIPT ===\n")
-        
         # Get Whisper's timestamped segments for alignment
         try:
             # Extract timestamped segments from Whisper result
@@ -382,18 +410,15 @@ class AudioProcessor:
             if whisper_segments:
                 # Align Whisper segments with speaker segments
                 aligned_transcript = self._align_segments_with_speakers(whisper_segments, speaker_segments)
-                formatted_lines.append(aligned_transcript)
-            else:
-                # Fallback to raw transcript if no timestamps available
-                formatted_lines.append("Raw Transcript:")
-                formatted_lines.append(transcript)
+                if aligned_transcript.strip():
+                    return aligned_transcript
+            # Fallback to raw transcript if no timestamps available/alignment failed
+            print("Warning: No aligned transcript produced; falling back to raw transcript.")
+            return transcript
                 
         except Exception as e:
             print(f"Warning: Could not align transcript with speakers: {e}")
-            formatted_lines.append("Raw Transcript:")
-            formatted_lines.append(transcript)
-        
-        return "\n".join(formatted_lines)
+            return transcript
     
     def _extract_whisper_segments(self, transcript):
         """
@@ -592,14 +617,37 @@ class AudioProcessor:
         best_overlap = 0.0
         best_coverage = -1.0
         best_len = float('inf')
+        
+        # Also track the closest speaker in case we are in a gap (e.g. VAD silence)
+        closest_speaker = "UNKNOWN"
+        min_dist = float('inf')
+        
         for seg in speaker_segments:
             try:
-                seg_len = max(1e-6, seg['end'] - seg['start'])
-                overlap_start = max(start_time, seg['start'])
-                overlap_end = min(end_time, seg['end'])
+                seg_start = seg['start']
+                seg_end = seg['end']
+                
+                # Check proximity for fallback
+                dist = 0
+                if end_time < seg_start:
+                    dist = seg_start - end_time
+                elif start_time > seg_end:
+                    dist = start_time - seg_end
+                else:
+                    dist = 0 # overlap
+                    
+                if dist < min_dist:
+                    min_dist = dist
+                    closest_speaker = seg.get('speaker', 'UNKNOWN')
+
+                seg_len = max(1e-6, seg_end - seg_start)
+                overlap_start = max(start_time, seg_start)
+                overlap_end = min(end_time, seg_end)
                 overlap_duration = max(0.0, overlap_end - overlap_start)
+                
                 if overlap_duration <= 0.0:
                     continue
+                
                 coverage = overlap_duration / seg_len
                 # Primary: larger overlap, Secondary: higher coverage, Tertiary: shorter segment
                 if (
@@ -613,7 +661,16 @@ class AudioProcessor:
                     best_speaker = seg.get('speaker', 'UNKNOWN')
             except (KeyError, TypeError):
                 continue
-        return best_speaker
+                
+        # If we found an overlapping speaker, return it
+        if best_speaker != "UNKNOWN":
+            return best_speaker
+            
+        # If no overlap but we are very close to a speaker (e.g. < 0.5s gap), infer it
+        if min_dist < 0.5 and closest_speaker != "UNKNOWN":
+            return closest_speaker
+            
+        return "UNKNOWN"
 
     def extract_transcripts_batch(self, audio_files, progress_callback=None):
         """
@@ -694,21 +751,31 @@ class PyAnnoteSpeakerDiarizer:
     Requires Hugging Face auth token for model access.
     """
     
-    def __init__(self, progress_callback=None, auth_token=None):
+    def __init__(self, progress_callback=None, auth_token=None, device="cpu"):
         """
         Initialize the PyAnnoteSpeakerDiarizer.
         
         Args:
             progress_callback (callable, optional): Callback function for progress updates
             auth_token (str, optional): Hugging Face auth token for model access
+            device (str, optional): Device to run the model on (e.g., "cuda:0", "cpu")
         """
         self.progress_callback = progress_callback
         self.auth_token = auth_token
+        self.device = device
         self.diarization_pipeline = None
         
     def _load_diarization_model(self):
         """Load the speaker diarization model (lazy loading)"""
         if self.diarization_pipeline is not None:
+            # Ensure it's on the right device if it was offloaded
+            try:
+                # Check if we need to move it back to GPU
+                if self.device != "cpu":
+                    # Move pipeline to the specified device
+                    self.diarization_pipeline.to(torch.device(self.device))
+            except Exception:
+                pass
             return
             
         try:
@@ -725,11 +792,36 @@ class PyAnnoteSpeakerDiarizer:
             else:
                 self.diarization_pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization")
             
+            # Move pipeline to the specified device
+            if self.diarization_pipeline is not None:
+                self.diarization_pipeline.to(torch.device(self.device))
+                print(f"✓ PyAnnote pipeline moved to {self.device}")
+            
             if self.progress_callback:
                 self.progress_callback(20)
                 
         except Exception as e:
             raise Exception(f"Failed to load pyannote diarization model: {str(e)}")
+
+    def offload_model(self):
+        """Offload the diarization model to CPU to free up VRAM."""
+        if self.diarization_pipeline is not None and self.device != "cpu":
+            try:
+                print("Offloading PyAnnote model to CPU...")
+                # PyAnnote pipeline.to() works similar to torch models
+                self.diarization_pipeline.to(torch.device("cpu"))
+                
+                # Clear cache
+                if self.device == "mps":
+                    try:
+                        torch.mps.empty_cache()
+                    except AttributeError:
+                        pass
+                elif self.device.startswith("cuda"):
+                    torch.cuda.empty_cache()
+                gc.collect()
+            except Exception as e:
+                print(f"Warning: Failed to offload PyAnnote model: {e}")
     
     def diarize_speakers(self, filepath, progress_callback=None):
         """
@@ -759,6 +851,16 @@ class PyAnnoteSpeakerDiarizer:
             print("PyAnnote is processing audio (this may take 2-5 minutes on first run)...")
             diarization = self.diarization_pipeline(filepath)
             print("PyAnnote processing completed!")
+            
+            # Cleanup
+            if self.device == "mps":
+                try:
+                    torch.mps.empty_cache()
+                except AttributeError:
+                    pass
+            elif self.device.startswith("cuda"):
+                torch.cuda.empty_cache()
+            gc.collect()
             
             if progress_callback:
                 progress_callback(50)
