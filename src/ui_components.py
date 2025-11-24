@@ -301,3 +301,108 @@ class TooltipButton(wx.Button):
         sizer.Add(info_icon, flag=wx.ALIGN_CENTER|wx.LEFT, border=5)
         
         return btn, sizer
+
+class CustomGauge(wx.Panel):
+    """A custom-drawn gauge that respects height on macOS."""
+    def __init__(self, parent, range=100, size=(-1, 28)):
+        super(CustomGauge, self).__init__(parent, size=size)
+        self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
+        self._range = range
+        self._value = 0
+        # Default colors
+        self._bg_color = wx.Colour(40, 40, 40, 100)  # Dark semi-transparent background
+        self._fg_color = wx.Colour(33, 150, 243)  # Blue
+        
+        self.Bind(wx.EVT_PAINT, self.OnPaint)
+        self.Bind(wx.EVT_SIZE, self.OnSize)
+        self.Bind(wx.EVT_ERASE_BACKGROUND, self.OnEraseBackground)
+
+    def OnEraseBackground(self, event):
+        # Do nothing to prevent flickering; letting the parent background show through
+        pass
+
+    def SetValue(self, value):
+        self._value = max(0, min(value, self._range))
+        self.Refresh()
+        self.Update()
+        
+    def GetValue(self):
+        return self._value
+        
+    def SetRange(self, range):
+        self._range = range
+        
+    def GetRange(self):
+        return self._range
+    
+    def Pulse(self):
+        # Indeterminate mode not fully implemented, but method exists for compatibility.
+        pass
+        
+    def SetForegroundColour(self, color):
+        self._fg_color = color
+        self.Refresh()
+
+    def OnSize(self, event):
+        self.Refresh()
+        event.Skip()
+
+    def OnPaint(self, event):
+        # Use PaintDC directly on macOS to allow system double-buffering and transparency
+        dc = wx.PaintDC(self)
+        
+        # Use GraphicsContext for smoother anti-aliased drawing
+        gc = wx.GraphicsContext.Create(dc)
+        if not gc:
+            return
+
+        rect = self.GetClientRect()
+        
+        # 1. Draw Track
+        # We don't clear background, so the parent gradient should show through in empty areas
+        # (assuming the windowing system supports it, which macOS usually does)
+        
+        # Track Color
+        gc.SetBrush(wx.Brush(self._bg_color))
+        # Transparent pen to avoid border artifacts
+        gc.SetPen(wx.Pen(wx.Colour(0,0,0,0), 1)) 
+        
+        # Draw rounded track
+        corner_radius = 4
+        # Ensure radius isn't too big for the rect
+        r = min(corner_radius, rect.height / 2, rect.width / 2)
+        
+        path = gc.CreatePath()
+        path.AddRoundedRectangle(rect.x, rect.y, rect.width, rect.height, r)
+        gc.DrawPath(path)
+        
+        # 2. Draw Progress
+        if self._value > 0 and self._range > 0:
+            pct = float(self._value) / float(self._range)
+            w = rect.width * pct
+            
+            # Only draw if width is meaningful
+            if w >= 1:
+                gc.SetBrush(wx.Brush(self._fg_color))
+                gc.SetPen(wx.Pen(wx.Colour(0,0,0,0), 1))
+                
+                path_bar = gc.CreatePath()
+                
+                if w >= rect.width:
+                    # Full width - regular rounded rect
+                    path_bar.AddRoundedRectangle(rect.x, rect.y, rect.width, rect.height, r)
+                else:
+                    # Partially filled - trickier to do "rounded left, square right"
+                    # But for simplicity and aesthetics, a rounded rect clipped or just a rounded rect
+                    # often looks okay if it's just the bar inside the track.
+                    # Let's try to match the track shape.
+                    
+                    # We can intersect the track path with a rectangle of width w
+                    # But clipping in wx.GraphicsContext:
+                    gc.Clip(rect.x, rect.y, w, rect.height)
+                    path_bar.AddRoundedRectangle(rect.x, rect.y, rect.width, rect.height, r)
+                    gc.DrawPath(path_bar)
+                    gc.ResetClip()
+                    return # Done
+                    
+                gc.DrawPath(path_bar)

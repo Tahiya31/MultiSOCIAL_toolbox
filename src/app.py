@@ -16,7 +16,6 @@ os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 # Third-party libraries (assumed pre-installed via requirements.txt)
 import ffmpeg
 import wx
-import shutil
 import unicodedata
 
 # Import the core processing classes
@@ -24,8 +23,7 @@ from pose import PoseProcessor
 from audio import AudioProcessor
 import gui_utils
 from gui_utils import Theme
-import ui_components
-from ui_components import GradientPanel, GlassPanel, ElevatedLogoPanel, CustomTooltip, InfoIcon, TooltipButton
+from ui_components import GradientPanel, GlassPanel, ElevatedLogoPanel, TooltipButton, CustomGauge
 
 ## All dependencies are expected to be installed ahead of time via requirements.txt
 
@@ -291,10 +289,10 @@ class VideoToWavConverter(wx.Frame):
             pass
         vbox.Add(self.statusLabel, flag=wx.EXPAND|wx.ALL, border=10)
         
-        self.progress = wx.Gauge(pnl, range=100, style=wx.GA_HORIZONTAL | wx.GA_SMOOTH)
-        self.progress.SetMinSize((-1, 20))
+        self.progress = CustomGauge(pnl, range=100)
+        self.progress.SetMinSize((-1, 28))
         try:
-            self.progress.SetForegroundColour(wx.Colour(*Theme.COLOR_PROGRESS_GREEN))
+            self.progress.SetForegroundColour(wx.Colour(33, 150, 243))
         except Exception:
             pass
         vbox.Add(self.progress, proportion=0, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
@@ -399,7 +397,7 @@ class VideoToWavConverter(wx.Frame):
             # Match progress bar width to glass panels
             if hasattr(self, 'progress') and self.progress:
                 current_min_size = self.progress.GetMinSize()
-                current_h = current_min_size.height if current_min_size.height > 0 else 20
+                current_h = current_min_size.height if current_min_size.height > 0 else 28
                 self.progress.SetMinSize((target_w, current_h))
                 self.progress.SetMaxSize((target_w, current_h))
         except Exception:
@@ -507,7 +505,7 @@ class VideoToWavConverter(wx.Frame):
                     pass
             # Progress bar height scaling
             if hasattr(self, 'progress') and self.progress:
-                self.progress.SetMinSize((-1, max(14, int(18 * scale))))
+                self.progress.SetMinSize((-1, max(20, int(28 * scale))))
         except Exception:
             pass
 
