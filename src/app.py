@@ -7,6 +7,11 @@ This is the main script for multisocial app
 import os
 import threading
 
+# Set up GPU environment specially for Mediapipe (specific for Saturn Cloud), if you use some other high performance computing platform check compatibility before usage
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # Make sure the system uses the GPU
+# Enable MPS fallback for Mac to prevent freezes on unsupported operations
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+
 
 # Third-party libraries (assumed pre-installed via requirements.txt)
 import ffmpeg
@@ -21,10 +26,6 @@ import gui_utils
 from gui_utils import Theme
 import ui_components
 from ui_components import GradientPanel, GlassPanel, ElevatedLogoPanel, CustomTooltip, InfoIcon, TooltipButton
-
-# Set up GPU environment specially for Mediapipe (specific for Saturn Cloud), if you use some other high performance computing platform check compatibility before usage
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # Make sure the system uses the GPU
-
 
 ## All dependencies are expected to be installed ahead of time via requirements.txt
 
