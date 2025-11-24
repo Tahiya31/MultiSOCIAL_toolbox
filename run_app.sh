@@ -65,6 +65,6 @@ if ! python -c "import mediapipe as mp; print('MediaPipe version:', mp.__version
 fi
 
 echo "Starting MultiSOCIAL Toolbox..."
-python "$SCRIPT_DIR/app.py"
+python "$SCRIPT_DIR/src/app.py"
 
 

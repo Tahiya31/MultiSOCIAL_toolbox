@@ -75,6 +75,6 @@ if %errorlevel% neq 0 (
 )
 
 echo Starting MultiSOCIAL Toolbox...
-python "%SCRIPT_DIR%\app.py"
+python "%SCRIPT_DIR%\src\app.py"
 
 pause
