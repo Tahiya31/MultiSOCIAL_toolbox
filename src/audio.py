@@ -66,6 +66,29 @@ class AudioProcessor:
         if self.status_callback:
             self.status_callback(message)
 
+    def _create_scoped_progress_callback(self, parent_callback, start_percentage, end_percentage):
+        """
+        Create a scoped progress callback that maps 0-100% to a sub-range of the parent callback.
+        
+        Args:
+            parent_callback (callable): The main progress callback
+            start_percentage (int): The start of the sub-range (0-100)
+            end_percentage (int): The end of the sub-range (0-100)
+            
+        Returns:
+            callable: A new callback function
+        """
+        if not parent_callback:
+            return None
+            
+        def scoped_callback(progress):
+            # Map progress (0-100) to range [start_percentage, end_percentage]
+            range_width = end_percentage - start_percentage
+            scaled_progress = start_percentage + (progress / 100.0 * range_width)
+            parent_callback(int(scaled_progress))
+            
+        return scoped_callback
+
     def extract_audio_features(self, filepath, progress_callback=None):
         """
         Extract audio features from a single WAV file using OpenSMILE.
@@ -302,10 +325,16 @@ class AudioProcessor:
             print(f"Loading Whisper model for {filepath}...")
             
             # Load Whisper model (lazy loading)
-            self._load_whisper_model(progress_callback)
+            # Allocation: 0-10%
+            self._load_whisper_model(
+                progress_callback=self._create_scoped_progress_callback(progress_callback, 0, 10)
+            )
 
             print(f"Transcribing {filepath}...")
             
+            if progress_callback:
+                progress_callback(10)
+
             # Transcribe audio with timestamps (request at call time for reliability)
             # Note: return_timestamps=True (segment level) is generally more robust for alignment
             # than word-level, especially with turbo models.
@@ -347,8 +376,12 @@ class AudioProcessor:
                     self._offload_whisper_model()
 
                     print(f"Performing speaker diarization for {filepath}...")
-                    self._load_speaker_diarizer(progress_callback)
-                    speaker_segments = self.speaker_diarizer.diarize_speakers(filepath, progress_callback)
+                    
+                    # Allocation: 50-90%
+                    scoped_diarization_callback = self._create_scoped_progress_callback(progress_callback, 50, 90)
+                    
+                    self._load_speaker_diarizer(progress_callback=scoped_diarization_callback)
+                    speaker_segments = self.speaker_diarizer.diarize_speakers(filepath, progress_callback=scoped_diarization_callback)
                     
                     # Offload diarizer to free memory for next Whisper run or general system use
                     self.speaker_diarizer.offload_model()
@@ -358,9 +391,10 @@ class AudioProcessor:
                     print(f"Speaker diarization failed: {str(e)}")
                     print("Continuing with transcript only...")
                     speaker_segments = None
-
-            if progress_callback:
-                progress_callback(90)
+            else:
+                # If diarization is disabled, we just jump to 90%
+                if progress_callback:
+                    progress_callback(90)
 
             # Format transcript with speaker labels if available
             if speaker_segments and len(speaker_segments) > 0:
@@ -715,14 +749,25 @@ class AudioProcessor:
         """
         results = {}
         
-        if extract_features:
+        if extract_features and extract_transcript:
+            # Split progress: 50% for features, 50% for transcript
+            if progress_callback:
+                progress_callback(0)
+            
+            features_callback = self._create_scoped_progress_callback(progress_callback, 0, 50)
+            results['features'] = self.extract_audio_features(filepath, features_callback)
+            
+            transcript_callback = self._create_scoped_progress_callback(progress_callback, 50, 100)
+            results['transcript'] = self.extract_transcript(filepath, transcript_callback)
+            
+        elif extract_features:
             if progress_callback:
                 progress_callback(0)
             results['features'] = self.extract_audio_features(filepath, progress_callback)
-        
-        if extract_transcript:
+            
+        elif extract_transcript:
             if progress_callback:
-                progress_callback(50)
+                progress_callback(0)
             results['transcript'] = self.extract_transcript(filepath, progress_callback)
         
         return results
@@ -737,10 +782,18 @@ class AudioProcessor:
             extract_transcript (bool): Whether to extract transcript
             progress_callback (callable, optional): Callback function for progress updates
         """
-        if extract_features:
+        if extract_features and extract_transcript:
+            # Split progress: 50% for features, 50% for transcript
+            features_callback = self._create_scoped_progress_callback(progress_callback, 0, 50)
+            self.extract_audio_features_batch(audio_files, features_callback)
+            
+            transcript_callback = self._create_scoped_progress_callback(progress_callback, 50, 100)
+            self.extract_transcripts_batch(audio_files, transcript_callback)
+            
+        elif extract_features:
             self.extract_audio_features_batch(audio_files, progress_callback)
         
-        if extract_transcript:
+        elif extract_transcript:
             self.extract_transcripts_batch(audio_files, progress_callback)
 
 
