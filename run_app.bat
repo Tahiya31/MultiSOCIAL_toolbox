@@ -13,20 +13,32 @@ if "%DESIRED_PYTHON%"=="" (
     set "DESIRED_PYTHON=3.11"
 )
 
-REM Check if Python 3.11 is available
-echo Checking for Python %DESIRED_PYTHON%...
-python%DESIRED_PYTHON% --version >nul 2>&1
+REM Check for Python 3.11
+set "PYTHON_EXEC=python%DESIRED_PYTHON%"
+%PYTHON_EXEC% --version >nul 2>&1
 if %errorlevel% neq 0 (
-    echo ERROR: Python %DESIRED_PYTHON% is not installed or not in PATH
-    echo Please install Python 3.11 from https://www.python.org/downloads/
-    echo Make sure to check "Add Python to PATH" during installation
-    pause
-    exit /b 1
+    REM Try just 'python' and check version
+    python -c "import sys; sys.exit(0 if sys.version_info.major == 3 and sys.version_info.minor == 11 else 1)" >nul 2>&1
+    if !errorlevel! equ 0 (
+        set "PYTHON_EXEC=python"
+    ) else (
+        REM Try 'py' launcher
+        py -%DESIRED_PYTHON% --version >nul 2>&1
+        if !errorlevel! equ 0 (
+            set "PYTHON_EXEC=py -%DESIRED_PYTHON%"
+        ) else (
+            echo ERROR: Python %DESIRED_PYTHON% is not installed or not in PATH
+            echo Please install Python 3.11 from https://www.python.org/downloads/
+            echo Make sure to check "Add Python to PATH" during installation
+            pause
+            exit /b 1
+        )
+    )
 )
 
 REM Display Python version for confirmation
-echo Found Python %DESIRED_PYTHON%:
-python%DESIRED_PYTHON% --version
+echo Found Python %DESIRED_PYTHON% using command: %PYTHON_EXEC%
+%PYTHON_EXEC% --version
 
 if exist "%VENV_DIR%" (
     echo Found existing virtual environment at: %VENV_DIR%
@@ -40,7 +52,7 @@ if exist "%VENV_DIR%" (
 
 if not exist "%VENV_DIR%" (
     echo Creating virtual environment with Python %DESIRED_PYTHON% at: %VENV_DIR%
-    python%DESIRED_PYTHON% -m venv "%VENV_DIR%"
+    %PYTHON_EXEC% -m venv "%VENV_DIR%"
     if %errorlevel% neq 0 (
         echo ERROR: Failed to create virtual environment
         pause
@@ -75,6 +87,6 @@ if %errorlevel% neq 0 (
 )
 
 echo Starting MultiSOCIAL Toolbox...
-python "%SCRIPT_DIR%\app.py"
+python "%SCRIPT_DIR%\src\app.py"
 
 pause
