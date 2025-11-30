@@ -280,6 +280,15 @@ class VideoToWavConverter(wx.Frame):
             handler=self.on_extract_transcripts
         )
         audio_sizer.Add(hbox_extract_transcripts, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
+        
+        self.alignFeaturesBtn, hbox_align = TooltipButton.create_with_icon(
+            self.audioPanel,
+            'Align Features',
+            'Aligns extracted audio features with word-level transcripts. Requires both features and transcripts.',
+            font=button_font,
+            handler=self.on_align_features
+        )
+        audio_sizer.Add(hbox_align, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
         audio_sizer.AddSpacer(8)
         
         self.audioPanel.SetSizer(audio_sizer)
@@ -427,7 +436,7 @@ class VideoToWavConverter(wx.Frame):
                 btn.Enable(enable_video)
         # Audio buttons
         enable_audio = has_folder and len(audio_files) > 0
-        for btn in [getattr(self, 'extractAudioFeaturesBtn', None), getattr(self, 'extractTranscriptsBtn', None)]:
+        for btn in [getattr(self, 'extractAudioFeaturesBtn', None), getattr(self, 'extractTranscriptsBtn', None), getattr(self, 'alignFeaturesBtn', None)]:
             if btn:
                 btn.Enable(enable_audio)
         
@@ -498,6 +507,8 @@ class VideoToWavConverter(wx.Frame):
                 self.extractAudioFeaturesBtn.SetFont(button_font)
             if hasattr(self, 'extractTranscriptsBtn') and self.extractTranscriptsBtn:
                 self.extractTranscriptsBtn.SetFont(button_font)
+            if hasattr(self, 'alignFeaturesBtn') and self.alignFeaturesBtn:
+                self.alignFeaturesBtn.SetFont(button_font)
             # Status label: scale font and wrap to panel width for responsiveness
             if hasattr(self, 'statusLabel') and self.statusLabel:
                 self.statusLabel.SetFont(self._scale_font(12, scale))

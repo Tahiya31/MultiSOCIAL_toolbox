@@ -321,7 +321,7 @@ class AudioProcessor:
         except Exception as e:
             print(f"Warning: Could not pre-load PyAnnote model: {e}")
 
-    def extract_transcript(self, filepath, progress_callback=None):
+    def extract_transcript(self, filepath, progress_callback=None, word_timestamps=False):
         """
         Extract transcript from a single WAV file using Whisper with optional speaker diarization.
         
@@ -355,9 +355,12 @@ class AudioProcessor:
             # Transcribe audio with timestamps (request at call time for reliability)
             # Note: return_timestamps=True (segment level) is generally more robust for alignment
             # than word-level, especially with turbo models.
+            # However, if word_timestamps is requested (for alignment feature), we use "word".
+            ts_mode = "word" if word_timestamps else True
+            
             result = self.whisper_pipe(
                 filepath,
-                return_timestamps=True, 
+                return_timestamps=ts_mode, 
                 generate_kwargs={"task": "transcribe"}
             )
             transcript = result['text']
@@ -419,7 +422,7 @@ class AudioProcessor:
             else:
                 formatted_transcript = transcript
 
-            # Save transcript to text file
+            # Save transcript to text file (always done)
             output_txt = os.path.join(
                 self.output_transcripts_folder, 
                 os.path.splitext(os.path.basename(filepath))[0] + ".txt"
@@ -427,6 +430,25 @@ class AudioProcessor:
 
             with open(output_txt, 'w') as f:
                 f.write(formatted_transcript)
+            
+            # If word timestamps were requested, save the detailed JSON sidecar
+            if word_timestamps:
+                import json
+                output_json = os.path.join(
+                    self.output_transcripts_folder, 
+                    os.path.splitext(os.path.basename(filepath))[0] + "_words.json"
+                )
+                # We save the raw result chunks which contain word timings when return_timestamps="word"
+                # result['chunks'] is usually a list of {'text': ..., 'timestamp': (start, end)}
+                # or similar structure depending on the pipeline version.
+                # We'll save the whole result structure to be safe.
+                # Note: result might contain non-serializable objects (like tensors), but pipeline usually returns python types.
+                try:
+                    with open(output_json, 'w') as f:
+                        json.dump(result, f, indent=2)
+                    print(f"Saved word-level info: {output_json}")
+                except Exception as e:
+                    print(f"Warning: Could not save word-level JSON: {e}")
 
             if progress_callback:
                 progress_callback(100)
@@ -812,6 +834,130 @@ class AudioProcessor:
         
         elif extract_transcript:
             self.extract_transcripts_batch(audio_files, progress_callback)
+
+
+    def align_features(self, features_csv, transcript_json, output_csv):
+        """
+        Align audio features with word-level transcript.
+        
+        Args:
+            features_csv (str): Path to audio features CSV
+            transcript_json (str): Path to word-level transcript JSON
+            output_csv (str): Path to save aligned CSV
+        """
+        import pandas as pd
+        import json
+        import numpy as np
+
+        # Load features
+        try:
+            df_features = pd.read_csv(features_csv)
+            if 'Timestamp_Seconds' not in df_features.columns:
+                raise ValueError("Features CSV missing 'Timestamp_Seconds' column")
+        except Exception as e:
+            raise Exception(f"Failed to load features CSV: {e}")
+
+        # Load transcript words
+        try:
+            with open(transcript_json, 'r') as f:
+                data = json.load(f)
+            
+            words = []
+            # Parse words from Whisper pipeline output
+            # Structure depends on return_timestamps="word"
+            # Usually result['chunks'] contains words directly or segments with words
+            
+            chunks = data.get('chunks', [])
+            if not chunks and 'segments' in data:
+                chunks = data['segments']
+                
+            for chunk in chunks:
+                # If it's a word-level chunk
+                text = chunk.get('text', '').strip()
+                timestamp = chunk.get('timestamp')
+                
+                start = None
+                end = None
+                
+                if isinstance(timestamp, (list, tuple)) and len(timestamp) >= 2:
+                    start, end = timestamp
+                else:
+                    # Try dict format
+                    ts = chunk.get('timestamps')
+                    if isinstance(ts, dict):
+                        start = ts.get('start')
+                        end = ts.get('end')
+                
+                if start is not None and end is not None and text:
+                    words.append({
+                        'word': text,
+                        'start': float(start),
+                        'end': float(end)
+                    })
+                    
+        except Exception as e:
+            raise Exception(f"Failed to parse transcript JSON: {e}")
+
+        if not words:
+            print("Warning: No words found in transcript JSON for alignment.")
+            return
+
+        # Align
+        aligned_rows = []
+        feature_cols = [c for c in df_features.columns if c not in ['Timestamp_Seconds', 'Timestamp_Milliseconds', 'Timestamp_Formatted', 'name', 'frameTime']]
+        
+        for w in words:
+            w_start = w['start']
+            w_end = w['end']
+            
+            # Filter features within this time range
+            mask = (df_features['Timestamp_Seconds'] >= w_start) & (df_features['Timestamp_Seconds'] <= w_end)
+            subset = df_features.loc[mask, feature_cols]
+            
+            if subset.empty:
+                # If word is too short or falls between frames, take nearest frame
+                # Find index of nearest timestamp
+                nearest_idx = (df_features['Timestamp_Seconds'] - w_start).abs().idxmin()
+                subset = df_features.loc[[nearest_idx], feature_cols]
+            
+            # Compute mean of features
+            means = subset.mean()
+            
+            row = {
+                'word': w['word'],
+                'start_time': w_start,
+                'end_time': w_end,
+                'duration': w_end - w_start
+            }
+            # Add feature means
+            for col, val in means.items():
+                row[col] = val
+                
+            aligned_rows.append(row)
+
+        # Save to CSV
+        df_aligned = pd.DataFrame(aligned_rows)
+        df_aligned.to_csv(output_csv, index=False)
+        print(f"Saved aligned features: {output_csv}")
+
+    def align_features_batch(self, alignment_pairs, progress_callback=None):
+        """
+        Batch align features.
+        
+        Args:
+            alignment_pairs (list): List of tuples (features_csv, transcript_json, output_csv)
+            progress_callback (callable): Progress callback
+        """
+        total = len(alignment_pairs)
+        for i, (feat_csv, trans_json, out_csv) in enumerate(alignment_pairs):
+            try:
+                self.set_status_message(f"🔗 Aligning: {os.path.basename(out_csv)}")
+                self.align_features(feat_csv, trans_json, out_csv)
+            except Exception as e:
+                print(f"Error aligning {os.path.basename(out_csv)}: {e}")
+            
+            if progress_callback:
+                progress_callback(int((i + 1) / total * 100))
 
 
 # PyAnnote-based SpeakerDiarizer
