@@ -111,11 +111,23 @@ How to get and use the Hugging Face token (one-time setup):
    * ``https://huggingface.co/pyannote/segmentation``
 3. Create an access token: go to ``https://huggingface.co/settings/tokens`` → **New token** (scope: "Read") → copy the token.
 4. In MultiSOCIAL Toolbox, when prompted, paste the token and confirm. The app will remember it during the session.
+   * **Tip**: To avoid entering the token every time, create a `.env` file in the project root and add `HF_TOKEN=your_token_here`. The app will load it automatically.
 
 Notes:
 - If you cancel or the token is invalid, the app continues with transcript only (no diarization).
 - The first diarization run may download models and can take a few minutes.
+- **Offline Mode**: Once models are downloaded, they are cached locally. Subsequent runs will use the cached models, allowing offline usage.
 - Speaker labels are heuristic (e.g., ``SPEAKER_00``, ``SPEAKER_01``) and do not identify real names.
+
+### Audio-Transcript Alignment
+This feature aligns your extracted audio features (from OpenSMILE) with word-level transcripts (from Whisper). This is useful for analyzing acoustic features of specific words.
+
+1.  **Extract Audio Features**: Run this first to generate the `.csv` feature files.
+2.  **Align Features**: Click the **Align Features** button.
+    *   It generates a detailed word-level transcript (`_words.json`).
+    *   It merges the audio features with each word based on timestamps.
+    *   The result is saved as `_aligned.csv` in the `audio_features` folder.
+    *   **Note**: Features are averaged over the duration of each word.
 
 # Troubleshooting
 
