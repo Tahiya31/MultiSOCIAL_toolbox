@@ -32,3 +32,4 @@ wxPython
 
 # Utilities
 requests
+python-dotenv

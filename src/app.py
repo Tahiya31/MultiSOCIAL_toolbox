@@ -17,6 +17,10 @@ os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 import ffmpeg
 import wx
 import unicodedata
+from dotenv import load_dotenv
+
+# Load environment variables from .env file if present
+load_dotenv()
 
 # Import the core processing classes
 from pose import PoseProcessor
@@ -316,7 +320,8 @@ class VideoToWavConverter(wx.Frame):
         self.Centre()
         
         self.active_mode = 'video'
-        self.hf_token = None
+        # Try to load token from environment variable first
+        self.hf_token = os.getenv("HF_TOKEN")
         self.switch_mode('video')
         self._update_panel_sizes()
         self.update_buttons_enabled()
@@ -956,18 +961,31 @@ class VideoToWavConverter(wx.Frame):
         enable_diarization = False
         if hasattr(self, 'diarizationCheckbox') and self.diarizationCheckbox.GetValue():
             enable_diarization = True
+            # Check if we already have a token (from env or previous entry)
             if not self.hf_token:
                 dlg = wx.TextEntryDialog(
                     self,
                     message=(
                         "Speaker diarization requires a Hugging Face token for pyannote.\n\n"
-                        "Please see the README for setup steps. Once complete, enter your token here:"
+                        "Please see the README for setup steps. Once complete, enter your token here:\n"
+                        "(It will be saved to .env for future use)"
                     ),
                     caption="Enter Hugging Face Token"
                 )
                 if dlg.ShowModal() == wx.ID_OK:
                     token_val = dlg.GetValue().strip()
-                    self.hf_token = token_val if token_val else None
+                    if token_val:
+                        self.hf_token = token_val
+                        # Save to .env file
+                        try:
+                            env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
+                            with open(env_path, "a") as f:
+                                f.write(f"\nHF_TOKEN={token_val}\n")
+                            print(f"Token saved to {env_path}")
+                        except Exception as e:
+                            print(f"Failed to save token to .env: {e}")
+                    else:
+                        self.hf_token = None
                 dlg.Destroy()
 
             if not self.hf_token:
