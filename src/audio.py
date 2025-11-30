@@ -220,12 +220,25 @@ class AudioProcessor:
             progress_callback(10)
 
         # Load model
-        self.whisper_model = AutoModelForSpeechSeq2Seq.from_pretrained(
-            model_id, 
-            torch_dtype=self.torch_dtype, 
-            low_cpu_mem_usage=True, 
-            use_safetensors=True
-        )
+        try:
+            print("Attempting to load Whisper model from local cache...")
+            self.whisper_model = AutoModelForSpeechSeq2Seq.from_pretrained(
+                model_id, 
+                torch_dtype=self.torch_dtype, 
+                low_cpu_mem_usage=True, 
+                use_safetensors=True,
+                local_files_only=True
+            )
+            print("✓ Loaded Whisper model from cache.")
+        except Exception as e:
+            print(f"Whisper model not found in cache or error loading: {e}. Downloading...")
+            self.whisper_model = AutoModelForSpeechSeq2Seq.from_pretrained(
+                model_id, 
+                torch_dtype=self.torch_dtype, 
+                low_cpu_mem_usage=True, 
+                use_safetensors=True,
+                local_files_only=False
+            )
         
         if progress_callback:
             progress_callback(25)
@@ -236,7 +249,11 @@ class AudioProcessor:
             progress_callback(40)
 
         # Load processor
-        self.whisper_processor = AutoProcessor.from_pretrained(model_id)
+        # Load processor
+        try:
+            self.whisper_processor = AutoProcessor.from_pretrained(model_id, local_files_only=True)
+        except Exception:
+            self.whisper_processor = AutoProcessor.from_pretrained(model_id, local_files_only=False)
 
         if progress_callback:
             progress_callback(55)
@@ -837,13 +854,92 @@ class PyAnnoteSpeakerDiarizer:
                 
             # Load the pre-trained speaker diarization pipeline
             # Note: You need to accept the license at https://huggingface.co/pyannote/speaker-diarization
-            if self.auth_token:
+            try:
+                print("Attempting to load PyAnnote model from local cache...")
+                if self.auth_token:
+                    # Try passing local_files_only if supported, or rely on cache check
+                    # Note: pyannote.audio Pipeline.from_pretrained might not explicitly support local_files_only 
+                    # in all versions, but we attempt it. If it fails (TypeError), we fall back.
+                    # However, to be safe and robust, we'll try to set environment variable for offline mode temporarily
+                    # if we really want to force offline. But for "cache if available", standard behavior usually prefers cache.
+                    # We will try explicit kwarg first.
+                    try:
+                        self.diarization_pipeline = Pipeline.from_pretrained(
+                            "pyannote/speaker-diarization",
+                            use_auth_token=self.auth_token,
+                            # Some versions of pyannote/huggingface_hub might accept this
+                            # If not, it might just ignore it or error out.
+                        )
+                    except Exception:
+                        # If simple load fails, we can't easily force offline without env var.
+                        # But actually, the user wants "if available use it".
+                        # Hugging Face usually uses cache by default if internet is up.
+                        # If internet is DOWN, it uses cache.
+                        # The user wants to ensure we don't *need* internet.
+                        # So we don't necessarily need to force offline, just ensure it works.
+                        # But to be explicit, let's try to simulate the "offline first" check.
+                        pass
+                    
+                    # Actually, a better approach for PyAnnote (which wraps HF Hub) is:
+                    # It automatically uses cache. If we want to *ensure* it doesn't hit internet if cached:
+                    # We can't easily do it without potentially breaking the "check for updates" logic unless we go offline.
+                    # But standard HF `from_pretrained` DOES hit the API to check for updates unless `local_files_only=True`.
+                    
+                    # Let's try passing it.
+                    self.diarization_pipeline = Pipeline.from_pretrained(
+                        "pyannote/speaker-diarization",
+                        use_auth_token=self.auth_token,
+                        cache_dir=None # Use default
+                    )
+                    # Note: PyAnnote's Pipeline.from_pretrained is a bit opaque.
+                    # Let's stick to the user request: "cache ... so we don't need internet".
+                    # If we just load it normally, it caches. Next time if no internet, it uses cache.
+                    # But if internet IS present, it checks for updates.
+                    # To force "use cache if exists", we can try:
+                    
+                else:
+                    self.diarization_pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization")
+                    
+            except Exception:
+                # If loading fails (e.g. no internet and not cached), we can't do much but let it fail or retry.
+                # But we want to implement the "try offline first" logic.
+                pass
+
+            # RE-IMPLEMENTING with explicit fallback logic
+            loaded = False
+            
+            # 1. Try offline load
+            try:
+                print("Attempting to load PyAnnote model from local cache...")
+                kw = {"use_auth_token": self.auth_token} if self.auth_token else {}
+                # Try passing local_files_only=True. 
+                # If the library doesn't support it, it raises TypeError.
+                # If it supports it but model not found, it raises OSError/ValueError.
                 self.diarization_pipeline = Pipeline.from_pretrained(
                     "pyannote/speaker-diarization",
-                    use_auth_token=self.auth_token
+                    local_files_only=True,
+                    **kw
                 )
-            else:
-                self.diarization_pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization")
+                print("✓ Loaded PyAnnote model from cache.")
+                loaded = True
+            except Exception as e:
+                print(f"Offline load failed ({e}). Trying online...")
+            
+            # 2. Fallback to standard load (online check)
+            if not loaded:
+                try:
+                    print("Downloading/Loading PyAnnote model (online)...")
+                    kw = {"use_auth_token": self.auth_token} if self.auth_token else {}
+                    self.diarization_pipeline = Pipeline.from_pretrained(
+                        "pyannote/speaker-diarization",
+                        **kw
+                    )
+                    loaded = True
+                except Exception as e:
+                    print(f"Standard load failed: {e}")
+
+            if not loaded:
+                raise Exception("Could not load PyAnnote pipeline.")
             
             # Move pipeline to the specified device
             if self.diarization_pipeline is not None:
