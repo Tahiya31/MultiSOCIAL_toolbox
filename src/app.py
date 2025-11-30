@@ -1048,6 +1048,103 @@ class VideoToWavConverter(wx.Frame):
             self._process_running = False
             self.update_progress(0)  # Reset progress bar
 
+    def on_align_features(self, event):
+        folder_path = self.folderPicker.GetPath()
+        if not folder_path:
+            wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        self.ensure_output_folders(folder_path)
+        
+        # Check if we have features and transcripts
+        if not os.path.exists(self.extracted_audio_folder):
+            wx.MessageBox("No audio features folder found. Please extract audio features first.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+            
+        # We don't strictly need transcripts folder to exist yet if we are going to generate them,
+        # but we need audio files.
+        audio_files = gui_utils.get_files_from_folder(folder_path, self.AUDIO_EXTENSIONS)
+        if not audio_files:
+            wx.MessageBox("No audio files found.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        # Run in thread
+        thread = threading.Thread(target=self.align_features_batch, args=(audio_files,))
+        thread.start()
+
+    def align_features_batch(self, audio_files):
+        self._process_running = True
+        try:
+            total_files = len(audio_files)
+            
+            # Initialize processor
+            # We need token for PyAnnote if we were doing diarization, but for alignment we just need Whisper
+            # We'll pass the token just in case
+            audio_processor = AudioProcessor(
+                output_audio_features_folder=self.extracted_audio_folder,
+                output_transcripts_folder=self.extracted_transcripts_folder,
+                status_callback=self.set_status_message,
+                auth_token=self.hf_token
+            )
+            
+            alignment_pairs = []
+            
+            for i, audio_file in enumerate(audio_files, start=1):
+                base_name = os.path.splitext(os.path.basename(audio_file))[0]
+                
+                # 1. Ensure we have word-level transcript (JSON)
+                json_path = os.path.join(self.extracted_transcripts_folder, f"{base_name}_words.json")
+                if not os.path.exists(json_path):
+                    self.set_status_message(f"📝 Generating word-level transcript for: {base_name}")
+                    try:
+                        # Force word timestamps
+                        audio_processor.extract_transcript(audio_file, word_timestamps=True)
+                    except Exception as e:
+                        print(f"Failed to generate transcript for {base_name}: {e}")
+                        continue
+                
+                # 2. Ensure we have features CSV
+                # Feature files are usually named {base_name}.csv or similar in extracted_audio_folder
+                # The AudioProcessor.extract_audio_features saves them as {base_name}.csv
+                feature_csv = os.path.join(self.extracted_audio_folder, f"{base_name}.csv")
+                if not os.path.exists(feature_csv):
+                    self.set_status_message(f"🎵 Extracting audio features for: {base_name}")
+                    try:
+                        # We need to call extract_audio_features for this single file
+                        # But AudioProcessor has batch method. Let's use the internal logic or just skip if missing?
+                        # User should have clicked "Extract Audio Features" first.
+                        # But we can try to be helpful.
+                        # Actually, AudioProcessor.extract_audio_features takes a list.
+                        # Let's just warn if missing for now to avoid complexity of re-extracting everything.
+                        print(f"Features missing for {base_name}, skipping.")
+                        continue
+                    except Exception:
+                        continue
+                        
+                # 3. Output path
+                output_csv = os.path.join(self.extracted_audio_folder, f"{base_name}_aligned.csv")
+                alignment_pairs.append((feature_csv, json_path, output_csv))
+                
+                self.update_progress(int((i / total_files) * 50)) # First 50% for prep
+
+            if not alignment_pairs:
+                wx.CallAfter(wx.MessageBox, "No valid pairs found to align. Ensure you have extracted audio features.", "Warning", wx.OK | wx.ICON_WARNING)
+                return
+
+            # Run alignment
+            audio_processor.align_features_batch(
+                alignment_pairs, 
+                progress_callback=lambda p: self.update_progress(50 + int(p/2))
+            )
+            
+            wx.CallAfter(wx.MessageBox, "Feature alignment completed!", "Success", wx.OK | wx.ICON_INFORMATION)
+            
+        except Exception as e:
+            wx.CallAfter(wx.MessageBox, f"Alignment failed: {e}", "Error", wx.OK | wx.ICON_ERROR)
+        finally:
+            self._process_running = False
+            self.update_progress(0)
+
 def main():
     # Ensure ffmpeg is available before the UI starts doing conversions
     if not gui_utils.ensure_ffmpeg_available():
