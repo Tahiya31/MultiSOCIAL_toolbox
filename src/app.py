@@ -121,8 +121,8 @@ class VideoToWavConverter(wx.Frame):
 
     def _create_mode_selection(self, pnl, vbox):
         mode_box = wx.BoxSizer(wx.HORIZONTAL)
-        self.videoModeBtn = wx.Button(pnl, label="Video Options", size=(140, 35))
-        self.audioModeBtn = wx.Button(pnl, label="Audio Options", size=(140, 35))
+        self.videoModeBtn = wx.Button(pnl, label="Video Options")
+        self.audioModeBtn = wx.Button(pnl, label="Audio Options")
         
         mode_btn_font = Theme.get_font(11, bold=True)
         self.videoModeBtn.SetFont(mode_btn_font)
@@ -138,9 +138,9 @@ class VideoToWavConverter(wx.Frame):
         vbox.Add(mode_box, flag=wx.EXPAND|wx.TOP|wx.BOTTOM, border=10)
         
         # Underlines
-        self._video_underline = wx.Panel(pnl, size=(-1, 3))
+        self._video_underline = wx.Panel(pnl, size=(-1, self.FromDIP(3)))
         self._video_underline.SetBackgroundColour(Theme.COLOR_ACCENT_GREEN)
-        self._audio_underline = wx.Panel(pnl, size=(-1, 3))
+        self._audio_underline = wx.Panel(pnl, size=(-1, self.FromDIP(3)))
         self._audio_underline.SetBackgroundColour(Theme.COLOR_ACCENT_GREEN)
         
         mode_box.Insert(2, self._audio_underline, flag=wx.EXPAND | wx.LEFT | wx.RIGHT, border=5)
@@ -303,7 +303,7 @@ class VideoToWavConverter(wx.Frame):
         vbox.Add(self.statusLabel, flag=wx.EXPAND|wx.ALL, border=10)
         
         self.progress = CustomGauge(pnl, range=100)
-        self.progress.SetMinSize((-1, 28))
+        self.progress.SetMinSize((-1, self.FromDIP(28)))
         try:
             self.progress.SetForegroundColour(wx.Colour(33, 150, 243))
         except Exception:
@@ -521,7 +521,7 @@ class VideoToWavConverter(wx.Frame):
                     pass
             # Progress bar height scaling
             if hasattr(self, 'progress') and self.progress:
-                self.progress.SetMinSize((-1, max(20, int(28 * scale))))
+                self.progress.SetMinSize((-1, max(self.FromDIP(20), int(self.FromDIP(28) * scale))))
         except Exception:
             pass
 
@@ -1146,6 +1146,13 @@ class VideoToWavConverter(wx.Frame):
             self.update_progress(0)
 
 def main():
+    # Enable High DPI awareness on Windows
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        pass
+
     # Ensure ffmpeg is available before the UI starts doing conversions
     if not gui_utils.ensure_ffmpeg_available():
         msg = (

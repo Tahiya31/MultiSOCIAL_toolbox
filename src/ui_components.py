@@ -37,7 +37,7 @@ class GlassPanel(wx.Panel):
         y = rect.y + inset
         w = max(0, rect.width - inset * 2)
         h = max(0, rect.height - inset * 2)
-        r = self.corner_radius
+        r = self.FromDIP(self.corner_radius)
         path = gc.CreatePath()
         path.AddRoundedRectangle(x, y, w, h, r)
         rcol = wx.Colour(*self.fill_rgba)
@@ -104,7 +104,7 @@ class ElevatedLogoPanel(wx.Panel):
             return
 
         # Determine circle diameter and center; add small padding so border doesn't clip
-        padding = 6
+        padding = self.FromDIP(6)
         base_diameter = max(10, min(rect.width, rect.height) - padding * 2)
         diameter = int(base_diameter * self.scale_factor)
 
@@ -186,7 +186,7 @@ class InfoIcon(wx.StaticText):
         self.SetFont(Theme.get_font(12, bold=True))
         self.SetForegroundColour(Theme.COLOR_TEXT_WHITE)
         self.SetBackgroundColour(Theme.COLOR_INFO_ICON_BG)
-        self.SetMinSize((20, 20))
+        self.SetMinSize(self.FromDIP(wx.Size(20, 20)))
         
         # Bind mouse events
         self.Bind(wx.EVT_ENTER_WINDOW, self.OnMouseEnter)
@@ -348,8 +348,8 @@ class CustomGauge(wx.Panel):
         event.Skip()
 
     def OnPaint(self, event):
-        # Use PaintDC directly on macOS to allow system double-buffering and transparency
-        dc = wx.PaintDC(self)
+        # Use AutoBufferedPaintDC for cross-platform consistency (prevents flicker on Windows)
+        dc = wx.AutoBufferedPaintDC(self)
         
         # Use GraphicsContext for smoother anti-aliased drawing
         gc = wx.GraphicsContext.Create(dc)
