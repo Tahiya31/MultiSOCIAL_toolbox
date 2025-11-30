@@ -71,7 +71,7 @@ class VideoToWavConverter(wx.Frame):
         self._create_audio_panel()
         
         # Assemble panels
-        vbox.AddSpacer(8)
+        vbox.AddSpacer(10)
         vbox.Add(self.videoPanel, proportion=0, flag=wx.ALIGN_CENTER|wx.LEFT|wx.RIGHT, border=12)
         vbox.Add(self.audioPanel, proportion=0, flag=wx.ALIGN_CENTER|wx.LEFT|wx.RIGHT, border=12)
         vbox.AddStretchSpacer(1)
@@ -87,7 +87,7 @@ class VideoToWavConverter(wx.Frame):
 
     def _create_header(self, pnl, vbox):
         new_width, new_height = wx.GetDisplaySize()
-        logo_size = min(int(new_height * 0.08), 150)
+        logo_size = min(int(new_height * 0.06), 120)
         
         top_box = wx.BoxSizer(wx.HORIZONTAL)
         
@@ -165,7 +165,7 @@ class VideoToWavConverter(wx.Frame):
         # Placeholder
         self.placeholderVideoLabel = wx.StaticText(self.videoPanel, label="If you have a video file:")
         self.placeholderVideoLabel.SetFont(Theme.get_font(20))
-        video_sizer.AddSpacer(8)
+        video_sizer.AddSpacer(10)
         video_sizer.Add(self.placeholderVideoLabel, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
         
         # Multi-person checkbox
@@ -241,7 +241,7 @@ class VideoToWavConverter(wx.Frame):
             handler=self.on_verify_consistency
         )
         video_sizer.Add(hbox_verify, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
-        video_sizer.AddSpacer(8)
+        video_sizer.AddSpacer(10)
         
         self.videoPanel.SetSizer(video_sizer)
 
@@ -251,7 +251,7 @@ class VideoToWavConverter(wx.Frame):
         # Placeholder
         self.placeholderAudioLabel = wx.StaticText(self.audioPanel, label="If you have an audio file:")
         self.placeholderAudioLabel.SetFont(Theme.get_font(20))
-        audio_sizer.AddSpacer(8)
+        audio_sizer.AddSpacer(10)
         audio_sizer.Add(self.placeholderAudioLabel, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
         
         # Diarization
@@ -289,7 +289,7 @@ class VideoToWavConverter(wx.Frame):
             handler=self.on_align_features
         )
         audio_sizer.Add(hbox_align, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
-        audio_sizer.AddSpacer(8)
+        audio_sizer.AddSpacer(10)
         
         self.audioPanel.SetSizer(audio_sizer)
 
@@ -303,7 +303,7 @@ class VideoToWavConverter(wx.Frame):
         vbox.Add(self.statusLabel, flag=wx.EXPAND|wx.ALL, border=10)
         
         self.progress = CustomGauge(pnl, range=100)
-        self.progress.SetMinSize((-1, self.FromDIP(28)))
+        self.progress.SetMinSize((-1, self.FromDIP(30)))
         try:
             self.progress.SetForegroundColour(wx.Colour(33, 150, 243))
         except Exception:
@@ -410,10 +410,10 @@ class VideoToWavConverter(wx.Frame):
                 self.folderPicker.SetMaxSize((target_w, -1))
             # Match progress bar width to glass panels
             if hasattr(self, 'progress') and self.progress:
+                # Keep height fixed at initialized value (30 scaled), only adjust width
                 current_min_size = self.progress.GetMinSize()
-                current_h = current_min_size.height if current_min_size.height > 0 else 28
-                self.progress.SetMinSize((target_w, current_h))
-                self.progress.SetMaxSize((target_w, current_h))
+                self.progress.SetMinSize((target_w, current_min_size.height))
+                self.progress.SetMaxSize((target_w, current_min_size.height))
         except Exception:
             pass
 
@@ -519,9 +519,9 @@ class VideoToWavConverter(wx.Frame):
                     self.statusLabel.SetWindowStyleFlag(wx.ALIGN_CENTER_HORIZONTAL)
                 except Exception:
                     pass
-            # Progress bar height scaling
-            if hasattr(self, 'progress') and self.progress:
-                self.progress.SetMinSize((-1, max(self.FromDIP(20), int(self.FromDIP(28) * scale))))
+            # Progress bar height scaling - REMOVED to ensure consistency
+            # if hasattr(self, 'progress') and self.progress:
+            #     self.progress.SetMinSize((-1, max(self.FromDIP(20), int(self.FromDIP(28) * scale))))
         except Exception:
             pass
 
