@@ -29,6 +29,9 @@ import gui_utils
 from gui_utils import Theme
 from ui_components import GradientPanel, GlassPanel, ElevatedLogoPanel, TooltipButton, CustomGauge
 
+# Enable High DPI on Windows
+gui_utils.setup_high_dpi()
+
 ## All dependencies are expected to be installed ahead of time via requirements.txt
 
 class VideoToWavConverter(wx.Frame):
@@ -80,7 +83,9 @@ class VideoToWavConverter(wx.Frame):
         self._create_status_and_progress(pnl, vbox)
         
         pnl.SetSizer(vbox)
-        pnl.Layout()
+        self.mainPanel = pnl
+        self.mainPanel.Layout()
+        self.mainPanel.FitInside()
         
         # Final setup (sizing, binding, etc.)
         self._finalize_setup(vbox)
@@ -107,13 +112,13 @@ class VideoToWavConverter(wx.Frame):
         vbox.Add(top_box, flag=wx.EXPAND | wx.TOP | wx.BOTTOM, border=10)
         
         # Title
-        self.title = wx.StaticText(pnl, label="Welcome to", style=wx.ALIGN_CENTER)
+        self.title = gui_utils.create_transparent_text(pnl, label="Welcome to", style=wx.ALIGN_CENTER)
         self.title.SetFont(Theme.get_font(20))
         self.title.SetForegroundColour(Theme.COLOR_TEXT_WHITE)
         vbox.Add(self.title, flag=wx.ALIGN_CENTER | wx.BOTTOM, border=10)
 
         # Logo Label
-        self.logoLabel = wx.StaticText(pnl, label="MultiSOCIAL Toolbox", style=wx.ALIGN_CENTER)
+        self.logoLabel = gui_utils.create_transparent_text(pnl, label="MultiSOCIAL Toolbox", style=wx.ALIGN_CENTER)
         self.logoLabel.SetFont(Theme.get_font(24, bold=True))
         self.logoLabel.SetForegroundColour(Theme.COLOR_TEXT_WHITE)
 
@@ -150,7 +155,7 @@ class VideoToWavConverter(wx.Frame):
         self._audio_underline.Hide()
 
     def _create_folder_picker(self, pnl, vbox):
-        self.folderCaption = wx.StaticText(pnl, label="Select a folder containing VIDEO files", style=wx.ALIGN_CENTER)
+        self.folderCaption = gui_utils.create_transparent_text(pnl, label="Select a folder containing VIDEO files", style=wx.ALIGN_CENTER)
         self.folderCaption.SetFont(Theme.get_font(13, bold=True))
         self.folderCaption.SetForegroundColour(Theme.COLOR_TEXT_WHITE)
         vbox.Add(self.folderCaption, flag=wx.ALIGN_CENTER|wx.LEFT|wx.RIGHT|wx.TOP, border=8)
@@ -163,7 +168,7 @@ class VideoToWavConverter(wx.Frame):
         video_sizer = wx.BoxSizer(wx.VERTICAL)
         
         # Placeholder
-        self.placeholderVideoLabel = wx.StaticText(self.videoPanel, label="If you have a video file:")
+        self.placeholderVideoLabel = gui_utils.create_transparent_text(self.videoPanel, label="If you have a video file:")
         self.placeholderVideoLabel.SetFont(Theme.get_font(20))
         video_sizer.AddSpacer(10)
         video_sizer.Add(self.placeholderVideoLabel, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
@@ -176,7 +181,7 @@ class VideoToWavConverter(wx.Frame):
         
         # Downsampling controls
         ds_box = wx.BoxSizer(wx.HORIZONTAL)
-        ds_label = wx.StaticText(self.videoPanel, label="Process every k-th frame:")
+        ds_label = gui_utils.create_transparent_text(self.videoPanel, label="Process every k-th frame:")
         ds_label.SetFont(Theme.get_font(12))
         ds_label.SetForegroundColour(Theme.COLOR_TEXT_WHITE)
         ds_box.Add(ds_label, flag=wx.ALIGN_CENTER_VERTICAL|wx.RIGHT, border=8)
@@ -193,7 +198,7 @@ class VideoToWavConverter(wx.Frame):
         
         # Frame threshold
         frame_threshold_box = wx.BoxSizer(wx.HORIZONTAL)
-        frame_threshold_label = wx.StaticText(self.videoPanel, label="Frame Threshold for Bounding Box Recalibration:")
+        frame_threshold_label = gui_utils.create_transparent_text(self.videoPanel, label="Frame Threshold for Bounding Box Recalibration:")
         frame_threshold_label.SetFont(Theme.get_font(12))
         frame_threshold_label.SetForegroundColour(Theme.COLOR_TEXT_WHITE)
         frame_threshold_box.Add(frame_threshold_label, flag=wx.ALIGN_CENTER_VERTICAL|wx.RIGHT, border=10)
@@ -249,7 +254,7 @@ class VideoToWavConverter(wx.Frame):
         audio_sizer = wx.BoxSizer(wx.VERTICAL)
         
         # Placeholder
-        self.placeholderAudioLabel = wx.StaticText(self.audioPanel, label="If you have an audio file:")
+        self.placeholderAudioLabel = gui_utils.create_transparent_text(self.audioPanel, label="If you have an audio file:")
         self.placeholderAudioLabel.SetFont(Theme.get_font(20))
         audio_sizer.AddSpacer(10)
         audio_sizer.Add(self.placeholderAudioLabel, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
@@ -294,7 +299,7 @@ class VideoToWavConverter(wx.Frame):
         self.audioPanel.SetSizer(audio_sizer)
 
     def _create_status_and_progress(self, pnl, vbox):
-        self.statusLabel = wx.StaticText(pnl, label="", style=wx.ALIGN_CENTER_HORIZONTAL)
+        self.statusLabel = gui_utils.create_transparent_text(pnl, label="", style=wx.ALIGN_CENTER_HORIZONTAL)
         self.statusLabel.SetForegroundColour(Theme.COLOR_TEXT_WHITE)
         try:
             self.statusLabel.SetFont(Theme.get_font(13, bold=True))
@@ -326,6 +331,17 @@ class VideoToWavConverter(wx.Frame):
         self.SetSizeHints(min_w, min_h, max_w, max_h)
         self.SetSize((min_w, min_h))
         self.SetTitle('MultiSOCIAL Toolbox')
+        
+        # Set Window Icon
+        try:
+            logo_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "MultiSOCIAL_logo.png")
+            if os.path.exists(logo_path):
+                icon = wx.Icon()
+                icon.CopyFromBitmap(wx.Bitmap(logo_path, wx.BITMAP_TYPE_ANY))
+                self.SetIcon(icon)
+        except Exception:
+            pass
+            
         self.Centre()
         
         self.active_mode = 'video'
@@ -527,6 +543,8 @@ class VideoToWavConverter(wx.Frame):
 
         # Relayout after scaling
         self._update_panel_sizes()
+        self.mainPanel.Layout()
+        self.mainPanel.FitInside()
         self.Layout()
         event.Skip()
 
@@ -1146,13 +1164,6 @@ class VideoToWavConverter(wx.Frame):
             self.update_progress(0)
 
 def main():
-    # Enable High DPI awareness on Windows
-    try:
-        import ctypes
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)
-    except Exception:
-        pass
-
     # Ensure ffmpeg is available before the UI starts doing conversions
     if not gui_utils.ensure_ffmpeg_available():
         msg = (

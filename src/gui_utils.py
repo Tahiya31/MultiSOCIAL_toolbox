@@ -4,6 +4,29 @@ import wx
 import ffmpeg
 
 # --- Constants & Theme ---
+import sys
+import ctypes
+import wx.lib.stattext as stattext
+
+def setup_high_dpi():
+    """Enable High DPI awareness on Windows. No-op on other platforms."""
+    if sys.platform.startswith("win"):
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)  # Process_System_DPI_Aware
+        except Exception:
+            pass
+
+def create_transparent_text(parent, *args, **kwargs):
+    """
+    Creates a static text control that supports low-level transparency on Windows.
+    On macOS, returns a native wx.StaticText to preserve exact look-and-feel.
+    On Windows, returns a GenStaticText to avoid white background rectangles on gradients.
+    """
+    if sys.platform.startswith("win"):
+        return stattext.GenStaticText(parent, *args, **kwargs)
+    else:
+        return wx.StaticText(parent, *args, **kwargs)
+
 class Theme:
     # Colors
     COLOR_BG_GRADIENT_START = '#00695C'  # Dark Teal
@@ -27,6 +50,9 @@ class Theme:
     @staticmethod
     def get_font(size, bold=False):
         weight = Theme.FONT_WEIGHT_BOLD if bold else Theme.FONT_WEIGHT_NORMAL
+        if sys.platform.startswith("win"):
+            # Use Segoe UI for a cleaner, modern Windows look
+            return wx.Font(size, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, weight, False, "Segoe UI")
         return wx.Font(size, Theme.FONT_FAMILY, Theme.FONT_STYLE_NORMAL, weight)
 
 # --- Utility Functions ---

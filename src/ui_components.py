@@ -1,15 +1,25 @@
 import wx
 from gui_utils import Theme
 
-class GradientPanel(wx.Panel):
+class GradientPanel(wx.ScrolledWindow):
     def __init__(self, parent):
-        super(GradientPanel, self).__init__(parent)
+        super(GradientPanel, self).__init__(parent, style=wx.VSCROLL)
         self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
+        self.SetScrollRate(0, 10) # Vertical scrolling only
         self.Bind(wx.EVT_PAINT, self.OnPaint)
 
     def OnPaint(self, event):
         dc = wx.AutoBufferedPaintDC(self)
-        rect = self.GetClientRect()
+        self.DoPrepareDC(dc)
+        # Use virtual size to fill the entire scrollable area, not just client rect
+        # However, for a simple gradient background that stays fixed or stretches, 
+        # we need to be careful. If we want the gradient to scroll WITH content, we allow it.
+        # If we want fixed background, it's harder with ScrolledWindow.
+        # Let's assume scrolling the gradient is fine or even preferred so it covers everything.
+        
+        # Get the full virtual size to ensure gradient covers all scrolled content
+        width, height = self.GetVirtualSize()
+        rect = wx.Rect(0, 0, width, height)
         dc.GradientFillLinear(rect, Theme.COLOR_BG_GRADIENT_START, Theme.COLOR_BG_GRADIENT_END, wx.NORTH)
 
 
