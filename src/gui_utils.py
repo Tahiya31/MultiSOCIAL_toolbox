@@ -16,14 +16,49 @@ def setup_high_dpi():
         except Exception:
             pass
 
+class TransparentStaticText(stattext.GenStaticText):
+    """
+    A StaticText that strictly prevents background painting to ensure transparency
+    over complex backgrounds like gradients.
+    """
+    def __init__(self, *args, **kwargs):
+        super(TransparentStaticText, self).__init__(*args, **kwargs)
+        self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
+        self.Bind(wx.EVT_ERASE_BACKGROUND, lambda e: None)
+
+    def OnPaint(self, event):
+        dc = wx.AutoBufferedPaintDC(self)
+        self.DoPrepareDC(dc)
+        
+        # Try to create a GCDC for smoother text, fall back to standard DC
+        try:
+            gc = wx.GCDC(dc)
+            dc_to_use = gc
+        except Exception:
+            dc_to_use = dc
+
+        # Setup font and text color
+        dc_to_use.SetFont(self.GetFont())
+        dc_to_use.SetTextForeground(self.GetForegroundColour())
+        dc_to_use.SetBackgroundMode(wx.TRANSPARENT)
+        
+        # Draw text centered vertically/horizontally depending on style?
+        # GenStaticText has internal logic for alignment, but here we can keep it simple 
+        # or reuse some of GenericStaticText's helpers if accessible.
+        # For this specific app, most labels are centered or simple. 
+        # Using DrawLabel handles alignment flags (wx.ALIGN_CENTER, etc).
+        label = self.GetLabel()
+        rect = self.GetClientRect()
+        dc_to_use.DrawLabel(label, rect, self.GetWindowStyleFlag())
+
 def create_transparent_text(parent, *args, **kwargs):
     """
     Creates a static text control that supports low-level transparency on Windows.
     On macOS, returns a native wx.StaticText to preserve exact look-and-feel.
-    On Windows, returns a GenStaticText to avoid white background rectangles on gradients.
+    On Windows, returns a custom TransparentStaticText.
     """
     if sys.platform.startswith("win"):
-        return stattext.GenStaticText(parent, *args, **kwargs)
+        return TransparentStaticText(parent, *args, **kwargs)
     else:
         return wx.StaticText(parent, *args, **kwargs)
 
