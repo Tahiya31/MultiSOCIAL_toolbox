@@ -1,6 +1,10 @@
 @echo off
 setlocal enabledelayedexpansion
 
+REM Ensure Unicode support for output
+chcp 65001 >nul
+set PYTHONIOENCODING=utf-8
+
 REM Resolve script directory
 set "SCRIPT_DIR=%~dp0"
 set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
