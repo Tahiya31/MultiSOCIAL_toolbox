@@ -16,10 +16,20 @@ def setup_high_dpi():
         except Exception:
             pass
 
+def _mix_colors(c1, c2, w2):
+    """Mix color c1 with c2, where w2 is the weight (0.0-1.0) of c2."""
+    w1 = 1.0 - w2
+    return wx.Colour(
+        int(c1.Red() * w1 + c2.Red() * w2),
+        int(c1.Green() * w1 + c2.Green() * w2),
+        int(c1.Blue() * w1 + c2.Blue() * w2),
+        255 # Assume opaque result
+    )
+
 class TransparentStaticText(stattext.GenStaticText):
     """
-    A StaticText that strictly prevents background painting to ensure transparency
-    over complex backgrounds like gradients.
+    A StaticText that manually paints its background to match the parent's gradient/glass
+    appearance, solving the 'transparency' issue on Windows.
     """
     def __init__(self, *args, **kwargs):
         super(TransparentStaticText, self).__init__(*args, **kwargs)
@@ -30,23 +40,102 @@ class TransparentStaticText(stattext.GenStaticText):
         dc = wx.AutoBufferedPaintDC(self)
         self.DoPrepareDC(dc)
         
-        # Try to create a GCDC for smoother text, fall back to standard DC
+        # 1. Paint Background to match the parent environment
+        # Find the GradientPanel and calculate relative position
+        # Start with simple opaque background as fallback
+        dc.SetBackground(wx.Brush(self.GetParent().GetBackgroundColour()))
+        dc.Clear()
+        
+        try:
+            # Walk up to find GradientPanel
+            win = self.GetParent()
+            glass_parent = None
+            gradient_parent = None
+            
+            # Simple check since we know the structure: GlassPanel -> GradientPanel
+            # Or directly GradientPanel
+            if hasattr(win, "fill_rgba"): # Identify GlassPanel by attribute
+                glass_parent = win
+                win = win.GetParent()
+                
+            # Check for GradientPanel (ScrolledWindow with OnPaint gradient logic)
+            # We assume it's the next parent up
+            if win:
+                gradient_parent = win
+
+            if gradient_parent:
+                # Get dimensions
+                # Use VirtualSize because gradient covers whole scroll area
+                fw, fh = gradient_parent.GetVirtualSize()
+                fh = max(fh, 1) # avoid div zero
+                
+                # Determine absolute logical Y of this control's top and bottom
+                # Map control (0,0) to screen, then screen to parent client, then unscored?
+                # Easier: Screen positions.
+                # NOTE: Gradient is painted on the Virtual canvas.
+                # So we need (ChildScreenPos - GradientScreenPos) + ScrollOffset
+                
+                child_screen = self.GetScreenPosition()
+                grad_screen = gradient_parent.GetScreenPosition()
+                
+                # CalcUnscrolledPosition(0,0) gives the scroll offset in pixels
+                scroll_x, scroll_y = gradient_parent.CalcUnscrolledPosition(0, 0)
+                
+                rel_y_top = (child_screen.y - grad_screen.y) + scroll_y
+                rel_y_bot = rel_y_top + self.GetSize().height
+                
+                # Colors
+                c_start = wx.Colour(Theme.COLOR_BG_GRADIENT_START) # Bottom (if NORTH)
+                c_end = wx.Colour(Theme.COLOR_BG_GRADIENT_END)     # Top (if NORTH)
+                # wx.NORTH means Gradient starts at bottom?
+                # "wx.NORTH: The starting color is at the bottom"
+                # So y=0 is END, y=H is START.
+                
+                # Calculate color at top and bottom of this control
+                # Linear interp: val = End * (1-pct) + Start * pct
+                pct_top = max(0.0, min(1.0, rel_y_top / float(fh)))
+                pct_bot = max(0.0, min(1.0, rel_y_bot / float(fh)))
+                
+                color_top = _mix_colors(c_end, c_start, pct_top)
+                color_bot = _mix_colors(c_end, c_start, pct_bot)
+                
+                # If inside GlassPanel, blend the glass color on top
+                if glass_parent:
+                    glass_color = wx.Colour(*Theme.COLOR_GLASS_FILL[:3])
+                    alpha = Theme.COLOR_GLASS_FILL[3] / 255.0
+                    # Composite: Result = Glass * alpha + Gradient * (1-alpha)
+                    color_top = _mix_colors(color_top, glass_color, alpha)
+                    color_bot = _mix_colors(color_bot, glass_color, alpha)
+
+                # Fill the background!
+                rect = self.GetClientRect()
+                dc.GradientFillLinear(rect, color_bot, color_top, wx.NORTH) 
+                # Note: GradientFillLinear direction needs to match. 
+                # If we calculated color_top and color_bot, we want top-to-bottom fill?
+                # Set direction wx.SOUTH to start at Top?
+                # wx.SOUTH: starting color at top.
+                # Usage: GradientFillLinear(rect, startColor, endColor, direction)
+                # If direction is SOUTH, startColor is Top.
+                # So use SOUTH with (color_top, color_bot).
+                dc.GradientFillLinear(rect, color_top, color_bot, wx.SOUTH)
+
+        except Exception as e:
+            # Fallback if math fails
+            # print(f"bg error: {e}")
+            pass
+
+        # 2. Draw Text
+        # Use GCDC for nice antialiasing
         try:
             gc = wx.GCDC(dc)
             dc_to_use = gc
         except Exception:
             dc_to_use = dc
 
-        # Setup font and text color
         dc_to_use.SetFont(self.GetFont())
         dc_to_use.SetTextForeground(self.GetForegroundColour())
         dc_to_use.SetBackgroundMode(wx.TRANSPARENT)
         
-        # Draw text centered vertically/horizontally depending on style?
-        # GenStaticText has internal logic for alignment, but here we can keep it simple 
-        # or reuse some of GenericStaticText's helpers if accessible.
-        # For this specific app, most labels are centered or simple. 
-        # Using DrawLabel handles alignment flags (wx.ALIGN_CENTER, etc).
         label = self.GetLabel()
         rect = self.GetClientRect()
         dc_to_use.DrawLabel(label, rect, self.GetWindowStyleFlag())
