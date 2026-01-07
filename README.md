@@ -33,7 +33,7 @@ Once launched, MultiSOCIAL Toolbox application looks like this.
 
 <img src="./assets/ApplicationUI.png" width="350">
 
-The toolbox takes two types of input: audio (.wav file) and video (.mp4 file).
+The toolbox takes two types of input: audio (.wav file) and video (.mp4, .avi, .mov, .mkv files).
 
 ## Video file
 **Convert video to audio** If you have a video file of human interaction and would like to convert it to a audio file in .wav format, this step is for you.
@@ -50,9 +50,13 @@ You should see three folders within the same folder as your input video.
 **Extract Pose Features** If you are interested in extracting pose or body key-points from the video, this step uses [MediaPipe](https://github.com/google-ai-edge/mediapipe/blob/master/docs/solutions/pose.md) to achieve this. This step returns 33 body pose land marks. For more details on MediaPipe, please check out the [official page](https://github.com/google-ai-edge/mediapipe/blob/master/docs/solutions/pose.md). 
   * Use the ``Browse`` button to locate your input video file.
   * Then press **Extract Pose Features** button. This step may take some time.
-  * Note: If your video has multiple people, you must select **Enable Multi-person Pose** for getting pose information of each people.
+  * Note: If your video has multiple people, you must select **Enable Multi-person Pose** for getting pose information of each person.
+  * **Performance Options:**
+    * **Process every k-th frame**: Skip frames to speed up processing (e.g., k=2 processes every other frame).
+    * **Downscale to 720p**: Reduce video resolution during processing for faster extraction.
+    * **Frame Threshold for Bounding Box Recalibration**: Controls how often person bounding boxes are re-detected in multi-person mode.
   * Once the pose features are extracted, you can find them in **pose_features** folder created before.
-  * **For multi-person mode**: Each outpur csv file will represent a single person's information (files will be named as {name of original video file}_multi_ID_0, {name of original video file}_multi_ID_1,etc.
+  * **For multi-person mode**: Each output csv file will represent a single person's information (files will be named as {name of original video file}_multi_ID_0, {name of original video file}_multi_ID_1, etc.).
   * **CSV format** Each row represents a frame, each column represents features. For each of the 33 body land marks, you should see 4 columns:
     * x and y: Landmark coordinates normalized to [0.0, 1.0] by the image width and height respectively.
     * z: Represents the landmark depth with the depth at the midpoint of hips being the origin, and the smaller the value the closer the landmark is to the camera. The magnitude of z uses roughly the same scale as x.
@@ -60,9 +64,8 @@ You should see three folders within the same folder as your input video.
 
 **Embed Pose Features** If you are interested in embedding body key-points extracted from Mediapipe on each frames, this step uses [MediaPipe](https://github.com/google-ai-edge/mediapipe/blob/master/docs/solutions/pose.md) to achieve this. 
   * Use the ``Browse`` button to locate your input video file.
-  * Then press **Embed Pose Features** button. A window will pop up where you will see each frame being processed and body key-points being embedded. [We are no longer supporting the real-time embedding as it makes other simultaneous processes slower]
+  * Then press **Embed Pose Features** button. The toolbox will process each frame and embed body key-points onto the video.
   * Once all the frames are processed, an output video will appear in the **embedded_pose** folder where your input video is located.
-  * **Note: Embed pose features only supports a single person video at this moment.**
 
 ### Verify Consistency (Pose QA)
 After extracting pose CSVs and generating embedded pose videos, you can run **Verify Consistency** to compare them.
@@ -175,7 +178,7 @@ We thank the authors and developers of ``MediaPipe``, ``OpenSMILE``, ``YOLOv5`` 
 
 ## Disclaimer
 
-Automated tools can be inaccurate and should be used after human verification for correctedness.
+Automated tools can be inaccurate and should be used after human verification for correctness.
 
 ## Help us improve this toolbox!
 [Please leave your feedback in this form.](https://docs.google.com/forms/d/e/1FAIpQLScGkEu-LfLAa_IGNOXG25trtMf8k12FFPymObBRDmLdPkAvxQ/viewform)
