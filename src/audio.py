@@ -42,7 +42,6 @@ class AudioProcessor:
             os.makedirs(self.output_transcripts_folder, exist_ok=True)
         
         # Initialize device for Whisper
-        # Initialize device for Whisper
         if torch.cuda.is_available():
             self.device = "cuda:0"
             self.torch_dtype = torch.float16
@@ -249,7 +248,6 @@ class AudioProcessor:
             progress_callback(40)
 
         # Load processor
-        # Load processor
         try:
             self.whisper_processor = AutoProcessor.from_pretrained(model_id, local_files_only=True)
         except Exception:
@@ -364,23 +362,6 @@ class AudioProcessor:
                 generate_kwargs={"task": "transcribe"}
             )
             transcript = result['text']
-            # Debug: summarize timestamps presence
-            try:
-                if isinstance(result, dict):
-                    print("Whisper output keys:", list(result.keys()))
-                    if 'chunks' in result and isinstance(result['chunks'], list):
-                        print(f"Whisper chunks count: {len(result['chunks'])}")
-                        for i, c in enumerate(result['chunks'][:3]):
-                            ts = c.get('timestamp') or c.get('timestamps') or (c.get('start'), c.get('end'))
-                            print(f"  chunk[{i}] ts={ts} text='{(c.get('text') or '').strip()[:60]}'")
-                    elif 'segments' in result and isinstance(result['segments'], list):
-                        print(f"Whisper segments count: {len(result['segments'])}")
-                        for i, s in enumerate(result['segments'][:3]):
-                            print(f"  segment[{i}] start={s.get('start')} end={s.get('end')} text='{(s.get('text') or '').strip()[:60]}'")
-                    else:
-                        print("Whisper output does not include 'chunks' or 'segments'.")
-            except Exception as _dbg_e:
-                print(f"Whisper debug print failed: {_dbg_e}")
             
             # Store the full result for timestamped segments
             self.whisper_result = result
@@ -749,29 +730,144 @@ class AudioProcessor:
         """
         Batch process multiple audio files to generate transcripts.
         
+        OPTIMIZED: Loads each model once for all files instead of per-file,
+        significantly reducing processing time for batches.
+        
         Args:
             audio_files (list): List of paths to WAV files
             progress_callback (callable, optional): Callback function for progress updates
         """
-        total_files = len(audio_files)
-
-        for i, audio_file in enumerate(audio_files):
-            self.set_status_message(f"🗣️ Transcribing: {os.path.basename(audio_file)}")
+        if not audio_files:
+            return
             
-            # Create progress callback for this audio file
-            def make_progress_callback(audio_index, total_audios):
-                def file_progress_callback(transcription_progress):
-                    if progress_callback:
-                        # Calculate overall progress: (audio_index-1)/total_audios + transcription_progress/total_audios
-                        overall_progress = int(((audio_index - 1) / total_audios) * 100 + (transcription_progress / total_audios))
-                        progress_callback(overall_progress)
-                return file_progress_callback
+        total_files = len(audio_files)
         
+        # Calculate progress allocation:
+        # - If diarization enabled: 10% model load, 40% transcription, 40% diarization, 10% cleanup
+        # - If diarization disabled: 10% model load, 85% transcription, 5% cleanup
+        if self.enable_speaker_diarization:
+            transcription_start = 10
+            transcription_end = 50
+            diarization_start = 50
+            diarization_end = 95
+        else:
+            transcription_start = 10
+            transcription_end = 95
+        
+        # ===== PHASE 1: Load Whisper model ONCE =====
+        self.set_status_message("🔄 Loading speech recognition model...")
+        if progress_callback:
+            progress_callback(0)
+        
+        try:
+            self._load_whisper_model()
+        except Exception as e:
+            print(f"Failed to load Whisper model: {e}")
+            raise
+        
+        if progress_callback:
+            progress_callback(transcription_start)
+        
+        # ===== PHASE 2: Transcribe ALL files =====
+        transcription_results = {}  # filepath -> (transcript_text, whisper_result)
+        transcription_range = transcription_end - transcription_start
+        
+        for i, audio_file in enumerate(audio_files):
+            self.set_status_message(f"🗣️ Transcribing ({i+1}/{total_files}): {os.path.basename(audio_file)}")
+            
             try:
-                self.extract_transcript(audio_file, progress_callback=make_progress_callback(i + 1, total_files))
+                # Transcribe without loading/offloading model
+                ts_mode = True  # Use segment-level timestamps; word-level if needed for alignment
+                result = self.whisper_pipe(
+                    audio_file,
+                    return_timestamps=ts_mode,
+                    generate_kwargs={"task": "transcribe"}
+                )
+                transcript = result['text']
+                transcription_results[audio_file] = (transcript, result)
+                
             except Exception as e:
-                print(f"Error processing {audio_file}: {e}")
+                print(f"Error transcribing {audio_file}: {e}")
+                transcription_results[audio_file] = (None, None)
+            
+            # Update progress
+            if progress_callback:
+                file_progress = ((i + 1) / total_files) * transcription_range
+                progress_callback(int(transcription_start + file_progress))
+        
+        # ===== PHASE 3: Diarization (if enabled) =====
+        diarization_results = {}  # filepath -> speaker_segments
+        
+        if self.enable_speaker_diarization:
+            # Offload Whisper to free VRAM for diarization
+            self._offload_whisper_model()
+            
+            # Load diarization model ONCE
+            self.set_status_message("🔄 Loading speaker diarization model...")
+            try:
+                self._load_speaker_diarizer()
+            except Exception as e:
+                print(f"Speaker diarization failed to load: {e}")
+                print("Continuing with transcripts only...")
+                self.enable_speaker_diarization = False
+            
+            if self.enable_speaker_diarization:
+                diarization_range = diarization_end - diarization_start
+                
+                for i, audio_file in enumerate(audio_files):
+                    # Skip files that failed transcription
+                    if transcription_results.get(audio_file, (None, None))[0] is None:
+                        continue
+                        
+                    self.set_status_message(f"🎭 Diarizing ({i+1}/{total_files}): {os.path.basename(audio_file)}")
+                    
+                    try:
+                        speaker_segments = self.speaker_diarizer.diarize_speakers(audio_file)
+                        diarization_results[audio_file] = speaker_segments
+                    except Exception as e:
+                        print(f"Error diarizing {audio_file}: {e}")
+                        diarization_results[audio_file] = None
+                    
+                    # Update progress
+                    if progress_callback:
+                        file_progress = ((i + 1) / total_files) * diarization_range
+                        progress_callback(int(diarization_start + file_progress))
+                
+                # Offload diarizer
+                if self.speaker_diarizer:
+                    self.speaker_diarizer.offload_model()
+        
+        # ===== PHASE 4: Save all results =====
+        self.set_status_message("💾 Saving transcripts...")
+        
+        for audio_file in audio_files:
+            transcript, whisper_result = transcription_results.get(audio_file, (None, None))
+            if transcript is None:
                 continue
+            
+            speaker_segments = diarization_results.get(audio_file)
+            
+            # Format transcript with speaker labels if available
+            if speaker_segments and len(speaker_segments) > 0:
+                # Store whisper_result for _extract_whisper_segments
+                self.whisper_result = whisper_result
+                formatted_transcript = self._format_transcript_with_speakers(transcript, speaker_segments)
+            else:
+                formatted_transcript = transcript
+            
+            # Save transcript to file
+            base_name = os.path.splitext(os.path.basename(audio_file))[0]
+            output_txt = os.path.join(self.output_transcripts_folder, f"{base_name}.txt")
+            
+            try:
+                with open(output_txt, 'w') as f:
+                    f.write(formatted_transcript)
+                print(f"Saved transcript: {output_txt}")
+            except Exception as e:
+                print(f"Error saving transcript for {audio_file}: {e}")
+        
+        if progress_callback:
+            progress_callback(100)
 
     def process_audio_file(self, filepath, extract_features=True, extract_transcript=True, progress_callback=None):
         """
@@ -847,7 +943,6 @@ class AudioProcessor:
         """
         import pandas as pd
         import json
-        import numpy as np
 
         # Load features
         try:
@@ -986,9 +1081,7 @@ class PyAnnoteSpeakerDiarizer:
         if self.diarization_pipeline is not None:
             # Ensure it's on the right device if it was offloaded
             try:
-                # Check if we need to move it back to GPU
                 if self.device != "cpu":
-                    # Move pipeline to the specified device
                     self.diarization_pipeline.to(torch.device(self.device))
             except Exception:
                 pass
@@ -997,70 +1090,13 @@ class PyAnnoteSpeakerDiarizer:
         try:
             if self.progress_callback:
                 self.progress_callback(5)
-                
-            # Load the pre-trained speaker diarization pipeline
-            # Note: You need to accept the license at https://huggingface.co/pyannote/speaker-diarization
-            try:
-                print("Attempting to load PyAnnote model from local cache...")
-                if self.auth_token:
-                    # Try passing local_files_only if supported, or rely on cache check
-                    # Note: pyannote.audio Pipeline.from_pretrained might not explicitly support local_files_only 
-                    # in all versions, but we attempt it. If it fails (TypeError), we fall back.
-                    # However, to be safe and robust, we'll try to set environment variable for offline mode temporarily
-                    # if we really want to force offline. But for "cache if available", standard behavior usually prefers cache.
-                    # We will try explicit kwarg first.
-                    try:
-                        self.diarization_pipeline = Pipeline.from_pretrained(
-                            "pyannote/speaker-diarization",
-                            use_auth_token=self.auth_token,
-                            # Some versions of pyannote/huggingface_hub might accept this
-                            # If not, it might just ignore it or error out.
-                        )
-                    except Exception:
-                        # If simple load fails, we can't easily force offline without env var.
-                        # But actually, the user wants "if available use it".
-                        # Hugging Face usually uses cache by default if internet is up.
-                        # If internet is DOWN, it uses cache.
-                        # The user wants to ensure we don't *need* internet.
-                        # So we don't necessarily need to force offline, just ensure it works.
-                        # But to be explicit, let's try to simulate the "offline first" check.
-                        pass
-                    
-                    # Actually, a better approach for PyAnnote (which wraps HF Hub) is:
-                    # It automatically uses cache. If we want to *ensure* it doesn't hit internet if cached:
-                    # We can't easily do it without potentially breaking the "check for updates" logic unless we go offline.
-                    # But standard HF `from_pretrained` DOES hit the API to check for updates unless `local_files_only=True`.
-                    
-                    # Let's try passing it.
-                    self.diarization_pipeline = Pipeline.from_pretrained(
-                        "pyannote/speaker-diarization",
-                        use_auth_token=self.auth_token,
-                        cache_dir=None # Use default
-                    )
-                    # Note: PyAnnote's Pipeline.from_pretrained is a bit opaque.
-                    # Let's stick to the user request: "cache ... so we don't need internet".
-                    # If we just load it normally, it caches. Next time if no internet, it uses cache.
-                    # But if internet IS present, it checks for updates.
-                    # To force "use cache if exists", we can try:
-                    
-                else:
-                    self.diarization_pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization")
-                    
-            except Exception:
-                # If loading fails (e.g. no internet and not cached), we can't do much but let it fail or retry.
-                # But we want to implement the "try offline first" logic.
-                pass
-
-            # RE-IMPLEMENTING with explicit fallback logic
-            loaded = False
             
-            # 1. Try offline load
+            loaded = False
+            kw = {"use_auth_token": self.auth_token} if self.auth_token else {}
+            
+            # 1. Try offline load first (use cached model if available)
             try:
                 print("Attempting to load PyAnnote model from local cache...")
-                kw = {"use_auth_token": self.auth_token} if self.auth_token else {}
-                # Try passing local_files_only=True. 
-                # If the library doesn't support it, it raises TypeError.
-                # If it supports it but model not found, it raises OSError/ValueError.
                 self.diarization_pipeline = Pipeline.from_pretrained(
                     "pyannote/speaker-diarization",
                     local_files_only=True,
@@ -1071,11 +1107,10 @@ class PyAnnoteSpeakerDiarizer:
             except Exception as e:
                 print(f"Offline load failed ({e}). Trying online...")
             
-            # 2. Fallback to standard load (online check)
+            # 2. Fallback to standard load (online)
             if not loaded:
                 try:
                     print("Downloading/Loading PyAnnote model (online)...")
-                    kw = {"use_auth_token": self.auth_token} if self.auth_token else {}
                     self.diarization_pipeline = Pipeline.from_pretrained(
                         "pyannote/speaker-diarization",
                         **kw

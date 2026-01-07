@@ -697,7 +697,6 @@ class VideoToWavConverter(wx.Frame):
             total_files = len(video_files)
         
             for i, video_file in enumerate(video_files):
-                #print(f"Converting: {video_file}")
                 file_name = os.path.basename(video_file)
                 self.set_status_message(f"Converting to WAV: {file_name}")
                 
@@ -812,10 +811,6 @@ class VideoToWavConverter(wx.Frame):
         """Convert a single video file to WAV using ffmpeg."""
         try:
             output_path = os.path.join(self.converted_audio_folder, os.path.splitext(os.path.basename(filepath))[0] + ".wav")
-        
-            # Debugging messages
-            print(f"Processing video: {filepath}")
-            print(f"Saving output as: {output_path}")
         
             # Run ffmpeg conversion with progress tracking
             if progress_callback:
@@ -1131,15 +1126,14 @@ class VideoToWavConverter(wx.Frame):
                 if not os.path.exists(feature_csv):
                     self.set_status_message(f"🎵 Extracting audio features for: {base_name}")
                     try:
-                        # We need to call extract_audio_features for this single file
-                        # But AudioProcessor has batch method. Let's use the internal logic or just skip if missing?
-                        # User should have clicked "Extract Audio Features" first.
-                        # But we can try to be helpful.
-                        # Actually, AudioProcessor.extract_audio_features takes a list.
-                        # Let's just warn if missing for now to avoid complexity of re-extracting everything.
-                        print(f"Features missing for {base_name}, skipping.")
-                        continue
-                    except Exception:
+                        # Auto-extract missing features for this file
+                        audio_processor.extract_audio_features(audio_file)
+                        # Verify the file was created
+                        if not os.path.exists(feature_csv):
+                            print(f"Feature extraction completed but file not found: {feature_csv}, skipping.")
+                            continue
+                    except Exception as e:
+                        print(f"Failed to extract features for {base_name}: {e}")
                         continue
                         
                 # 3. Output path
@@ -1167,7 +1161,10 @@ class VideoToWavConverter(wx.Frame):
             self.update_progress(0)
 
 def main():
-    # Ensure ffmpeg is available before the UI starts doing conversions
+    # Create wx.App FIRST before any wx calls (including MessageBox)
+    app = wx.App()
+    
+    # Now we can safely show message boxes
     if not gui_utils.ensure_ffmpeg_available():
         msg = (
             "ffmpeg was not found. Install it or let the app use a bundled one.\n\n"
@@ -1176,11 +1173,8 @@ def main():
             "Windows: choco install ffmpeg\n\n"
             "Alternatively, ensure imageio-ffmpeg is installed (already in requirements)."
         )
-        try:
-            wx.MessageBox(msg, "ffmpeg not found", wx.OK | wx.ICON_ERROR)
-        except Exception:
-            print(msg)
-    app = wx.App()
+        wx.MessageBox(msg, "ffmpeg not found", wx.OK | wx.ICON_ERROR)
+    
     frm = VideoToWavConverter(None)
     frm.Show()
     app.MainLoop()
