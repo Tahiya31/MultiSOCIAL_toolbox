@@ -160,6 +160,32 @@ class ElevatedLogoPanel(wx.Panel):
     def OnPaint(self, event):
         dc = wx.AutoBufferedPaintDC(self)
         rect = self.GetClientRect()
+        
+        # Clear background to avoid artifacts on Windows
+        if sys.platform.startswith("win"):
+            # Paint gradient background to match parent
+            try:
+                parent = self.GetParent()
+                if parent:
+                    fw, fh = parent.GetVirtualSize()
+                    fh = max(fh, 1)
+                    self_screen = self.GetScreenPosition()
+                    parent_screen = parent.GetScreenPosition()
+                    scroll_y = 0
+                    if hasattr(parent, 'CalcUnscrolledPosition'):
+                        _, scroll_y = parent.CalcUnscrolledPosition(0, 0)
+                    rel_y_top = (self_screen.y - parent_screen.y) + scroll_y
+                    rel_y_bot = rel_y_top + rect.height
+                    c_start = wx.Colour(Theme.COLOR_BG_GRADIENT_START)
+                    c_end = wx.Colour(Theme.COLOR_BG_GRADIENT_END)
+                    pct_top = max(0.0, min(1.0, rel_y_top / float(fh)))
+                    pct_bot = max(0.0, min(1.0, rel_y_bot / float(fh)))
+                    color_top = _mix_colors(c_end, c_start, pct_top)
+                    color_bot = _mix_colors(c_end, c_start, pct_bot)
+                    dc.GradientFillLinear(rect, color_top, color_bot, wx.SOUTH)
+            except Exception:
+                dc.SetBackground(wx.Brush(wx.Colour(Theme.COLOR_BG_GRADIENT_START)))
+                dc.Clear()
 
         if not self.logo_bitmap:
             return

@@ -76,8 +76,7 @@ class TransparentStaticText(stattext.GenStaticText):
                 fh = max(fh, 1) # avoid div zero
                 
                 # Determine absolute logical Y of this control's top and bottom
-                # Map control (0,0) to screen, then screen to parent client, then unscored?
-                # Easier: Screen positions.
+                # Using screen positions for simplicity.
                 # NOTE: Gradient is painted on the Virtual canvas.
                 # So we need (ChildScreenPos - GradientScreenPos) + ScrollOffset
                 
