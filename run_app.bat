@@ -46,7 +46,9 @@ echo Found Python %DESIRED_PYTHON% using command: %PYTHON_EXEC%
 
 if exist "%VENV_DIR%" (
     echo Found existing virtual environment at: %VENV_DIR%
-    for /f "usebackq tokens=*" %%v in (`"%VENV_DIR%\Scripts\python.exe" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"`) do set VENV_PY_VER=%%v
+    "%VENV_DIR%\Scripts\python.exe" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" > "%TEMP%\_multi_social_venv_ver.txt"
+    set /p VENV_PY_VER=<"%TEMP%\_multi_social_venv_ver.txt"
+    del "%TEMP%\_multi_social_venv_ver.txt"
     echo venv Python: %VENV_PY_VER%
     if not "%VENV_PY_VER%"=="%DESIRED_PYTHON%" (
         echo Virtual environment uses %VENV_PY_VER%, expected %DESIRED_PYTHON%. Recreating venv...
