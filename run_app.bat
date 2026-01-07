@@ -62,9 +62,9 @@ if exist "%VENV_DIR%" (
         )
         if exist "%TEMP%\_multi_social_venv_ver.txt" del "%TEMP%\_multi_social_venv_ver.txt"
     )
-    echo venv Python: %VENV_PY_VER%
-    if not "%VENV_PY_VER%"=="%DESIRED_PYTHON%" (
-        echo Virtual environment uses %VENV_PY_VER%, expected %DESIRED_PYTHON%. Recreating venv...
+    echo venv Python: !VENV_PY_VER!
+    if not "!VENV_PY_VER!"=="%DESIRED_PYTHON%" (
+        echo Virtual environment uses !VENV_PY_VER!, expected %DESIRED_PYTHON%. Recreating venv...
         rmdir /S /Q "%VENV_DIR%"
     )
 )
@@ -107,5 +107,16 @@ if %errorlevel% neq 0 (
 
 echo Starting MultiSOCIAL Toolbox...
 python "%SCRIPT_DIR%\src\app.py"
+set "APP_EXIT_CODE=!errorlevel!"
+
+if !APP_EXIT_CODE! neq 0 (
+    echo.
+    echo ============================================================
+    echo The application exited with an error.
+    echo If you see "ModuleNotFoundError" or import errors, try:
+    echo   1. Delete the .venv folder in this directory
+    echo   2. Run this script again to recreate the environment
+    echo ============================================================
+)
 
 pause
