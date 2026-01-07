@@ -1,5 +1,6 @@
+import sys
 import wx
-from gui_utils import Theme
+from gui_utils import Theme, _mix_colors
 
 class GradientPanel(wx.ScrolledWindow):
     def __init__(self, parent):
@@ -35,12 +36,62 @@ class GlassPanel(wx.Panel):
         self.fill_rgba = fill_rgba
         self.Bind(wx.EVT_PAINT, self.OnPaint)
 
+    def _paint_gradient_background_windows(self, dc, rect):
+        """Paint the underlying gradient background for Windows compatibility.
+        
+        On Windows, wx.BG_STYLE_PAINT doesn't provide true transparency,
+        so we need to manually paint the gradient that would show through.
+        """
+        try:
+            # Find the GradientPanel parent to get gradient dimensions
+            gradient_parent = self.GetParent()
+            if not gradient_parent:
+                return
+            
+            # Get the full virtual size of the gradient panel
+            fw, fh = gradient_parent.GetVirtualSize()
+            fh = max(fh, 1)  # Avoid division by zero
+            
+            # Calculate this panel's position relative to the gradient
+            self_screen = self.GetScreenPosition()
+            parent_screen = gradient_parent.GetScreenPosition()
+            
+            # Get scroll offset if parent is scrolled
+            scroll_y = 0
+            if hasattr(gradient_parent, 'CalcUnscrolledPosition'):
+                _, scroll_y = gradient_parent.CalcUnscrolledPosition(0, 0)
+            
+            rel_y_top = (self_screen.y - parent_screen.y) + scroll_y
+            rel_y_bot = rel_y_top + rect.height
+            
+            # Calculate gradient colors at top and bottom of this panel
+            c_start = wx.Colour(Theme.COLOR_BG_GRADIENT_START)
+            c_end = wx.Colour(Theme.COLOR_BG_GRADIENT_END)
+            
+            pct_top = max(0.0, min(1.0, rel_y_top / float(fh)))
+            pct_bot = max(0.0, min(1.0, rel_y_bot / float(fh)))
+            
+            color_top = _mix_colors(c_end, c_start, pct_top)
+            color_bot = _mix_colors(c_end, c_start, pct_bot)
+            
+            # Fill with gradient (wx.SOUTH means starting color is at top)
+            dc.GradientFillLinear(rect, color_top, color_bot, wx.SOUTH)
+        except Exception:
+            # Fallback: fill with gradient start color
+            dc.SetBackground(wx.Brush(wx.Colour(Theme.COLOR_BG_GRADIENT_START)))
+            dc.Clear()
+
     def OnPaint(self, event):
         dc = wx.AutoBufferedPaintDC(self)
         gc = wx.GraphicsContext.Create(dc)
         rect = self.GetClientRect()
         if not gc:
             return
+        
+        # Windows-specific: Paint gradient background first to avoid gray showing through
+        if sys.platform.startswith("win"):
+            self._paint_gradient_background_windows(dc, rect)
+        
         # Inset so the rounded border isn't clipped
         inset = 6
         x = rect.x + inset

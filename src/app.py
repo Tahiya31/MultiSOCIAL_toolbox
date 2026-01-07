@@ -177,6 +177,7 @@ class VideoToWavConverter(wx.Frame):
         self.multiPersonCheckbox = wx.CheckBox(self.videoPanel, label="Enable Multi-Person Pose")
         self.multiPersonCheckbox.SetFont(Theme.get_font(14))
         self.multiPersonCheckbox.SetForegroundColour(Theme.COLOR_TEXT_WHITE)
+        gui_utils.style_checkbox_for_glass(self.multiPersonCheckbox)
         video_sizer.Add(self.multiPersonCheckbox, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
         
         # Downsampling controls
@@ -193,6 +194,7 @@ class VideoToWavConverter(wx.Frame):
         self.downscaleCheckbox = wx.CheckBox(self.videoPanel, label="Downscale to 720p for processing")
         self.downscaleCheckbox.SetFont(Theme.get_font(12))
         self.downscaleCheckbox.SetForegroundColour(Theme.COLOR_TEXT_WHITE)
+        gui_utils.style_checkbox_for_glass(self.downscaleCheckbox)
         ds_box.Add(self.downscaleCheckbox, flag=wx.ALIGN_CENTER_VERTICAL)
         video_sizer.Add(ds_box, flag=wx.ALIGN_CENTER|wx.ALL, border=10)
         
@@ -263,6 +265,7 @@ class VideoToWavConverter(wx.Frame):
         self.diarizationCheckbox = wx.CheckBox(self.audioPanel, label="Enable speaker diarization (requires Hugging Face token)")
         self.diarizationCheckbox.SetFont(Theme.get_font(12))
         self.diarizationCheckbox.SetForegroundColour(Theme.COLOR_TEXT_WHITE)
+        gui_utils.style_checkbox_for_glass(self.diarizationCheckbox)
         audio_sizer.Add(self.diarizationCheckbox, flag=wx.ALIGN_CENTER|wx.ALL, border=6)
         
         # Buttons

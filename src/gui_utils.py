@@ -38,12 +38,18 @@ class TransparentStaticText(stattext.GenStaticText):
 
     def OnPaint(self, event):
         dc = wx.AutoBufferedPaintDC(self)
-        self.DoPrepareDC(dc)
+        # Note: DoPrepareDC is only for ScrolledWindow subclasses, not Controls.
+        # Scroll offset is handled manually below via CalcUnscrolledPosition.
         
         # 1. Paint Background to match the parent environment
         # Find the GradientPanel and calculate relative position
-        # Start with simple opaque background as fallback
-        dc.SetBackground(wx.Brush(self.GetParent().GetBackgroundColour()))
+        # Start with fallback background (use gradient color on Windows to avoid gray)
+        if sys.platform.startswith("win"):
+            # Use gradient start color as fallback instead of system gray
+            fallback_color = wx.Colour(Theme.COLOR_BG_GRADIENT_START)
+            dc.SetBackground(wx.Brush(fallback_color))
+        else:
+            dc.SetBackground(wx.Brush(self.GetParent().GetBackgroundColour()))
         dc.Clear()
         
         try:
@@ -107,16 +113,9 @@ class TransparentStaticText(stattext.GenStaticText):
                     color_top = _mix_colors(color_top, glass_color, alpha)
                     color_bot = _mix_colors(color_bot, glass_color, alpha)
 
-                # Fill the background!
+                # Fill the background with gradient (top to bottom)
+                # wx.SOUTH means starting color is at top
                 rect = self.GetClientRect()
-                dc.GradientFillLinear(rect, color_bot, color_top, wx.NORTH) 
-                # Note: GradientFillLinear direction needs to match. 
-                # If we calculated color_top and color_bot, we want top-to-bottom fill?
-                # Set direction wx.SOUTH to start at Top?
-                # wx.SOUTH: starting color at top.
-                # Usage: GradientFillLinear(rect, startColor, endColor, direction)
-                # If direction is SOUTH, startColor is Top.
-                # So use SOUTH with (color_top, color_bot).
                 dc.GradientFillLinear(rect, color_top, color_bot, wx.SOUTH)
 
         except Exception as e:
@@ -150,6 +149,19 @@ def create_transparent_text(parent, *args, **kwargs):
         return TransparentStaticText(parent, *args, **kwargs)
     else:
         return wx.StaticText(parent, *args, **kwargs)
+
+def style_checkbox_for_glass(checkbox):
+    """
+    Style a checkbox for use inside a GlassPanel on Windows.
+    On macOS, native transparency works fine so no changes needed.
+    On Windows, we set a dark background to approximate the glass panel color.
+    """
+    if sys.platform.startswith("win"):
+        # Use a dark color that approximates the glass panel's appearance
+        # The glass fill is (20, 20, 20, 100) alpha-blended over gradient
+        # A dark gray provides a reasonable approximation
+        dark_bg = wx.Colour(35, 50, 45)  # Dark teal-ish to blend with gradient
+        checkbox.SetBackgroundColour(dark_bg)
 
 class Theme:
     # Colors
