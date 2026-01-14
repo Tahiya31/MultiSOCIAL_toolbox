@@ -390,15 +390,21 @@ class TooltipButton(wx.Button):
         return btn, sizer
 
 class CustomGauge(wx.Panel):
-    """A custom-drawn gauge that respects height on macOS."""
+    """A custom-drawn gauge that respects height on macOS and Windows."""
     def __init__(self, parent, range=100, size=(-1, 28)):
-        super(CustomGauge, self).__init__(parent, size=size)
+        # Add wx.NO_BORDER and wx.NO_FULL_REPAINT_ON_RESIZE to prevent Windows artifacts
+        super(CustomGauge, self).__init__(parent, size=size, style=wx.NO_BORDER | wx.NO_FULL_REPAINT_ON_RESIZE)
         self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
         self._range = range
         self._value = 0
         # Default colors
         self._bg_color = wx.Colour(40, 40, 40, 100)  # Dark semi-transparent background
         self._fg_color = wx.Colour(33, 150, 243)  # Blue
+        
+        # Windows-specific: disable focus indicators and set background
+        if wx.Platform == '__WXMSW__':
+            self.SetBackgroundColour(wx.Colour(30, 60, 40))  # Match gradient
+            self.SetDoubleBuffered(True)
         
         self.Bind(wx.EVT_PAINT, self.OnPaint)
         self.Bind(wx.EVT_SIZE, self.OnSize)
@@ -437,6 +443,11 @@ class CustomGauge(wx.Panel):
     def OnPaint(self, event):
         # Use AutoBufferedPaintDC for cross-platform consistency (prevents flicker on Windows)
         dc = wx.AutoBufferedPaintDC(self)
+        
+        # Clear background on Windows to prevent artifacts
+        if wx.Platform == '__WXMSW__':
+            dc.SetBackground(wx.Brush(wx.Colour(30, 60, 40)))  # Match gradient
+            dc.Clear()
         
         # Use GraphicsContext for smoother anti-aliased drawing
         gc = wx.GraphicsContext.Create(dc)

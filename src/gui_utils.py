@@ -34,6 +34,9 @@ class TransparentStaticText(stattext.GenStaticText):
     def __init__(self, *args, **kwargs):
         super(TransparentStaticText, self).__init__(*args, **kwargs)
         self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
+        if sys.platform.startswith("win"):
+            # Set initial background to gradient start color to prevent white flash
+            self.SetBackgroundColour(wx.Colour(Theme.COLOR_BG_GRADIENT_START))
         self.Bind(wx.EVT_ERASE_BACKGROUND, lambda e: None)
 
     def OnPaint(self, event):
@@ -247,6 +250,8 @@ def get_files_from_folder(folder_path, extensions):
     files = []
     if os.path.exists(folder_path):
         for f in os.listdir(folder_path):
+            if f.startswith('.'):
+                continue
             if f.lower().endswith(extensions):
                 files.append(os.path.join(folder_path, f))
     return files
