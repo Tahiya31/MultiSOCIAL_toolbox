@@ -5,7 +5,7 @@ pandas
 
 # Computer vision
 opencv-python
-mediapipe
+mediapipe==0.10.21
 matplotlib
 scikit-image
 
