@@ -1,11 +1,11 @@
 # Core numerical stack (pin to numpy<2 to satisfy mediapipe and avoid mixed-state downgrades)
-numpy>=1.26.0,<2.0.0
+numpy>=1.26.4,<2.0.0
 scipy
 pandas
 
 # Computer vision
 opencv-python
-mediapipe
+mediapipe<=0.10.29
 matplotlib
 scikit-image
 
@@ -32,3 +32,4 @@ wxPython
 
 # Utilities
 requests
+python-dotenv
