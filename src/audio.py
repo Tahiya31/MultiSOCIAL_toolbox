@@ -42,7 +42,6 @@ class AudioProcessor:
             os.makedirs(self.output_transcripts_folder, exist_ok=True)
         
         # Initialize device for Whisper
-        # Initialize device for Whisper
         if torch.cuda.is_available():
             self.device = "cuda:0"
             self.torch_dtype = torch.float16
@@ -220,12 +219,25 @@ class AudioProcessor:
             progress_callback(10)
 
         # Load model
-        self.whisper_model = AutoModelForSpeechSeq2Seq.from_pretrained(
-            model_id, 
-            torch_dtype=self.torch_dtype, 
-            low_cpu_mem_usage=True, 
-            use_safetensors=True
-        )
+        try:
+            print("Attempting to load Whisper model from local cache...")
+            self.whisper_model = AutoModelForSpeechSeq2Seq.from_pretrained(
+                model_id, 
+                torch_dtype=self.torch_dtype, 
+                low_cpu_mem_usage=True, 
+                use_safetensors=True,
+                local_files_only=True
+            )
+            print("✓ Loaded Whisper model from cache.")
+        except Exception as e:
+            print(f"Whisper model not found in cache or error loading: {e}. Downloading...")
+            self.whisper_model = AutoModelForSpeechSeq2Seq.from_pretrained(
+                model_id, 
+                torch_dtype=self.torch_dtype, 
+                low_cpu_mem_usage=True, 
+                use_safetensors=True,
+                local_files_only=False
+            )
         
         if progress_callback:
             progress_callback(25)
@@ -236,7 +248,10 @@ class AudioProcessor:
             progress_callback(40)
 
         # Load processor
-        self.whisper_processor = AutoProcessor.from_pretrained(model_id)
+        try:
+            self.whisper_processor = AutoProcessor.from_pretrained(model_id, local_files_only=True)
+        except Exception:
+            self.whisper_processor = AutoProcessor.from_pretrained(model_id, local_files_only=False)
 
         if progress_callback:
             progress_callback(55)
@@ -304,7 +319,7 @@ class AudioProcessor:
         except Exception as e:
             print(f"Warning: Could not pre-load PyAnnote model: {e}")
 
-    def extract_transcript(self, filepath, progress_callback=None):
+    def extract_transcript(self, filepath, progress_callback=None, word_timestamps=False):
         """
         Extract transcript from a single WAV file using Whisper with optional speaker diarization.
         
@@ -338,29 +353,15 @@ class AudioProcessor:
             # Transcribe audio with timestamps (request at call time for reliability)
             # Note: return_timestamps=True (segment level) is generally more robust for alignment
             # than word-level, especially with turbo models.
+            # However, if word_timestamps is requested (for alignment feature), we use "word".
+            ts_mode = "word" if word_timestamps else True
+            
             result = self.whisper_pipe(
                 filepath,
-                return_timestamps=True, 
+                return_timestamps=ts_mode, 
                 generate_kwargs={"task": "transcribe"}
             )
             transcript = result['text']
-            # Debug: summarize timestamps presence
-            try:
-                if isinstance(result, dict):
-                    print("Whisper output keys:", list(result.keys()))
-                    if 'chunks' in result and isinstance(result['chunks'], list):
-                        print(f"Whisper chunks count: {len(result['chunks'])}")
-                        for i, c in enumerate(result['chunks'][:3]):
-                            ts = c.get('timestamp') or c.get('timestamps') or (c.get('start'), c.get('end'))
-                            print(f"  chunk[{i}] ts={ts} text='{(c.get('text') or '').strip()[:60]}'")
-                    elif 'segments' in result and isinstance(result['segments'], list):
-                        print(f"Whisper segments count: {len(result['segments'])}")
-                        for i, s in enumerate(result['segments'][:3]):
-                            print(f"  segment[{i}] start={s.get('start')} end={s.get('end')} text='{(s.get('text') or '').strip()[:60]}'")
-                    else:
-                        print("Whisper output does not include 'chunks' or 'segments'.")
-            except Exception as _dbg_e:
-                print(f"Whisper debug print failed: {_dbg_e}")
             
             # Store the full result for timestamped segments
             self.whisper_result = result
@@ -402,7 +403,7 @@ class AudioProcessor:
             else:
                 formatted_transcript = transcript
 
-            # Save transcript to text file
+            # Save transcript to text file (always done)
             output_txt = os.path.join(
                 self.output_transcripts_folder, 
                 os.path.splitext(os.path.basename(filepath))[0] + ".txt"
@@ -410,6 +411,25 @@ class AudioProcessor:
 
             with open(output_txt, 'w') as f:
                 f.write(formatted_transcript)
+            
+            # If word timestamps were requested, save the detailed JSON sidecar
+            if word_timestamps:
+                import json
+                output_json = os.path.join(
+                    self.output_transcripts_folder, 
+                    os.path.splitext(os.path.basename(filepath))[0] + "_words.json"
+                )
+                # We save the raw result chunks which contain word timings when return_timestamps="word"
+                # result['chunks'] is usually a list of {'text': ..., 'timestamp': (start, end)}
+                # or similar structure depending on the pipeline version.
+                # We'll save the whole result structure to be safe.
+                # Note: result might contain non-serializable objects (like tensors), but pipeline usually returns python types.
+                try:
+                    with open(output_json, 'w') as f:
+                        json.dump(result, f, indent=2)
+                    print(f"Saved word-level info: {output_json}")
+                except Exception as e:
+                    print(f"Warning: Could not save word-level JSON: {e}")
 
             if progress_callback:
                 progress_callback(100)
@@ -710,29 +730,144 @@ class AudioProcessor:
         """
         Batch process multiple audio files to generate transcripts.
         
+        OPTIMIZED: Loads each model once for all files instead of per-file,
+        significantly reducing processing time for batches.
+        
         Args:
             audio_files (list): List of paths to WAV files
             progress_callback (callable, optional): Callback function for progress updates
         """
-        total_files = len(audio_files)
-
-        for i, audio_file in enumerate(audio_files):
-            self.set_status_message(f"🗣️ Transcribing: {os.path.basename(audio_file)}")
+        if not audio_files:
+            return
             
-            # Create progress callback for this audio file
-            def make_progress_callback(audio_index, total_audios):
-                def file_progress_callback(transcription_progress):
-                    if progress_callback:
-                        # Calculate overall progress: (audio_index-1)/total_audios + transcription_progress/total_audios
-                        overall_progress = int(((audio_index - 1) / total_audios) * 100 + (transcription_progress / total_audios))
-                        progress_callback(overall_progress)
-                return file_progress_callback
+        total_files = len(audio_files)
         
+        # Calculate progress allocation:
+        # - If diarization enabled: 10% model load, 40% transcription, 40% diarization, 10% cleanup
+        # - If diarization disabled: 10% model load, 85% transcription, 5% cleanup
+        if self.enable_speaker_diarization:
+            transcription_start = 10
+            transcription_end = 50
+            diarization_start = 50
+            diarization_end = 95
+        else:
+            transcription_start = 10
+            transcription_end = 95
+        
+        # ===== PHASE 1: Load Whisper model ONCE =====
+        self.set_status_message("🔄 Loading speech recognition model...")
+        if progress_callback:
+            progress_callback(0)
+        
+        try:
+            self._load_whisper_model()
+        except Exception as e:
+            print(f"Failed to load Whisper model: {e}")
+            raise
+        
+        if progress_callback:
+            progress_callback(transcription_start)
+        
+        # ===== PHASE 2: Transcribe ALL files =====
+        transcription_results = {}  # filepath -> (transcript_text, whisper_result)
+        transcription_range = transcription_end - transcription_start
+        
+        for i, audio_file in enumerate(audio_files):
+            self.set_status_message(f"🗣️ Transcribing ({i+1}/{total_files}): {os.path.basename(audio_file)}")
+            
             try:
-                self.extract_transcript(audio_file, progress_callback=make_progress_callback(i + 1, total_files))
+                # Transcribe without loading/offloading model
+                ts_mode = True  # Use segment-level timestamps; word-level if needed for alignment
+                result = self.whisper_pipe(
+                    audio_file,
+                    return_timestamps=ts_mode,
+                    generate_kwargs={"task": "transcribe"}
+                )
+                transcript = result['text']
+                transcription_results[audio_file] = (transcript, result)
+                
             except Exception as e:
-                print(f"Error processing {audio_file}: {e}")
+                print(f"Error transcribing {audio_file}: {e}")
+                transcription_results[audio_file] = (None, None)
+            
+            # Update progress
+            if progress_callback:
+                file_progress = ((i + 1) / total_files) * transcription_range
+                progress_callback(int(transcription_start + file_progress))
+        
+        # ===== PHASE 3: Diarization (if enabled) =====
+        diarization_results = {}  # filepath -> speaker_segments
+        
+        if self.enable_speaker_diarization:
+            # Offload Whisper to free VRAM for diarization
+            self._offload_whisper_model()
+            
+            # Load diarization model ONCE
+            self.set_status_message("🔄 Loading speaker diarization model...")
+            try:
+                self._load_speaker_diarizer()
+            except Exception as e:
+                print(f"Speaker diarization failed to load: {e}")
+                print("Continuing with transcripts only...")
+                self.enable_speaker_diarization = False
+            
+            if self.enable_speaker_diarization:
+                diarization_range = diarization_end - diarization_start
+                
+                for i, audio_file in enumerate(audio_files):
+                    # Skip files that failed transcription
+                    if transcription_results.get(audio_file, (None, None))[0] is None:
+                        continue
+                        
+                    self.set_status_message(f"🎭 Diarizing ({i+1}/{total_files}): {os.path.basename(audio_file)}")
+                    
+                    try:
+                        speaker_segments = self.speaker_diarizer.diarize_speakers(audio_file)
+                        diarization_results[audio_file] = speaker_segments
+                    except Exception as e:
+                        print(f"Error diarizing {audio_file}: {e}")
+                        diarization_results[audio_file] = None
+                    
+                    # Update progress
+                    if progress_callback:
+                        file_progress = ((i + 1) / total_files) * diarization_range
+                        progress_callback(int(diarization_start + file_progress))
+                
+                # Offload diarizer
+                if self.speaker_diarizer:
+                    self.speaker_diarizer.offload_model()
+        
+        # ===== PHASE 4: Save all results =====
+        self.set_status_message("💾 Saving transcripts...")
+        
+        for audio_file in audio_files:
+            transcript, whisper_result = transcription_results.get(audio_file, (None, None))
+            if transcript is None:
                 continue
+            
+            speaker_segments = diarization_results.get(audio_file)
+            
+            # Format transcript with speaker labels if available
+            if speaker_segments and len(speaker_segments) > 0:
+                # Store whisper_result for _extract_whisper_segments
+                self.whisper_result = whisper_result
+                formatted_transcript = self._format_transcript_with_speakers(transcript, speaker_segments)
+            else:
+                formatted_transcript = transcript
+            
+            # Save transcript to file
+            base_name = os.path.splitext(os.path.basename(audio_file))[0]
+            output_txt = os.path.join(self.output_transcripts_folder, f"{base_name}.txt")
+            
+            try:
+                with open(output_txt, 'w') as f:
+                    f.write(formatted_transcript)
+                print(f"Saved transcript: {output_txt}")
+            except Exception as e:
+                print(f"Error saving transcript for {audio_file}: {e}")
+        
+        if progress_callback:
+            progress_callback(100)
 
     def process_audio_file(self, filepath, extract_features=True, extract_transcript=True, progress_callback=None):
         """
@@ -797,6 +932,129 @@ class AudioProcessor:
             self.extract_transcripts_batch(audio_files, progress_callback)
 
 
+    def align_features(self, features_csv, transcript_json, output_csv):
+        """
+        Align audio features with word-level transcript.
+        
+        Args:
+            features_csv (str): Path to audio features CSV
+            transcript_json (str): Path to word-level transcript JSON
+            output_csv (str): Path to save aligned CSV
+        """
+        import pandas as pd
+        import json
+
+        # Load features
+        try:
+            df_features = pd.read_csv(features_csv)
+            if 'Timestamp_Seconds' not in df_features.columns:
+                raise ValueError("Features CSV missing 'Timestamp_Seconds' column")
+        except Exception as e:
+            raise Exception(f"Failed to load features CSV: {e}")
+
+        # Load transcript words
+        try:
+            with open(transcript_json, 'r') as f:
+                data = json.load(f)
+            
+            words = []
+            # Parse words from Whisper pipeline output
+            # Structure depends on return_timestamps="word"
+            # Usually result['chunks'] contains words directly or segments with words
+            
+            chunks = data.get('chunks', [])
+            if not chunks and 'segments' in data:
+                chunks = data['segments']
+                
+            for chunk in chunks:
+                # If it's a word-level chunk
+                text = chunk.get('text', '').strip()
+                timestamp = chunk.get('timestamp')
+                
+                start = None
+                end = None
+                
+                if isinstance(timestamp, (list, tuple)) and len(timestamp) >= 2:
+                    start, end = timestamp
+                else:
+                    # Try dict format
+                    ts = chunk.get('timestamps')
+                    if isinstance(ts, dict):
+                        start = ts.get('start')
+                        end = ts.get('end')
+                
+                if start is not None and end is not None and text:
+                    words.append({
+                        'word': text,
+                        'start': float(start),
+                        'end': float(end)
+                    })
+                    
+        except Exception as e:
+            raise Exception(f"Failed to parse transcript JSON: {e}")
+
+        if not words:
+            print("Warning: No words found in transcript JSON for alignment.")
+            return
+
+        # Align
+        aligned_rows = []
+        feature_cols = [c for c in df_features.columns if c not in ['Timestamp_Seconds', 'Timestamp_Milliseconds', 'Timestamp_Formatted', 'name', 'frameTime']]
+        
+        for w in words:
+            w_start = w['start']
+            w_end = w['end']
+            
+            # Filter features within this time range
+            mask = (df_features['Timestamp_Seconds'] >= w_start) & (df_features['Timestamp_Seconds'] <= w_end)
+            subset = df_features.loc[mask, feature_cols]
+            
+            if subset.empty:
+                # If word is too short or falls between frames, take nearest frame
+                # Find index of nearest timestamp
+                nearest_idx = (df_features['Timestamp_Seconds'] - w_start).abs().idxmin()
+                subset = df_features.loc[[nearest_idx], feature_cols]
+            
+            # Compute mean of features
+            means = subset.mean()
+            
+            row = {
+                'word': w['word'],
+                'start_time': w_start,
+                'end_time': w_end,
+                'duration': w_end - w_start
+            }
+            # Add feature means
+            for col, val in means.items():
+                row[col] = val
+                
+            aligned_rows.append(row)
+
+        # Save to CSV
+        df_aligned = pd.DataFrame(aligned_rows)
+        df_aligned.to_csv(output_csv, index=False)
+        print(f"Saved aligned features: {output_csv}")
+
+    def align_features_batch(self, alignment_pairs, progress_callback=None):
+        """
+        Batch align features.
+        
+        Args:
+            alignment_pairs (list): List of tuples (features_csv, transcript_json, output_csv)
+            progress_callback (callable): Progress callback
+        """
+        total = len(alignment_pairs)
+        for i, (feat_csv, trans_json, out_csv) in enumerate(alignment_pairs):
+            try:
+                self.set_status_message(f"🔗 Aligning: {os.path.basename(out_csv)}")
+                self.align_features(feat_csv, trans_json, out_csv)
+            except Exception as e:
+                print(f"Error aligning {os.path.basename(out_csv)}: {e}")
+            
+            if progress_callback:
+                progress_callback(int((i + 1) / total * 100))
+
+
 # PyAnnote-based SpeakerDiarizer
 class PyAnnoteSpeakerDiarizer:
     """
@@ -823,9 +1081,7 @@ class PyAnnoteSpeakerDiarizer:
         if self.diarization_pipeline is not None:
             # Ensure it's on the right device if it was offloaded
             try:
-                # Check if we need to move it back to GPU
                 if self.device != "cpu":
-                    # Move pipeline to the specified device
                     self.diarization_pipeline.to(torch.device(self.device))
             except Exception:
                 pass
@@ -834,16 +1090,37 @@ class PyAnnoteSpeakerDiarizer:
         try:
             if self.progress_callback:
                 self.progress_callback(5)
-                
-            # Load the pre-trained speaker diarization pipeline
-            # Note: You need to accept the license at https://huggingface.co/pyannote/speaker-diarization
-            if self.auth_token:
+            
+            loaded = False
+            kw = {"use_auth_token": self.auth_token} if self.auth_token else {}
+            
+            # 1. Try offline load first (use cached model if available)
+            try:
+                print("Attempting to load PyAnnote model from local cache...")
                 self.diarization_pipeline = Pipeline.from_pretrained(
                     "pyannote/speaker-diarization",
-                    use_auth_token=self.auth_token
+                    local_files_only=True,
+                    **kw
                 )
-            else:
-                self.diarization_pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization")
+                print("✓ Loaded PyAnnote model from cache.")
+                loaded = True
+            except Exception as e:
+                print(f"Offline load failed ({e}). Trying online...")
+            
+            # 2. Fallback to standard load (online)
+            if not loaded:
+                try:
+                    print("Downloading/Loading PyAnnote model (online)...")
+                    self.diarization_pipeline = Pipeline.from_pretrained(
+                        "pyannote/speaker-diarization",
+                        **kw
+                    )
+                    loaded = True
+                except Exception as e:
+                    print(f"Standard load failed: {e}")
+
+            if not loaded:
+                raise Exception("Could not load PyAnnote pipeline.")
             
             # Move pipeline to the specified device
             if self.diarization_pipeline is not None:

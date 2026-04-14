@@ -1,15 +1,26 @@
+import sys
 import wx
-from gui_utils import Theme
+from gui_utils import Theme, _mix_colors
 
-class GradientPanel(wx.Panel):
+class GradientPanel(wx.ScrolledWindow):
     def __init__(self, parent):
-        super(GradientPanel, self).__init__(parent)
+        super(GradientPanel, self).__init__(parent, style=wx.VSCROLL)
         self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
+        self.SetScrollRate(0, 10) # Vertical scrolling only
         self.Bind(wx.EVT_PAINT, self.OnPaint)
 
     def OnPaint(self, event):
         dc = wx.AutoBufferedPaintDC(self)
-        rect = self.GetClientRect()
+        self.DoPrepareDC(dc)
+        # Use virtual size to fill the entire scrollable area, not just client rect
+        # However, for a simple gradient background that stays fixed or stretches, 
+        # we need to be careful. If we want the gradient to scroll WITH content, we allow it.
+        # If we want fixed background, it's harder with ScrolledWindow.
+        # Let's assume scrolling the gradient is fine or even preferred so it covers everything.
+        
+        # Get the full virtual size to ensure gradient covers all scrolled content
+        width, height = self.GetVirtualSize()
+        rect = wx.Rect(0, 0, width, height)
         dc.GradientFillLinear(rect, Theme.COLOR_BG_GRADIENT_START, Theme.COLOR_BG_GRADIENT_END, wx.NORTH)
 
 
@@ -25,19 +36,69 @@ class GlassPanel(wx.Panel):
         self.fill_rgba = fill_rgba
         self.Bind(wx.EVT_PAINT, self.OnPaint)
 
+    def _paint_gradient_background_windows(self, dc, rect):
+        """Paint the underlying gradient background for Windows compatibility.
+        
+        On Windows, wx.BG_STYLE_PAINT doesn't provide true transparency,
+        so we need to manually paint the gradient that would show through.
+        """
+        try:
+            # Find the GradientPanel parent to get gradient dimensions
+            gradient_parent = self.GetParent()
+            if not gradient_parent:
+                return
+            
+            # Get the full virtual size of the gradient panel
+            fw, fh = gradient_parent.GetVirtualSize()
+            fh = max(fh, 1)  # Avoid division by zero
+            
+            # Calculate this panel's position relative to the gradient
+            self_screen = self.GetScreenPosition()
+            parent_screen = gradient_parent.GetScreenPosition()
+            
+            # Get scroll offset if parent is scrolled
+            scroll_y = 0
+            if hasattr(gradient_parent, 'CalcUnscrolledPosition'):
+                _, scroll_y = gradient_parent.CalcUnscrolledPosition(0, 0)
+            
+            rel_y_top = (self_screen.y - parent_screen.y) + scroll_y
+            rel_y_bot = rel_y_top + rect.height
+            
+            # Calculate gradient colors at top and bottom of this panel
+            c_start = wx.Colour(Theme.COLOR_BG_GRADIENT_START)
+            c_end = wx.Colour(Theme.COLOR_BG_GRADIENT_END)
+            
+            pct_top = max(0.0, min(1.0, rel_y_top / float(fh)))
+            pct_bot = max(0.0, min(1.0, rel_y_bot / float(fh)))
+            
+            color_top = _mix_colors(c_end, c_start, pct_top)
+            color_bot = _mix_colors(c_end, c_start, pct_bot)
+            
+            # Fill with gradient (wx.SOUTH means starting color is at top)
+            dc.GradientFillLinear(rect, color_top, color_bot, wx.SOUTH)
+        except Exception:
+            # Fallback: fill with gradient start color
+            dc.SetBackground(wx.Brush(wx.Colour(Theme.COLOR_BG_GRADIENT_START)))
+            dc.Clear()
+
     def OnPaint(self, event):
         dc = wx.AutoBufferedPaintDC(self)
         gc = wx.GraphicsContext.Create(dc)
         rect = self.GetClientRect()
         if not gc:
             return
+        
+        # Windows-specific: Paint gradient background first to avoid gray showing through
+        if sys.platform.startswith("win"):
+            self._paint_gradient_background_windows(dc, rect)
+        
         # Inset so the rounded border isn't clipped
         inset = 6
         x = rect.x + inset
         y = rect.y + inset
         w = max(0, rect.width - inset * 2)
         h = max(0, rect.height - inset * 2)
-        r = self.corner_radius
+        r = self.FromDIP(self.corner_radius)
         path = gc.CreatePath()
         path.AddRoundedRectangle(x, y, w, h, r)
         rcol = wx.Colour(*self.fill_rgba)
@@ -99,12 +160,38 @@ class ElevatedLogoPanel(wx.Panel):
     def OnPaint(self, event):
         dc = wx.AutoBufferedPaintDC(self)
         rect = self.GetClientRect()
+        
+        # Clear background to avoid artifacts on Windows
+        if sys.platform.startswith("win"):
+            # Paint gradient background to match parent
+            try:
+                parent = self.GetParent()
+                if parent:
+                    fw, fh = parent.GetVirtualSize()
+                    fh = max(fh, 1)
+                    self_screen = self.GetScreenPosition()
+                    parent_screen = parent.GetScreenPosition()
+                    scroll_y = 0
+                    if hasattr(parent, 'CalcUnscrolledPosition'):
+                        _, scroll_y = parent.CalcUnscrolledPosition(0, 0)
+                    rel_y_top = (self_screen.y - parent_screen.y) + scroll_y
+                    rel_y_bot = rel_y_top + rect.height
+                    c_start = wx.Colour(Theme.COLOR_BG_GRADIENT_START)
+                    c_end = wx.Colour(Theme.COLOR_BG_GRADIENT_END)
+                    pct_top = max(0.0, min(1.0, rel_y_top / float(fh)))
+                    pct_bot = max(0.0, min(1.0, rel_y_bot / float(fh)))
+                    color_top = _mix_colors(c_end, c_start, pct_top)
+                    color_bot = _mix_colors(c_end, c_start, pct_bot)
+                    dc.GradientFillLinear(rect, color_top, color_bot, wx.SOUTH)
+            except Exception:
+                dc.SetBackground(wx.Brush(wx.Colour(Theme.COLOR_BG_GRADIENT_START)))
+                dc.Clear()
 
         if not self.logo_bitmap:
             return
 
         # Determine circle diameter and center; add small padding so border doesn't clip
-        padding = 6
+        padding = self.FromDIP(6)
         base_diameter = max(10, min(rect.width, rect.height) - padding * 2)
         diameter = int(base_diameter * self.scale_factor)
 
@@ -186,7 +273,7 @@ class InfoIcon(wx.StaticText):
         self.SetFont(Theme.get_font(12, bold=True))
         self.SetForegroundColour(Theme.COLOR_TEXT_WHITE)
         self.SetBackgroundColour(Theme.COLOR_INFO_ICON_BG)
-        self.SetMinSize((20, 20))
+        self.SetMinSize(self.FromDIP(wx.Size(20, 20)))
         
         # Bind mouse events
         self.Bind(wx.EVT_ENTER_WINDOW, self.OnMouseEnter)
@@ -303,15 +390,21 @@ class TooltipButton(wx.Button):
         return btn, sizer
 
 class CustomGauge(wx.Panel):
-    """A custom-drawn gauge that respects height on macOS."""
+    """A custom-drawn gauge that respects height on macOS and Windows."""
     def __init__(self, parent, range=100, size=(-1, 28)):
-        super(CustomGauge, self).__init__(parent, size=size)
+        # Add wx.NO_BORDER and wx.NO_FULL_REPAINT_ON_RESIZE to prevent Windows artifacts
+        super(CustomGauge, self).__init__(parent, size=size, style=wx.NO_BORDER | wx.NO_FULL_REPAINT_ON_RESIZE)
         self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
         self._range = range
         self._value = 0
         # Default colors
         self._bg_color = wx.Colour(40, 40, 40, 100)  # Dark semi-transparent background
         self._fg_color = wx.Colour(33, 150, 243)  # Blue
+        
+        # Windows-specific: disable focus indicators and set background
+        if wx.Platform == '__WXMSW__':
+            self.SetBackgroundColour(wx.Colour(30, 60, 40))  # Match gradient
+            self.SetDoubleBuffered(True)
         
         self.Bind(wx.EVT_PAINT, self.OnPaint)
         self.Bind(wx.EVT_SIZE, self.OnSize)
@@ -348,8 +441,13 @@ class CustomGauge(wx.Panel):
         event.Skip()
 
     def OnPaint(self, event):
-        # Use PaintDC directly on macOS to allow system double-buffering and transparency
-        dc = wx.PaintDC(self)
+        # Use AutoBufferedPaintDC for cross-platform consistency (prevents flicker on Windows)
+        dc = wx.AutoBufferedPaintDC(self)
+        
+        # Clear background on Windows to prevent artifacts
+        if wx.Platform == '__WXMSW__':
+            dc.SetBackground(wx.Brush(wx.Colour(30, 60, 40)))  # Match gradient
+            dc.Clear()
         
         # Use GraphicsContext for smoother anti-aliased drawing
         gc = wx.GraphicsContext.Create(dc)

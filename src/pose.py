@@ -382,11 +382,13 @@ class PoseProcessor:
         # Get total frame count for progress tracking
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         if total_frames <= 0:
-            # Fallback: estimate frames from FPS and duration
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            if fps > 0:
-                duration = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
-                total_frames = int(fps * duration)
+            # Seek to end to get actual frame count (more reliable on Windows)
+            current_pos = cap.get(cv2.CAP_PROP_POS_FRAMES)
+            cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 1.0)  # Seek to end
+            total_frames = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+            cap.set(cv2.CAP_PROP_POS_FRAMES, current_pos)  # Reset to original position
+            if total_frames <= 0:
+                total_frames = 1  # Prevent division by zero
 
         # Maintain locked ROIs across frames for multi-person mode
         # Each ROI holds its own MediaPipe Pose instance; index in list is stable person_id
@@ -506,11 +508,13 @@ class PoseProcessor:
         # Get total frame count for progress tracking
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         if total_frames <= 0:
-            # Fallback: estimate frames from FPS and duration
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            if fps > 0:
-                duration = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
-                total_frames = int(fps * duration)
+            # Seek to end to get actual frame count (more reliable on Windows)
+            current_pos = cap.get(cv2.CAP_PROP_POS_FRAMES)
+            cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 1.0)  # Seek to end
+            total_frames = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+            cap.set(cv2.CAP_PROP_POS_FRAMES, current_pos)  # Reset to original position
+            if total_frames <= 0:
+                total_frames = 1  # Prevent division by zero
 
         suffix = "_multi" if self.enable_multi_person_pose else ""
         filename = os.path.splitext(os.path.basename(video_path))[0] + f"{suffix}_pose.mp4"

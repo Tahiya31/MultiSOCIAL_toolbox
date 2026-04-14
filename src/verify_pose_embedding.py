@@ -327,7 +327,9 @@ def verify(video_path, csv_paths, output_size=None, stride=1, hit_threshold=0.8,
 
 
 def save_report(report, out_json_path, out_csv_path=None):
-    os.makedirs(os.path.dirname(out_json_path), exist_ok=True)
+    out_dir = os.path.dirname(out_json_path)
+    if out_dir:  # Only create directory if path has a directory component
+        os.makedirs(out_dir, exist_ok=True)
     with open(out_json_path, 'w') as f:
         json.dump(report, f, indent=2)
     if out_csv_path is not None:

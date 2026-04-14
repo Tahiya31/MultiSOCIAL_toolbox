@@ -1,6 +1,10 @@
 @echo off
 setlocal enabledelayedexpansion
 
+REM Ensure Unicode support for output
+chcp 65001 >nul
+set PYTHONIOENCODING=utf-8
+
 REM Resolve script directory
 set "SCRIPT_DIR=%~dp0"
 set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
@@ -42,10 +46,25 @@ echo Found Python %DESIRED_PYTHON% using command: %PYTHON_EXEC%
 
 if exist "%VENV_DIR%" (
     echo Found existing virtual environment at: %VENV_DIR%
-    for /f "usebackq tokens=*" %%v in (`"%VENV_DIR%\Scripts\python.exe" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"`) do set VENV_PY_VER=%%v
-    echo venv Python: %VENV_PY_VER%
-    if not "%VENV_PY_VER%"=="%DESIRED_PYTHON%" (
-        echo Virtual environment uses %VENV_PY_VER%, expected %DESIRED_PYTHON%. Recreating venv...
+    set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
+    if not exist "!VENV_PYTHON!" (
+        echo Venv Python executable not found at: !VENV_PYTHON!
+        set "VENV_PY_VER=0.0"
+    ) else (
+        "!VENV_PYTHON!" -c "import sys; print(str(sys.version_info.major)+'.'+str(sys.version_info.minor))" > "%TEMP%\_multi_social_venv_ver.txt" 2>&1
+        if !errorlevel! neq 0 (
+            echo Verify command failed. Output:
+            type "%TEMP%\_multi_social_venv_ver.txt"
+            set "VENV_PY_VER=ERROR"
+        ) else (
+            set "VENV_PY_VER="
+            for /f "usebackq tokens=*" %%v in ("%TEMP%\_multi_social_venv_ver.txt") do set "VENV_PY_VER=%%v"
+        )
+        if exist "%TEMP%\_multi_social_venv_ver.txt" del "%TEMP%\_multi_social_venv_ver.txt"
+    )
+    echo venv Python: !VENV_PY_VER!
+    if not "!VENV_PY_VER!"=="%DESIRED_PYTHON%" (
+        echo Virtual environment uses !VENV_PY_VER!, expected %DESIRED_PYTHON%. Recreating venv...
         rmdir /S /Q "%VENV_DIR%"
     )
 )
@@ -88,5 +107,16 @@ if %errorlevel% neq 0 (
 
 echo Starting MultiSOCIAL Toolbox...
 python "%SCRIPT_DIR%\src\app.py"
+set "APP_EXIT_CODE=!errorlevel!"
+
+if !APP_EXIT_CODE! neq 0 (
+    echo.
+    echo ============================================================
+    echo The application exited with an error.
+    echo If you see "ModuleNotFoundError" or import errors, try:
+    echo   1. Delete the .venv folder in this directory
+    echo   2. Run this script again to recreate the environment
+    echo ============================================================
+)
 
 pause
