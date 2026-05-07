@@ -85,9 +85,11 @@ def collect_named_runtime_dlls(candidate_dirs, dll_names, recursive=False):
 
 
 def normalized_source_path(entry):
-    if not (isinstance(entry, tuple) and len(entry) >= 1):
+    if not isinstance(entry, tuple) or len(entry) == 0:
         return None
-    return os.path.normcase(os.path.abspath(str(entry[0])))
+    # PyInstaller TOC entries (like a.binaries) use (name, source_path, typecode)
+    source_str = str(entry[1]) if len(entry) >= 3 else str(entry[0])
+    return os.path.normcase(os.path.abspath(source_str))
 
 
 def filter_blocked_runtime_dlls(entries, blocked_names, allowed_sources):
