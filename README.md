@@ -28,6 +28,7 @@ Packaged builds are attached to the repo's **GitHub Releases** page.
 
 Official user downloads should come from **Releases**.
 The GitHub Actions **Build Releases** workflow also produces artifacts, but those are mainly useful for branch/fork testing before an official release is published.
+Workflow artifacts now download as a single zip that extracts directly into one app folder. For Windows, the `.exe` is at the top level of that extracted folder.
 
 ### Where to find them
 
@@ -41,6 +42,16 @@ The GitHub Actions **Build Releases** workflow also produces artifacts, but thos
    * Windows:
      * `MultiSOCIAL-Standard-windows.zip`
      * `MultiSOCIAL-Complete-windows.zip`
+
+### Branch or fork testing artifacts
+
+1. Open the **Actions** tab on GitHub.
+2. Open the relevant **Build Releases** workflow run.
+3. Download the artifact for your system.
+4. Extract the downloaded zip once.
+5. Open the extracted app folder:
+   * Windows: the `.exe` is directly inside that folder
+   * macOS: the `.app` is directly inside that folder
 
 ### macOS packaged release steps
 
