@@ -38,7 +38,7 @@ def collect_sidecar_binaries(module_name, patterns):
     return collected
 
 
-def collect_named_runtime_dlls(candidate_dirs, dll_names):
+def collect_named_runtime_dlls(candidate_dirs, dll_names, recursive=False):
     collected = []
     seen = set()
     normalized_names = {name.lower() for name in dll_names}
@@ -48,13 +48,30 @@ def collect_named_runtime_dlls(candidate_dirs, dll_names):
         dir_path = Path(directory)
         if not dir_path.exists():
             continue
+
+        search_dirs = [dir_path]
+        if not recursive:
+            search_dirs.extend(
+                [
+                    dir_path / "DLLs",
+                    dir_path / "bin",
+                    dir_path / "libs",
+                    dir_path / "Library" / "bin",
+                ]
+            )
+
         for name in normalized_names:
-            candidate = dir_path / name
-            if candidate.is_file():
+            if recursive:
+                matches = [path for path in dir_path.rglob(name) if path.is_file()]
+            else:
+                matches = [path / name for path in search_dirs if (path / name).is_file()]
+
+            for candidate in matches:
                 key = os.path.normcase(str(candidate.resolve()))
-                if key not in seen:
-                    seen.add(key)
-                    collected.append((str(candidate), "."))
+                if key in seen:
+                    continue
+                seen.add(key)
+                collected.append((str(candidate), "."))
     return collected
 
 
@@ -108,14 +125,45 @@ binaries += collect_dynamic_libs("opensmile")
 binaries += collect_dynamic_libs("audinterface")
 
 if IS_WINDOWS:
+    _required_runtime_dlls = ["msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"]
+
     msvc_runtime_binaries = collect_sidecar_binaries("msvc_runtime", ["*.dll"])
+
+    msvc_spec = find_spec("msvc_runtime")
+    msvc_search_root = None
+    if msvc_spec is not None and msvc_spec.origin is not None:
+        msvc_origin = Path(msvc_spec.origin)
+        msvc_search_root = msvc_origin.parent if msvc_origin.is_file() else msvc_origin
+
     # GitHub-hosted Windows runners may not provide sidecar DLLs via msvc_runtime,
-    # so also pull the runtime DLLs from the active Python install.
+    # so also pull runtime DLLs from msvc_runtime package tree and Python install paths.
     fallback_runtime_binaries = collect_named_runtime_dlls(
-        [sys.base_prefix, sys.base_exec_prefix],
-        ["msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"],
+        [msvc_search_root] if msvc_search_root else [],
+        _required_runtime_dlls,
+        recursive=True,
     )
+    fallback_runtime_binaries += collect_named_runtime_dlls(
+        [
+            sys.base_prefix,
+            sys.base_exec_prefix,
+            os.path.dirname(sys.executable),
+            os.environ.get("WINDIR"),
+            os.path.join(os.environ.get("WINDIR", ""), "System32"),
+        ],
+        _required_runtime_dlls,
+    )
+
     msvc_runtime_binaries += fallback_runtime_binaries
+
+    # Keep first occurrence for each source path to avoid duplicate entries.
+    deduped_runtime_binaries = []
+    seen_runtime_sources = set()
+    for entry in msvc_runtime_binaries:
+        source_path = normalized_source_path(entry)
+        if source_path and source_path not in seen_runtime_sources:
+            deduped_runtime_binaries.append(entry)
+            seen_runtime_sources.add(source_path)
+    msvc_runtime_binaries = deduped_runtime_binaries
     binaries += msvc_runtime_binaries
     allowed_runtime_sources = {
         normalized_source_path(entry) for entry in msvc_runtime_binaries if normalized_source_path(entry)
