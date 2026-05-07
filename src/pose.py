@@ -5,6 +5,7 @@ using MediaPipe and YOLO
 '''
 
 import os
+import shutil
 import cv2
 import mediapipe as mp
 import pandas as pd
@@ -13,6 +14,33 @@ from scipy.optimize import linear_sum_assignment
 from yolov5 import YOLOv5
 
 import runtime_services
+
+
+def _is_valid_weights_file(path):
+    return os.path.isfile(path) and os.path.getsize(path) > 0
+
+
+def get_yolov5_weights_path():
+    """Return a stable, writable file path for YOLOv5 weights."""
+    bundled_path = runtime_services.resource_path("assets", "yolov5s.pt")
+    runtime_assets_dir = os.path.join(runtime_services.ensure_config_root(), "assets")
+    runtime_path = os.path.join(runtime_assets_dir, "yolov5s.pt")
+
+    if os.path.isdir(runtime_path):
+        shutil.rmtree(runtime_path, ignore_errors=True)
+
+    if _is_valid_weights_file(runtime_path):
+        return runtime_path
+
+    if _is_valid_weights_file(bundled_path):
+        os.makedirs(runtime_assets_dir, exist_ok=True)
+        if not _is_valid_weights_file(runtime_path):
+            shutil.copy2(bundled_path, runtime_path)
+        if _is_valid_weights_file(runtime_path):
+            return runtime_path
+
+    os.makedirs(runtime_assets_dir, exist_ok=True)
+    return runtime_path
 
 def _sanitize_frame_for_video(frame, expected_size=None):
     """Ensure a frame is BGR, uint8, 3-channels and matches expected size for VideoWriter."""
@@ -44,7 +72,7 @@ def _sanitize_frame_for_video(frame, expected_size=None):
 
 def ensure_yolov5_weights():
     """Ensure yolov5s weights exist without triggering network calls at import in other modules."""
-    weights_path = runtime_services.resource_path("assets", "yolov5s.pt")
+    weights_path = get_yolov5_weights_path()
     if not os.path.exists(weights_path):
         try:
             import requests
@@ -362,7 +390,7 @@ class PoseProcessor:
         if self.yolo is None:
             try:
                 ensure_yolov5_weights()
-                self.yolo = YOLOv5(runtime_services.resource_path("assets", "yolov5s.pt"))
+                self.yolo = YOLOv5(get_yolov5_weights_path())
                 if self.status_callback:
                     self.status_callback("🤖 YOLOv5 model loaded for multi-person detection")
             except Exception as e:

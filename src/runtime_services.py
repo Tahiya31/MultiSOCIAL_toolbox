@@ -28,11 +28,46 @@ def bundle_root() -> str:
     return os.path.dirname(os.path.dirname(__file__))
 
 
+def _frozen_resource_roots() -> list[str]:
+    roots = []
+    seen = set()
+
+    def add(path: Optional[str]) -> None:
+        if not path:
+            return
+        normalized = os.path.normcase(os.path.abspath(path))
+        if normalized in seen:
+            return
+        seen.add(normalized)
+        roots.append(path)
+
+    meipass = getattr(sys, "_MEIPASS", None)
+    executable_dir = os.path.dirname(sys.executable) if getattr(sys, "executable", None) else None
+
+    add(meipass)
+    add(executable_dir)
+
+    if sys.platform == "darwin" and executable_dir:
+        contents_dir = os.path.dirname(executable_dir)
+        add(contents_dir)
+        add(os.path.join(contents_dir, "Resources"))
+        add(os.path.join(contents_dir, "Frameworks"))
+
+    return roots
+
+
 def project_root() -> str:
     return bundle_root()
 
 
 def resource_path(*parts: str) -> str:
+    if getattr(sys, "frozen", False):
+        for root in _frozen_resource_roots():
+            candidate = os.path.join(root, *parts)
+            if os.path.exists(candidate):
+                return candidate
+        preferred_root = _frozen_resource_roots()[0] if _frozen_resource_roots() else bundle_root()
+        return os.path.join(preferred_root, *parts)
     return os.path.join(bundle_root(), *parts)
 
 

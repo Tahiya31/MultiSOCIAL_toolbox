@@ -246,7 +246,7 @@ class AudioProcessor:
             self.whisper_model = AutoModelForSpeechSeq2Seq.from_pretrained(
                 model_id, 
                 torch_dtype=self.torch_dtype, 
-                low_cpu_mem_usage=True, 
+                low_cpu_mem_usage=False,
                 use_safetensors=True,
                 local_files_only=True
             )
@@ -256,7 +256,7 @@ class AudioProcessor:
             self.whisper_model = AutoModelForSpeechSeq2Seq.from_pretrained(
                 model_id, 
                 torch_dtype=self.torch_dtype, 
-                low_cpu_mem_usage=True, 
+                low_cpu_mem_usage=False,
                 use_safetensors=True,
                 local_files_only=False
             )

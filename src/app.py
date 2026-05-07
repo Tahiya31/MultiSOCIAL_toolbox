@@ -427,8 +427,17 @@ class VideoToWavConverter(wx.Frame):
         self.update_buttons_enabled()
 
     def on_folder_changed(self, event):
-        self.ensure_output_folders(self.folderPicker.GetPath())
+        normalized_path = self.get_selected_folder_path()
+        if normalized_path and normalized_path != self.folderPicker.GetPath():
+            try:
+                self.folderPicker.SetPath(normalized_path)
+            except Exception:
+                pass
+        self.ensure_output_folders(normalized_path)
         self.update_buttons_enabled()
+
+    def get_selected_folder_path(self):
+        return gui_utils.normalize_path(self.folderPicker.GetPath())
 
     def refresh_diarization_state(self):
         self.diarizationFeatureState = runtime_services.get_diarization_feature_state()
@@ -517,7 +526,7 @@ class VideoToWavConverter(wx.Frame):
             pass
 
     def update_buttons_enabled(self):
-        folder_path = self.folderPicker.GetPath()
+        folder_path = self.get_selected_folder_path()
         has_folder = bool(folder_path)
         # Detect files
         video_files = []
@@ -769,8 +778,9 @@ class VideoToWavConverter(wx.Frame):
 
     def ensure_output_folders(self, folder_path):
         """Ensures output directories exist inside the selected folder only when needed."""
+        folder_path = gui_utils.normalize_path(folder_path)
         # Guard against empty/invalid path
-        if not folder_path or not os.path.exists(folder_path):
+        if not folder_path or not os.path.isdir(folder_path):
             self.converted_audio_folder = None
             self.extracted_pose_folder = None
             self.embedded_pose_folder = None
@@ -786,7 +796,7 @@ class VideoToWavConverter(wx.Frame):
         self.extracted_transcripts_folder = os.path.join(folder_path, "transcripts")
 
         # Check if the selected folder has video files
-        video_files = gui_utils.get_files_from_folder(folder_path, (".mp4", ".avi", ".mov"))
+        video_files = gui_utils.get_files_from_folder(folder_path, self.VIDEO_EXTENSIONS)
         if video_files:
             try:
                 for folder in [self.converted_audio_folder, self.extracted_pose_folder, self.embedded_pose_folder]:
@@ -803,7 +813,7 @@ class VideoToWavConverter(wx.Frame):
             self.embedded_pose_folder = None
 
         # Check if the selected folder has audio files
-        audio_files = gui_utils.get_files_from_folder(folder_path, (".wav",))
+        audio_files = gui_utils.get_files_from_folder(folder_path, self.AUDIO_EXTENSIONS)
         if audio_files:
             try:
                 for folder in [self.extracted_audio_folder, self.extracted_transcripts_folder]:
@@ -821,7 +831,7 @@ class VideoToWavConverter(wx.Frame):
       
     def on_convert(self, event):
         """Convert all videos in a selected folder to WAV."""
-        folder_path = self.folderPicker.GetPath()
+        folder_path = self.get_selected_folder_path()
         if not folder_path:
             wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
             return
@@ -856,7 +866,7 @@ class VideoToWavConverter(wx.Frame):
             self.update_progress(0)  # Reset progress bar
 
     def on_verify_consistency(self, event):
-        folder_path = self.folderPicker.GetPath()
+        folder_path = self.get_selected_folder_path()
         if not folder_path:
             wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
             return
@@ -957,7 +967,14 @@ class VideoToWavConverter(wx.Frame):
     def convert_to_wav(self, filepath, progress_callback=None):
         """Convert a single video file to WAV using ffmpeg."""
         try:
+            filepath = gui_utils.normalize_path(filepath)
+            if not os.path.isfile(filepath):
+                raise FileNotFoundError(filepath)
+            if not self.converted_audio_folder:
+                raise FileNotFoundError("converted_audio output folder is unavailable")
+            os.makedirs(self.converted_audio_folder, exist_ok=True)
             output_path = os.path.join(self.converted_audio_folder, os.path.splitext(os.path.basename(filepath))[0] + ".wav")
+            ffmpeg_cmd = gui_utils.get_ffmpeg_executable() or "ffmpeg"
         
             # Run ffmpeg conversion with progress tracking
             if progress_callback:
@@ -971,7 +988,7 @@ class VideoToWavConverter(wx.Frame):
                 ffmpeg
                 .input(filepath)
                 .output(output_path, format='wav', acodec='pcm_s16le')
-                .run(overwrite_output=True)
+                .run(cmd=ffmpeg_cmd, overwrite_output=True)
             )
             
             if progress_callback:
@@ -980,11 +997,11 @@ class VideoToWavConverter(wx.Frame):
             print(f"Conversion complete: {output_path}")
 
         except Exception as e:
-            wx.MessageBox(f'Error converting {filepath}: {e}', 'Error', wx.OK | wx.ICON_ERROR)
+            wx.CallAfter(wx.MessageBox, f'Error converting {filepath}: {e}', 'Error', wx.OK | wx.ICON_ERROR)
 
 
     def on_extract_features(self, event):
-        folder_path = self.folderPicker.GetPath()
+        folder_path = self.get_selected_folder_path()
         if not folder_path:
             wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
             return
@@ -1030,7 +1047,7 @@ class VideoToWavConverter(wx.Frame):
             
            
     def on_embed_poses(self, event):
-        folder_path = self.folderPicker.GetPath()
+        folder_path = self.get_selected_folder_path()
         if not folder_path:
             wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
             return
@@ -1078,7 +1095,7 @@ class VideoToWavConverter(wx.Frame):
 
     def on_extract_audio_features(self, event):
         """Extract audio features from all WAV files in the folder."""
-        folder_path = self.folderPicker.GetPath()
+        folder_path = self.get_selected_folder_path()
         if not folder_path:
             wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
             return
@@ -1119,7 +1136,7 @@ class VideoToWavConverter(wx.Frame):
 
     def on_extract_transcripts(self, event):
         """Extract transcripts from all WAV files in the folder."""
-        folder_path = self.folderPicker.GetPath()
+        folder_path = self.get_selected_folder_path()
         if not folder_path:
             wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
             return
@@ -1227,7 +1244,7 @@ class VideoToWavConverter(wx.Frame):
             self.update_progress(0)  # Reset progress bar
 
     def on_align_features(self, event):
-        folder_path = self.folderPicker.GetPath()
+        folder_path = self.get_selected_folder_path()
         if not folder_path:
             wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
             return

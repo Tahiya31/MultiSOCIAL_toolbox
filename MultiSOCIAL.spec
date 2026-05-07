@@ -15,6 +15,7 @@ sys.setrecursionlimit(max(sys.getrecursionlimit() * 5, 5000))
 
 ROOT = os.path.abspath(globals().get("SPECPATH", os.getcwd()))
 SRC = os.path.join(ROOT, "src")
+HOOKS = os.path.join(ROOT, "hooks")
 BUILD_PROFILE = os.environ.get("MULTISOCIAL_BUILD_PROFILE", "standard").strip().lower()
 APP_NAME = "MultiSOCIAL-Complete" if BUILD_PROFILE == "complete" else "MultiSOCIAL-Standard"
 IS_MACOS = sys.platform == "darwin"
@@ -148,6 +149,8 @@ datas += collect_data_files("mediapipe")
 datas += collect_data_files("audresample")
 datas += collect_data_files("opensmile")
 datas += collect_data_files("audinterface")
+datas += collect_data_files("imageio_ffmpeg")
+datas += collect_data_files("yolov5")
 binaries = collect_dynamic_libs("mediapipe")
 binaries += collect_dynamic_libs("audresample")
 binaries += collect_dynamic_libs("opensmile")
@@ -216,7 +219,7 @@ a = Analysis(
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=[],
+    hookspath=[HOOKS],
     hooksconfig={
         "matplotlib": {
             "backends": ["Agg"],
@@ -232,6 +235,10 @@ if IS_WINDOWS:
     _blocked_runtime_dlls = {"msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"}
     a.binaries = filter_blocked_runtime_dlls(a.binaries, _blocked_runtime_dlls, allowed_runtime_sources)
     a.datas = filter_blocked_runtime_dlls(a.datas, _blocked_runtime_dlls, allowed_runtime_sources)
+
+yolov5_general_spec = find_spec("yolov5.utils.general")
+if yolov5_general_spec is not None and yolov5_general_spec.origin:
+    a.datas.append(("yolov5/utils/general.pyc", yolov5_general_spec.origin, "DATA"))
 
 pyz = PYZ(a.pure)
 

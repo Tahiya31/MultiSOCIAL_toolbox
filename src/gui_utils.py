@@ -1,5 +1,6 @@
 import os
 import shutil
+import unicodedata
 import wx
 import ffmpeg
 
@@ -7,6 +8,8 @@ import ffmpeg
 import sys
 import ctypes
 import wx.lib.stattext as stattext
+
+import runtime_services
 
 def setup_high_dpi():
     """Enable High DPI awareness on Windows. No-op on other platforms."""
@@ -202,6 +205,7 @@ def ensure_video_playable(input_path, output_path=None):
     Returns output path on success, else None.
     """
     try:
+        ffmpeg_cmd = get_ffmpeg_executable() or "ffmpeg"
         if output_path is None:
             base, _ = os.path.splitext(input_path)
             output_path = base + "_fixed.mp4"
@@ -216,11 +220,69 @@ def ensure_video_playable(input_path, output_path=None):
                 acodec='copy'
             )
             .overwrite_output()
-            .run()
+            .run(cmd=ffmpeg_cmd)
         )
         return output_path
     except Exception:
         return None
+
+
+def _mark_executable(path):
+    try:
+        mode = os.stat(path).st_mode
+        os.chmod(path, mode | 0o111)
+    except Exception:
+        pass
+
+
+def _bundled_ffmpeg_candidates():
+    root = runtime_services.bundle_root()
+    if not os.path.isdir(root):
+        return []
+
+    candidates = []
+    for current_root, _dirs, files in os.walk(root):
+        for name in files:
+            lower = name.lower()
+            if lower == "ffmpeg" or lower.startswith("ffmpeg-") or lower == "ffmpeg.exe":
+                candidates.append(os.path.join(current_root, name))
+    return candidates
+
+
+def get_ffmpeg_executable():
+    """Return the concrete ffmpeg executable path to use, if available."""
+    cached = os.environ.get("MULTISOCIAL_FFMPEG_EXE")
+    if cached and os.path.exists(cached):
+        return cached
+
+    system_ffmpeg = shutil.which("ffmpeg")
+    if system_ffmpeg:
+        os.environ["MULTISOCIAL_FFMPEG_SOURCE"] = "system"
+        os.environ["MULTISOCIAL_FFMPEG_EXE"] = system_ffmpeg
+        return system_ffmpeg
+
+    for candidate in _bundled_ffmpeg_candidates():
+        if os.path.exists(candidate):
+            _mark_executable(candidate)
+            os.environ["PATH"] = os.path.dirname(candidate) + os.pathsep + os.environ.get("PATH", "")
+            os.environ["MULTISOCIAL_FFMPEG_SOURCE"] = "bundled"
+            os.environ["MULTISOCIAL_FFMPEG_EXE"] = candidate
+            return candidate
+
+    try:
+        import imageio_ffmpeg  # type: ignore
+
+        exe_path = imageio_ffmpeg.get_ffmpeg_exe()
+        if exe_path and os.path.exists(exe_path):
+            _mark_executable(exe_path)
+            os.environ["PATH"] = os.path.dirname(exe_path) + os.pathsep + os.environ.get("PATH", "")
+            os.environ["MULTISOCIAL_FFMPEG_SOURCE"] = "bundled"
+            os.environ["MULTISOCIAL_FFMPEG_EXE"] = exe_path
+            return exe_path
+    except Exception:
+        pass
+
+    return None
 
 
 def ensure_ffmpeg_available():
@@ -230,31 +292,32 @@ def ensure_ffmpeg_available():
     prepend its directory to PATH for this process so ffmpeg-python can launch it.
     Returns True if available, else False.
     """
-    # System ffmpeg available?
-    if shutil.which("ffmpeg"):
-        os.environ["MULTISOCIAL_FFMPEG_SOURCE"] = "system"
+    if get_ffmpeg_executable():
         return True
-    # Try bundled binary from imageio-ffmpeg
-    try:
-        import imageio_ffmpeg  # type: ignore
-        exe_path = imageio_ffmpeg.get_ffmpeg_exe()
-        if exe_path and os.path.exists(exe_path):
-            exe_dir = os.path.dirname(exe_path)
-            os.environ["PATH"] = exe_dir + os.pathsep + os.environ.get("PATH", "")
-            os.environ["MULTISOCIAL_FFMPEG_SOURCE"] = "bundled"
-            return True
-    except Exception:
-        pass
     os.environ["MULTISOCIAL_FFMPEG_SOURCE"] = "missing"
     return False
+
+
+def normalize_path(path):
+    """Normalize a filesystem path from the UI or runtime environment."""
+    if path is None:
+        return ""
+    normalized = str(path).strip().strip('"').strip("'")
+    if not normalized:
+        return ""
+    normalized = unicodedata.normalize("NFC", normalized)
+    normalized = os.path.expandvars(os.path.expanduser(normalized))
+    return os.path.normpath(os.path.abspath(normalized))
 
 def get_files_from_folder(folder_path, extensions):
     """Return a list of full paths for files in folder_path matching extensions."""
     files = []
-    if os.path.exists(folder_path):
-        for f in os.listdir(folder_path):
-            if f.startswith('.'):
+    folder_path = normalize_path(folder_path)
+    if os.path.isdir(folder_path):
+        for entry in os.scandir(folder_path):
+            if entry.name.startswith('.'):
                 continue
-            if f.lower().endswith(extensions):
-                files.append(os.path.join(folder_path, f))
+            if entry.is_file() and entry.name.lower().endswith(extensions):
+                files.append(entry.path)
+    files.sort()
     return files
