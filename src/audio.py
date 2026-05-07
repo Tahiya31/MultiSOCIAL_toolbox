@@ -10,12 +10,32 @@ This module provides functionality for:
 
 import os
 import torch
-import librosa
 import opensmile
 import gc
+import numpy as np
+from scipy.io import wavfile
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 
 from runtime_services import DIARIZATION_MODEL_ID
+
+
+def _load_wav_for_opensmile(filepath):
+    """Load a WAV file into a mono float32 array suitable for OpenSMILE."""
+    sr, audio = wavfile.read(filepath)
+
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)
+
+    if np.issubdtype(audio.dtype, np.integer):
+        scale = float(np.iinfo(audio.dtype).max)
+        if scale > 0:
+            audio = audio.astype(np.float32) / scale
+        else:
+            audio = audio.astype(np.float32)
+    else:
+        audio = audio.astype(np.float32, copy=False)
+
+    return audio, int(sr)
 
 
 class AudioProcessor:
@@ -120,8 +140,9 @@ class AudioProcessor:
             if progress_callback:
                 progress_callback(20)
             
-            # Load audio file using librosa
-            y, sr = librosa.load(filepath)
+            # Audio input is restricted to WAV files, so scipy is sufficient
+            # and avoids the heavier librosa/numba runtime stack.
+            y, sr = _load_wav_for_opensmile(filepath)
             
             if progress_callback:
                 progress_callback(40)

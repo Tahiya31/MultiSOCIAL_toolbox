@@ -64,7 +64,6 @@ hiddenimports = [
     "wx.adv",
     "wx.lib.stattext",
     "imageio_ffmpeg",
-    "librosa",
     "mediapipe.python._framework_bindings",
     "mediapipe.python.solutions",
     "mediapipe.python.solutions.drawing_utils",
