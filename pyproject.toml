@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools>=69,<81", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -45,6 +45,7 @@ complete = [
 dev = [
   "pyinstaller>=6.11,<7",
   "pytest>=8,<9",
+  "setuptools<81",
 ]
 
 [tool.setuptools]

@@ -34,6 +34,9 @@ jobs:
       - name: Upgrade pip
         run: python -m pip install --upgrade pip
 
+      - name: Pin setuptools for PyInstaller runtime hook compatibility
+        run: python -m pip install "setuptools<81"
+
       - name: Install standard build dependencies
         if: matrix.profile == 'standard'
         run: python -m pip install ".[dev]"
@@ -47,6 +50,34 @@ jobs:
           MPLCONFIGDIR: ${{ github.workspace }}/.tmp/mplconfig-${{ matrix.os }}-${{ matrix.profile }}
           PYINSTALLER_CONFIG_DIR: ${{ github.workspace }}/.tmp/pyinstaller-${{ matrix.os }}-${{ matrix.profile }}
         run: pyinstaller --clean --noconfirm MultiSOCIAL.spec
+
+      - name: Validate Windows runtime DLL exclusions
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -c "import os,sys; from pathlib import Path; profile=os.environ['MULTISOCIAL_BUILD_PROFILE']; app='MultiSOCIAL-Complete' if profile=='complete' else 'MultiSOCIAL-Standard'; root=Path('dist')/app; blocked={'msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll'}; hits=[str(p.relative_to(root)) for p in root.rglob('*') if p.is_file() and p.name.lower() in blocked] if root.exists() else None; (print(f'Expected dist folder missing: {root}', file=sys.stderr), sys.exit(1)) if hits is None else None; (print('Blocked VC runtime DLLs found in packaged app:', file=sys.stderr), [print(f'  - {h}', file=sys.stderr) for h in hits], sys.exit(1)) if hits else print('Windows DLL exclusion check passed.')"
+
+      - name: Validate macOS app symlink integrity
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_name="MultiSOCIAL-Standard"
+          if [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]]; then
+            app_name="MultiSOCIAL-Complete"
+          fi
+          app_path="dist/${app_name}.app"
+          link_path="${app_path}/Contents/Frameworks/Python.framework/Versions/Current"
+          if [[ ! -d "${app_path}" ]]; then
+            echo "Expected app not found: ${app_path}" >&2
+            exit 1
+          fi
+          if [[ ! -L "${link_path}" ]]; then
+            echo "Broken app bundle layout: ${link_path} must be a symlink." >&2
+            exit 1
+          fi
+          echo "macOS symlink integrity check passed."
 
       - name: Archive release bundle
         shell: bash

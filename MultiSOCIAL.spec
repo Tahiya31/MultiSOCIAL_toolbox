@@ -76,6 +76,19 @@ a = Analysis(
     excludes=[],
     noarchive=False,
 )
+# Also filter VC runtime DLLs from auto-collected binaries (e.g., wx package
+# entries) to avoid startup crashes from bundled conflicting runtimes.
+if IS_WINDOWS:
+    _blocked_runtime_dlls = {"msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"}
+    a.binaries = [
+        entry for entry in a.binaries
+        if not (
+            isinstance(entry, tuple)
+            and len(entry) >= 1
+            and os.path.basename(str(entry[0])).lower() in _blocked_runtime_dlls
+        )
+    ]
+
 pyz = PYZ(a.pure)
 
 if IS_MACOS:
