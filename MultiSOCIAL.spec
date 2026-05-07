@@ -3,7 +3,7 @@
 import os
 import sys
 
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 
 
 ROOT = os.path.abspath(globals().get("SPECPATH", os.getcwd()))
@@ -11,6 +11,9 @@ SRC = os.path.join(ROOT, "src")
 BUILD_PROFILE = os.environ.get("MULTISOCIAL_BUILD_PROFILE", "standard").strip().lower()
 APP_NAME = "MultiSOCIAL-Complete" if BUILD_PROFILE == "complete" else "MultiSOCIAL-Standard"
 IS_MACOS = sys.platform == "darwin"
+IS_WINDOWS = sys.platform == "win32"
+ICON_ICO = os.path.join(ROOT, "assets", "MultiSOCIAL_logo.ico")
+ICON_ICNS = os.path.join(ROOT, "assets", "MultiSOCIAL_logo.icns")
 
 hiddenimports = [
     "wx.adv",
@@ -30,6 +33,13 @@ datas = [
     (os.path.join(ROOT, "env.example"), "."),
 ]
 datas += collect_data_files("mediapipe")
+binaries = collect_dynamic_libs("mediapipe")
+
+if IS_WINDOWS:
+    try:
+        binaries += collect_dynamic_libs("msvc_runtime")
+    except Exception:
+        pass
 
 if BUILD_PROFILE == "complete":
     hiddenimports += [
@@ -42,7 +52,7 @@ if BUILD_PROFILE == "complete":
 a = Analysis(
     [os.path.join(SRC, "app.py")],
     pathex=[ROOT, SRC],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
@@ -51,7 +61,7 @@ a = Analysis(
             "backends": ["Agg"],
         },
     },
-    runtime_hooks=[],
+    runtime_hooks=[os.path.join(SRC, "runtime_hook_dlls.py")],
     excludes=[],
     noarchive=False,
 )
@@ -69,6 +79,7 @@ if IS_MACOS:
         strip=False,
         upx=True,
         console=False,
+        icon=ICON_ICO if os.path.exists(ICON_ICO) else None,
     )
     coll = COLLECT(
         exe,
@@ -82,6 +93,7 @@ if IS_MACOS:
     app = BUNDLE(
         coll,
         name=f"{APP_NAME}.app",
+        icon=ICON_ICNS if os.path.exists(ICON_ICNS) else None,
         bundle_identifier="edu.colby.multisocial",
     )
 else:
@@ -97,6 +109,7 @@ else:
         strip=False,
         upx=True,
         console=False,
+        icon=ICON_ICO if os.path.exists(ICON_ICO) else None,
     )
     coll = COLLECT(
         exe,

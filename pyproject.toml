@@ -21,6 +21,7 @@ dependencies = [
   "imageio-ffmpeg==0.6.0",
   "librosa==0.11.0",
   "mediapipe==0.10.21",
+  "msvc-runtime>=14.40; platform_system == 'Windows'",
   "numpy==1.26.4",
   "opensmile==2.6.0",
   "pandas==2.3.3",
