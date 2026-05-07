@@ -11,6 +11,26 @@ import wx.lib.stattext as stattext
 
 import runtime_services
 
+_registered_win32_ffmpeg_dll_dirs = set()
+
+
+def _register_win32_ffmpeg_dll_directory(exe_path):
+    """Help torchaudio/pyannote find FFmpeg DLLs on Windows (Python 3.8+ safe DLL loading)."""
+    if not exe_path or not sys.platform.startswith("win"):
+        return
+    bin_dir = os.path.normcase(os.path.abspath(os.path.dirname(exe_path)))
+    if bin_dir in _registered_win32_ffmpeg_dll_dirs:
+        return
+    add_fn = getattr(os, "add_dll_directory", None)
+    if not callable(add_fn):
+        return
+    try:
+        add_fn(bin_dir)
+        _registered_win32_ffmpeg_dll_dirs.add(bin_dir)
+    except (OSError, FileNotFoundError, ValueError):
+        pass
+
+
 def setup_high_dpi():
     """Enable High DPI awareness on Windows. No-op on other platforms."""
     if sys.platform.startswith("win"):
@@ -253,12 +273,14 @@ def get_ffmpeg_executable():
     """Return the concrete ffmpeg executable path to use, if available."""
     cached = os.environ.get("MULTISOCIAL_FFMPEG_EXE")
     if cached and os.path.exists(cached):
+        _register_win32_ffmpeg_dll_directory(cached)
         return cached
 
     system_ffmpeg = shutil.which("ffmpeg")
     if system_ffmpeg:
         os.environ["MULTISOCIAL_FFMPEG_SOURCE"] = "system"
         os.environ["MULTISOCIAL_FFMPEG_EXE"] = system_ffmpeg
+        _register_win32_ffmpeg_dll_directory(system_ffmpeg)
         return system_ffmpeg
 
     for candidate in _bundled_ffmpeg_candidates():
@@ -267,6 +289,7 @@ def get_ffmpeg_executable():
             os.environ["PATH"] = os.path.dirname(candidate) + os.pathsep + os.environ.get("PATH", "")
             os.environ["MULTISOCIAL_FFMPEG_SOURCE"] = "bundled"
             os.environ["MULTISOCIAL_FFMPEG_EXE"] = candidate
+            _register_win32_ffmpeg_dll_directory(candidate)
             return candidate
 
     try:
@@ -278,6 +301,7 @@ def get_ffmpeg_executable():
             os.environ["PATH"] = os.path.dirname(exe_path) + os.pathsep + os.environ.get("PATH", "")
             os.environ["MULTISOCIAL_FFMPEG_SOURCE"] = "bundled"
             os.environ["MULTISOCIAL_FFMPEG_EXE"] = exe_path
+            _register_win32_ffmpeg_dll_directory(exe_path)
             return exe_path
     except Exception:
         pass

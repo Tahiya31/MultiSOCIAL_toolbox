@@ -38,6 +38,27 @@ def _load_wav_for_opensmile(filepath):
     return audio, int(sr)
 
 
+def _whisper_pipeline_audio_input(filepath):
+    """
+    Build pipeline inputs from WAV without relying on torchaudio/ffmpeg decoding.
+
+    Passing a path through Hugging Face ASR often triggers torchaudio, which on Windows
+    may require FFmpeg DLLs not present with a CLI-only install. SciPy reads PCM WAV directly.
+    """
+    filepath = os.path.normpath(os.path.abspath(filepath))
+    if not os.path.isfile(filepath):
+        raise FileNotFoundError(f"Audio file not found: {filepath}")
+    try:
+        audio, sr = _load_wav_for_opensmile(filepath)
+        return {"array": audio, "sampling_rate": int(sr)}
+    except Exception as e:
+        print(
+            f"Warning: scipy WAV decode failed ({e}); falling back to path-based load "
+            "(may require working FFmpeg/torchaudio)."
+        )
+        return filepath
+
+
 class AudioProcessor:
     def __init__(self, output_audio_features_folder, output_transcripts_folder, status_callback=None, enable_speaker_diarization=True, auth_token=None):
         """
@@ -380,7 +401,7 @@ class AudioProcessor:
             ts_mode = "word" if word_timestamps else True
             
             result = self.whisper_pipe(
-                filepath,
+                _whisper_pipeline_audio_input(filepath),
                 return_timestamps=ts_mode, 
                 generate_kwargs={"task": "transcribe"}
             )
@@ -838,7 +859,7 @@ class AudioProcessor:
                 # Transcribe without loading/offloading model
                 ts_mode = True  # Use segment-level timestamps; word-level if needed for alignment
                 result = self.whisper_pipe(
-                    audio_path,
+                    _whisper_pipeline_audio_input(audio_path),
                     return_timestamps=ts_mode,
                     generate_kwargs={"task": "transcribe"}
                 )

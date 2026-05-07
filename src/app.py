@@ -27,9 +27,11 @@ import runtime_services
 from gui_utils import Theme
 from ui_components import GradientPanel, GlassPanel, ElevatedLogoPanel, TooltipButton, CustomGauge
 
-# Keep the packaged import smoke test lightweight by avoiding heavy ML/native
+# Keep packaged import smoke test lightweight by avoiding heavy ML/native
 # imports until the full app actually runs.
 if os.environ.get("MULTISOCIAL_IMPORT_SMOKE_TEST") != "1":
+    # Resolve FFmpeg before torch/torchaudio so Windows DLL directories are registered early.
+    gui_utils.ensure_ffmpeg_available()
     from pose import PoseProcessor
     from audio import AudioProcessor
 else:
