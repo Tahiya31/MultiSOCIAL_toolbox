@@ -8,6 +8,11 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 
 
+# PyInstaller can hit Python's default recursion depth on large dependency
+# graphs, especially on Windows with the current ML stack.
+sys.setrecursionlimit(max(sys.getrecursionlimit() * 5, 5000))
+
+
 ROOT = os.path.abspath(globals().get("SPECPATH", os.getcwd()))
 SRC = os.path.join(ROOT, "src")
 BUILD_PROFILE = os.environ.get("MULTISOCIAL_BUILD_PROFILE", "standard").strip().lower()
@@ -72,6 +77,7 @@ hiddenimports = [
 datas = [
     (os.path.join(ROOT, "assets"), "assets"),
     (os.path.join(ROOT, "env.example"), "."),
+    (os.path.join(ROOT, "pyproject.toml"), "."),
 ]
 datas += collect_data_files("mediapipe")
 datas += collect_data_files("audresample")
