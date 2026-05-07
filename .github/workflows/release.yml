@@ -20,8 +20,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       MULTISOCIAL_BUILD_PROFILE: ${{ matrix.profile }}
-      MPLCONFIGDIR: ${{ runner.temp }}/mplconfig
-      PYINSTALLER_CONFIG_DIR: ${{ runner.temp }}/pyinstaller
 
     steps:
       - name: Checkout
@@ -44,6 +42,9 @@ jobs:
         run: python -m pip install ".[complete,dev]"
 
       - name: Build PyInstaller bundle
+        env:
+          MPLCONFIGDIR: ${{ github.workspace }}/.tmp/mplconfig-${{ matrix.os }}-${{ matrix.profile }}
+          PYINSTALLER_CONFIG_DIR: ${{ github.workspace }}/.tmp/pyinstaller-${{ matrix.os }}-${{ matrix.profile }}
         run: pyinstaller --clean --noconfirm MultiSOCIAL.spec
 
       - name: Archive release bundle
