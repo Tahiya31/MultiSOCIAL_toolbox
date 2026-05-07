@@ -432,7 +432,7 @@ class AudioProcessor:
                 os.path.splitext(os.path.basename(filepath))[0] + ".txt"
             )
 
-            with open(output_txt, 'w') as f:
+            with open(output_txt, 'w', encoding='utf-8', newline='\n') as f:
                 f.write(formatted_transcript)
             
             # If word timestamps were requested, save the detailed JSON sidecar
@@ -448,8 +448,8 @@ class AudioProcessor:
                 # We'll save the whole result structure to be safe.
                 # Note: result might contain non-serializable objects (like tensors), but pipeline usually returns python types.
                 try:
-                    with open(output_json, 'w') as f:
-                        json.dump(result, f, indent=2)
+                    with open(output_json, 'w', encoding='utf-8') as f:
+                        json.dump(result, f, indent=2, ensure_ascii=False)
                     print(f"Saved word-level info: {output_json}")
                 except Exception as e:
                     print(f"Warning: Could not save word-level JSON: {e}")
@@ -788,7 +788,13 @@ class AudioProcessor:
         """
         if not audio_files:
             return
-            
+
+        if self.output_transcripts_folder is None:
+            raise ValueError(
+                "Transcripts output folder is not configured. "
+                "The app should write under …/converted_audio/transcripts — select your dataset folder again."
+            )
+
         total_files = len(audio_files)
         
         # Calculate progress allocation:
@@ -821,14 +827,18 @@ class AudioProcessor:
         transcription_results = {}  # filepath -> (transcript_text, whisper_result)
         transcription_range = transcription_end - transcription_start
         
+        transcription_errors = []
         for i, audio_file in enumerate(audio_files):
             self.set_status_message(f"🗣️ Transcribing ({i+1}/{total_files}): {os.path.basename(audio_file)}")
             
             try:
+                audio_path = os.path.normpath(os.path.abspath(audio_file))
+                if not os.path.isfile(audio_path):
+                    raise FileNotFoundError(f"Audio file not found: {audio_path}")
                 # Transcribe without loading/offloading model
                 ts_mode = True  # Use segment-level timestamps; word-level if needed for alignment
                 result = self.whisper_pipe(
-                    audio_file,
+                    audio_path,
                     return_timestamps=ts_mode,
                     generate_kwargs={"task": "transcribe"}
                 )
@@ -837,13 +847,24 @@ class AudioProcessor:
                 
             except Exception as e:
                 print(f"Error transcribing {audio_file}: {e}")
+                transcription_errors.append((audio_file, str(e)))
                 transcription_results[audio_file] = (None, None)
             
             # Update progress
             if progress_callback:
                 file_progress = ((i + 1) / total_files) * transcription_range
                 progress_callback(int(transcription_start + file_progress))
-        
+
+        if not any(transcription_results.get(af, (None, None))[0] is not None for af in audio_files):
+            detail_bits = [
+                f"{os.path.basename(path)}: {err}"
+                for path, err in transcription_errors[:8]
+            ]
+            detail = "\n".join(detail_bits) if detail_bits else "(see console / log for details)"
+            raise RuntimeError(
+                "Speech recognition failed for every file; no transcripts were produced.\n\n" + detail
+            )
+
         # ===== PHASE 3: Diarization (if enabled) =====
         diarization_results = {}  # filepath -> speaker_segments
         
@@ -871,7 +892,8 @@ class AudioProcessor:
                     self.set_status_message(f"🎭 Diarizing ({i+1}/{total_files}): {os.path.basename(audio_file)}")
                     
                     try:
-                        speaker_segments = self.speaker_diarizer.diarize_speakers(audio_file)
+                        audio_path = os.path.normpath(os.path.abspath(audio_file))
+                        speaker_segments = self.speaker_diarizer.diarize_speakers(audio_path)
                         diarization_results[audio_file] = speaker_segments
                     except Exception as e:
                         print(f"Error diarizing {audio_file}: {e}")
@@ -888,7 +910,11 @@ class AudioProcessor:
         
         # ===== PHASE 4: Save all results =====
         self.set_status_message("💾 Saving transcripts...")
-        
+        os.makedirs(self.output_transcripts_folder, exist_ok=True)
+
+        save_errors = []
+        saved_count = 0
+
         for audio_file in audio_files:
             transcript, whisper_result = transcription_results.get(audio_file, (None, None))
             if transcript is None:
@@ -910,12 +936,29 @@ class AudioProcessor:
             output_txt = os.path.join(self.output_transcripts_folder, f"{base_name}.txt")
             
             try:
-                with open(output_txt, 'w') as f:
+                with open(output_txt, 'w', encoding='utf-8', newline='\n') as f:
                     f.write(formatted_transcript)
+                saved_count += 1
                 print(f"Saved transcript: {output_txt}")
-            except Exception as e:
+            except OSError as e:
+                msg = f"{output_txt}: {e}"
                 print(f"Error saving transcript for {audio_file}: {e}")
-        
+                save_errors.append(msg)
+
+        if save_errors:
+            raise RuntimeError(
+                "Could not write one or more transcript files:\n\n" + "\n".join(save_errors)
+            )
+
+        expected_saves = sum(
+            1 for af in audio_files if transcription_results.get(af, (None, None))[0] is not None
+        )
+        if expected_saves > 0 and saved_count == 0:
+            raise RuntimeError(
+                "Transcription succeeded but no .txt files were saved (unexpected). "
+                f"Output folder: {self.output_transcripts_folder}"
+            )
+
         if progress_callback:
             progress_callback(100)
 
@@ -1004,7 +1047,7 @@ class AudioProcessor:
 
         # Load transcript words
         try:
-            with open(transcript_json, 'r') as f:
+            with open(transcript_json, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
             words = []

@@ -309,6 +309,46 @@ def normalize_path(path):
     normalized = os.path.expandvars(os.path.expanduser(normalized))
     return os.path.normpath(os.path.abspath(normalized))
 
+
+def resolved_dataset_root(folder_path):
+    """Folder that owns pose/video outputs (parent of ``converted_audio`` when that subfolder is selected)."""
+    fp = normalize_path(folder_path)
+    if not fp:
+        return fp
+    base = os.path.basename(fp.rstrip(os.sep))
+    if base.lower() == "converted_audio":
+        parent = os.path.dirname(fp)
+        return parent if parent else fp
+    return fp
+
+
+def resolved_converted_audio_folder(folder_path):
+    """Directory where converted WAV files live (always ``…/converted_audio`` for a dataset root)."""
+    fp = normalize_path(folder_path)
+    if not fp:
+        return fp
+    if os.path.basename(fp.rstrip(os.sep)).lower() == "converted_audio":
+        return fp
+    return os.path.join(resolved_dataset_root(fp), "converted_audio")
+
+
+def transcripts_output_folder(folder_path):
+    """Text transcripts go next to WAVs: ``…/converted_audio/transcripts``."""
+    return os.path.join(resolved_converted_audio_folder(folder_path), "transcripts")
+
+
+def get_audio_files_for_processing(folder_path, extensions):
+    """WAV files at the dataset root and under ``converted_audio`` (non-recursive each)."""
+    dr = resolved_dataset_root(folder_path)
+    cad = resolved_converted_audio_folder(folder_path)
+    seen = {}
+    for root in (dr, cad):
+        if root and os.path.isdir(root):
+            for fpath in get_files_from_folder(root, extensions):
+                seen[fpath] = True
+    return sorted(seen.keys())
+
+
 def get_files_from_folder(folder_path, extensions):
     """Return a list of full paths for files in folder_path matching extensions."""
     files = []

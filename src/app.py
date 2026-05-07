@@ -533,8 +533,9 @@ class VideoToWavConverter(wx.Frame):
         audio_files = []
         try:
             if has_folder:
-                video_files = gui_utils.get_files_from_folder(folder_path, self.VIDEO_EXTENSIONS)
-                audio_files = gui_utils.get_files_from_folder(folder_path, self.AUDIO_EXTENSIONS)
+                workspace_root = gui_utils.resolved_dataset_root(folder_path)
+                video_files = gui_utils.get_files_from_folder(workspace_root, self.VIDEO_EXTENSIONS)
+                audio_files = gui_utils.get_audio_files_for_processing(folder_path, self.AUDIO_EXTENSIONS)
         except Exception:
             pass
         # Video buttons
@@ -788,34 +789,37 @@ class VideoToWavConverter(wx.Frame):
             self.extracted_transcripts_folder = None
             return
     
-        # Define folder paths
-        self.converted_audio_folder = os.path.join(folder_path, "converted_audio")
-        self.extracted_pose_folder = os.path.join(folder_path, "pose_features")
-        self.embedded_pose_folder = os.path.join(folder_path, "embedded_pose")
-        self.extracted_audio_folder = os.path.join(folder_path, "audio_features")
-        self.extracted_transcripts_folder = os.path.join(folder_path, "transcripts")
+        workspace_root = gui_utils.resolved_dataset_root(folder_path)
+        converted_audio_dir = gui_utils.resolved_converted_audio_folder(folder_path)
 
-        # Check if the selected folder has video files
-        video_files = gui_utils.get_files_from_folder(folder_path, self.VIDEO_EXTENSIONS)
+        # Standard layout: converted WAVs under converted_audio/; transcripts alongside those WAVs.
+        self.converted_audio_folder = converted_audio_dir
+        self.extracted_pose_folder = os.path.join(workspace_root, "pose_features")
+        self.embedded_pose_folder = os.path.join(workspace_root, "embedded_pose")
+        self.extracted_audio_folder = os.path.join(workspace_root, "audio_features")
+        self.extracted_transcripts_folder = gui_utils.transcripts_output_folder(folder_path)
+
+        # Videos live at the dataset root (not inside converted_audio/)
+        video_files = gui_utils.get_files_from_folder(workspace_root, self.VIDEO_EXTENSIONS)
         if video_files:
             try:
-                for folder in [self.converted_audio_folder, self.extracted_pose_folder, self.embedded_pose_folder]:
+                os.makedirs(converted_audio_dir, exist_ok=True)
+                for folder in [self.extracted_pose_folder, self.embedded_pose_folder]:
                     os.makedirs(folder, exist_ok=True)
             except (OSError, PermissionError) as e:
-                # Can't create folders, disable video processing
-                self.converted_audio_folder = None
+                # Can't create pose folders; keep converted_audio path for WAV/transcript workflows
                 self.extracted_pose_folder = None
                 self.embedded_pose_folder = None
                 wx.CallAfter(wx.MessageBox, f"Cannot create output folders: {e}", "Warning", wx.OK | wx.ICON_WARNING)
         else:
-            self.converted_audio_folder = None
             self.extracted_pose_folder = None
             self.embedded_pose_folder = None
 
-        # Check if the selected folder has audio files
-        audio_files = gui_utils.get_files_from_folder(folder_path, self.AUDIO_EXTENSIONS)
+        # WAV files may sit at dataset root or under converted_audio/
+        audio_files = gui_utils.get_audio_files_for_processing(folder_path, self.AUDIO_EXTENSIONS)
         if audio_files:
             try:
+                os.makedirs(converted_audio_dir, exist_ok=True)
                 for folder in [self.extracted_audio_folder, self.extracted_transcripts_folder]:
                     os.makedirs(folder, exist_ok=True)
             except (OSError, PermissionError) as e:
@@ -837,7 +841,8 @@ class VideoToWavConverter(wx.Frame):
             return
 
         self.ensure_output_folders(folder_path)
-        video_files = gui_utils.get_files_from_folder(folder_path, self.VIDEO_EXTENSIONS)
+        workspace_root = gui_utils.resolved_dataset_root(folder_path)
+        video_files = gui_utils.get_files_from_folder(workspace_root, self.VIDEO_EXTENSIONS)
 
         if not video_files:
             wx.MessageBox("No video files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
@@ -877,7 +882,7 @@ class VideoToWavConverter(wx.Frame):
             wx.MessageBox("No pose or embedded outputs found. Extract and embed first.", "Error", wx.OK | wx.ICON_ERROR)
             return
 
-        verification_dir = os.path.join(folder_path, "verification")
+        verification_dir = os.path.join(gui_utils.resolved_dataset_root(folder_path), "verification")
         os.makedirs(verification_dir, exist_ok=True)
         worst_frames_root = os.path.join(verification_dir, "worst_frames")
         os.makedirs(worst_frames_root, exist_ok=True)
@@ -1007,7 +1012,8 @@ class VideoToWavConverter(wx.Frame):
             return
 
         self.ensure_output_folders(folder_path)
-        video_files = gui_utils.get_files_from_folder(folder_path, (".mp4", ".avi"))
+        workspace_root = gui_utils.resolved_dataset_root(folder_path)
+        video_files = gui_utils.get_files_from_folder(workspace_root, (".mp4", ".avi"))
         
         if not video_files:
             wx.MessageBox("No video files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
@@ -1053,7 +1059,8 @@ class VideoToWavConverter(wx.Frame):
             return
 
         self.ensure_output_folders(folder_path)
-        video_files = gui_utils.get_files_from_folder(folder_path, (".mp4", ".avi", ".mov"))
+        workspace_root = gui_utils.resolved_dataset_root(folder_path)
+        video_files = gui_utils.get_files_from_folder(workspace_root, (".mp4", ".avi", ".mov"))
         
       
         stride_val = 1
@@ -1101,10 +1108,18 @@ class VideoToWavConverter(wx.Frame):
             return
 
         self.ensure_output_folders(folder_path)
-        audio_files = gui_utils.get_files_from_folder(folder_path, self.AUDIO_EXTENSIONS)
+        audio_files = gui_utils.get_audio_files_for_processing(folder_path, self.AUDIO_EXTENSIONS)
 
         if not audio_files:
             wx.MessageBox("No WAV files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        if not self.extracted_audio_folder:
+            wx.MessageBox(
+                "Cannot resolve the audio features output folder. Pick your dataset folder again or check permissions.",
+                "Error",
+                wx.OK | wx.ICON_ERROR,
+            )
             return
 
         # Initialize audio processor
@@ -1142,10 +1157,19 @@ class VideoToWavConverter(wx.Frame):
             return
 
         self.ensure_output_folders(folder_path)
-        audio_files = gui_utils.get_files_from_folder(folder_path, self.AUDIO_EXTENSIONS)
+        audio_files = gui_utils.get_audio_files_for_processing(folder_path, self.AUDIO_EXTENSIONS)
 
         if not audio_files:
             wx.MessageBox("No WAV files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        if not self.extracted_transcripts_folder:
+            wx.MessageBox(
+                "Cannot create or resolve the transcript output folder (converted_audio/transcripts). "
+                "Check folder permissions or pick your dataset folder again.",
+                "Error",
+                wx.OK | wx.ICON_ERROR,
+            )
             return
 
         # Determine diarization preference and collect token if needed
@@ -1258,7 +1282,7 @@ class VideoToWavConverter(wx.Frame):
             
         # We don't strictly need transcripts folder to exist yet if we are going to generate them,
         # but we need audio files.
-        audio_files = gui_utils.get_files_from_folder(folder_path, self.AUDIO_EXTENSIONS)
+        audio_files = gui_utils.get_audio_files_for_processing(folder_path, self.AUDIO_EXTENSIONS)
         if not audio_files:
             wx.MessageBox("No audio files found.", "Error", wx.OK | wx.ICON_ERROR)
             return
