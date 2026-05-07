@@ -74,13 +74,7 @@ jobs:
           else
             target="dist/${app_name}"
             if [[ -d "${target}" ]]; then
-              python - <<'PY'
-import os
-import shutil
-app_name = "MultiSOCIAL-Complete" if os.environ["MULTISOCIAL_BUILD_PROFILE"] == "complete" else "MultiSOCIAL-Standard"
-runner_os = os.environ["RUNNER_OS_NAME"].lower()
-shutil.make_archive(f"release-artifacts/{app_name}-{runner_os}", "zip", root_dir="dist", base_dir=app_name)
-PY
+              python -c "import os,shutil; app='MultiSOCIAL-Complete' if os.environ['MULTISOCIAL_BUILD_PROFILE']=='complete' else 'MultiSOCIAL-Standard'; runner=os.environ['RUNNER_OS_NAME'].lower(); shutil.make_archive(f'release-artifacts/{app}-{runner}', 'zip', root_dir='dist', base_dir=app)"
             elif [[ -f "${target}" ]]; then
               cp "${target}" "release-artifacts/${app_name}-${runner_os}${target##${app_name}}"
             else
