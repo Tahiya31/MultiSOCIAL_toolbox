@@ -95,14 +95,32 @@ def normalized_source_path(entry):
 def filter_blocked_runtime_dlls(entries, blocked_names, allowed_sources):
     filtered = []
     for entry in entries:
-        source_path = normalized_source_path(entry)
-        if source_path is None:
+        if not isinstance(entry, tuple) or len(entry) == 0:
             filtered.append(entry)
             continue
-
-        basename = os.path.basename(source_path).lower()
-        if basename not in blocked_names or source_path in allowed_sources:
-            filtered.append(entry)
+            
+        source_path = normalized_source_path(entry)
+        
+        if len(entry) >= 3:
+            # TOC entry: (dest_name, source_path, typecode)
+            dest_name = str(entry[0]).replace("\\", "/")
+            basename = os.path.basename(dest_name).lower()
+            
+            if basename in blocked_names:
+                # Block if it's going into a subfolder (like wx/ or sklearn/.libs/)
+                if os.path.dirname(dest_name) not in ("", "."):
+                    continue
+                # Block if it's not from an allowed source
+                if source_path not in allowed_sources:
+                    continue
+        else:
+            # Initial binaries list: (source_path, dest_dir)
+            if source_path:
+                basename = os.path.basename(source_path).lower()
+                if basename in blocked_names and source_path not in allowed_sources:
+                    continue
+                    
+        filtered.append(entry)
     return filtered
 
 hiddenimports = [
