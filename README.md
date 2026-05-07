@@ -12,38 +12,117 @@ The toolbox allows you to process audio and video files of conversation.
 
 # Installation
 
-## MAC
-1. Download the toolbox code by going to [this link](https://github.com/Tahiya31/MultiSOCIAL_toolbox) and click on **Code**.
-2. Click on **Download Zip** to download the entire code folder. (You can also use ``git clone`` command to clone the repository.)
-3. Open the **Terminal** application.
-4. Go to the folder where **MultiSOCIAL_toolbox** is saved. (On Mac OS, typically the location is ``../Users/(name of the user)/Downloads/``)
-   * You can run ``cd Downloads/MultiSOCIAL_toolbox`` to achieve this.
-5. Run this single command to set up and launch the toolbox:
-   * ``bash run_app.sh``
-6. The launcher will ask whether you want:
-   * `Standard` toolbox
-   * `Complete` toolbox (includes optional speaker diarization support)
+There are two ways to use MultiSOCIAL Toolbox:
 
+1. **Packaged desktop release**
+   This is the recommended option for most users. You do **not** need to install Python manually.
+2. **Source install using the launcher scripts**
+   This is mainly for contributors or users running directly from the repository. You **must** have Python `3.10.x` installed first.
 
-## WINDOWS
+## Option 1: Packaged desktop releases
 
-1. Download the toolbox code by going to [this link](https://github.com/Tahiya31/MultiSOCIAL_toolbox) and click on **Code**.
-2. Click on **Download Zip** to download the entire code folder. (You can also use ``git clone`` command to clone the repository.)
-3. Open **Command Prompt** (or PowerShell).
-4. Go to the folder where **MultiSOCIAL_toolbox** is saved. (Typically this location is ``../Users/(name of the user)/Downloads/``)
-   * You can run ``cd Downloads\MultiSOCIAL_toolbox`` to achieve this.
-5. Run this single command to set up and launch the toolbox:
-   * ``run_app.bat``
-6. The launcher will ask whether you want:
-   * `Standard` toolbox
-   * `Complete` toolbox (includes optional speaker diarization support)
+Packaged builds are attached to the repo's **GitHub Releases** page.
 
-## Versioned desktop releases
+- `Standard` build: base toolbox
+- `Complete` build: base toolbox plus diarization support
 
-Tagged releases (`vMAJOR.MINOR.PATCH`) can produce packaged Windows and macOS artifacts from GitHub Actions.
-- `Standard` build: no diarization dependencies bundled
-- `Complete` build: diarization support bundled
-- Source installs remain available for contributors via the launch scripts above
+Official user downloads should come from **Releases**.
+The GitHub Actions **Build Releases** workflow also produces artifacts, but those are mainly useful for branch/fork testing before an official release is published.
+
+### Where to find them
+
+1. Open the repository on GitHub.
+2. Click **Releases** on the right side of the repo page.
+3. Open the latest release.
+4. Download the artifact for your system:
+   * macOS:
+     * `MultiSOCIAL-Standard-macos.zip`
+     * `MultiSOCIAL-Complete-macos.zip`
+   * Windows:
+     * `MultiSOCIAL-Standard-windows.zip`
+     * `MultiSOCIAL-Complete-windows.zip`
+
+### macOS packaged release steps
+
+1. Download the `.zip` file from **Releases**.
+2. Double-click the `.zip` to extract it.
+3. Open **Terminal**.
+4. Remove the quarantine flag from the extracted app:
+   * `xattr -dr com.apple.quarantine "/path/to/MultiSOCIAL-Standard.app"`
+   * or
+   * `xattr -dr com.apple.quarantine "/path/to/MultiSOCIAL-Complete.app"`
+5. Open the app:
+   * double-click the `.app`, or
+   * right-click the `.app` and choose **Open**
+
+If your macOS build is signed and notarized in a future release, the quarantine-removal step may not be needed.
+
+### Windows packaged release steps
+
+1. Download the `.zip` file from **Releases**.
+2. Extract the `.zip`.
+3. Open the extracted folder.
+4. Launch the app:
+   * `MultiSOCIAL-Standard.exe`, or
+   * `MultiSOCIAL-Complete.exe`
+
+If Windows shows a trust warning on an unsigned build:
+1. Click **More info**
+2. Click **Run anyway**
+
+If the build is signed in a future release, this warning should be reduced or removed.
+
+## Option 2: Source install from the repository
+
+This path uses the launcher scripts in the repo and requires Python `3.10.x`.
+
+### Prerequisite
+
+- Install Python `3.10.x`
+
+Do not use Python `3.11` or `3.12` for this project.
+
+### macOS source install
+
+1. Download or clone the repository.
+2. Open **Terminal**.
+3. Go to the repository folder:
+   * `cd /path/to/MultiSOCIAL_toolbox`
+4. Run:
+   * `bash run_app.sh`
+5. Choose one profile when prompted:
+   * `Standard`
+   * `Complete`
+
+The script will:
+- create or reuse `.venv`
+- install the correct dependencies
+- launch the app
+
+### Windows source install
+
+1. Download or clone the repository.
+2. Install Python `3.10.x`.
+3. Open **Command Prompt**.
+4. Go to the repository folder:
+   * `cd \path\to\MultiSOCIAL_toolbox`
+5. Run:
+   * `run_app.bat`
+6. Choose one profile when prompted:
+   * `Standard`
+   * `Complete`
+
+The script will:
+- create or reuse `.venv`
+- install the correct dependencies
+- launch the app
+
+## Which version should I choose?
+
+- Choose `Standard` if you want the main toolbox features without diarization.
+- Choose `Complete` if you also want speaker diarization support.
+
+If you are unsure, start with `Standard`.
 
 
 # Usage

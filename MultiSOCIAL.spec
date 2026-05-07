@@ -53,6 +53,8 @@ def filter_blocked_runtime_dlls(entries, blocked_names, allowed_sources):
     return filtered
 
 hiddenimports = [
+    "backports",
+    "backports.tarfile",
     "pkg_resources",
     "wx.adv",
     "wx.lib.stattext",
