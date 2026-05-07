@@ -60,18 +60,27 @@ def collect_named_runtime_dlls(candidate_dirs, dll_names, recursive=False):
                 ]
             )
 
-        for name in normalized_names:
-            if recursive:
-                matches = [path for path in dir_path.rglob(name) if path.is_file()]
-            else:
-                matches = [path / name for path in search_dirs if (path / name).is_file()]
-
-            for candidate in matches:
-                key = os.path.normcase(str(candidate.resolve()))
-                if key in seen:
+        if recursive:
+            matches = [
+                path
+                for path in dir_path.rglob("*")
+                if path.is_file() and path.name.lower() in normalized_names
+            ]
+        else:
+            matches = []
+            for search_dir in search_dirs:
+                if not search_dir.exists():
                     continue
-                seen.add(key)
-                collected.append((str(candidate), "."))
+                for path in search_dir.iterdir():
+                    if path.is_file() and path.name.lower() in normalized_names:
+                        matches.append(path)
+
+        for candidate in matches:
+            key = os.path.normcase(str(candidate.resolve()))
+            if key in seen:
+                continue
+            seen.add(key)
+            collected.append((str(candidate), "."))
     return collected
 
 
