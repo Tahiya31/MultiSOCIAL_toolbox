@@ -213,6 +213,7 @@ a = Analysis(
 if IS_WINDOWS:
     _blocked_runtime_dlls = {"msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"}
     a.binaries = filter_blocked_runtime_dlls(a.binaries, _blocked_runtime_dlls, allowed_runtime_sources)
+    a.datas = filter_blocked_runtime_dlls(a.datas, _blocked_runtime_dlls, allowed_runtime_sources)
 
 pyz = PYZ(a.pure)
 
