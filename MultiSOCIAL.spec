@@ -231,7 +231,8 @@ if BUILD_PROFILE == "complete":
     datas += copy_metadata("speechbrain")
     datas += copy_metadata("torch")
     datas += copy_metadata("pytorch_lightning")
-    datas += copy_metadata("lightning_fabric")
+    # lightning_fabric is a submodule; PyPI metadata is under distribution name "lightning".
+    datas += copy_metadata("lightning")
     datas += copy_metadata("transformers")
     datas += copy_metadata("torchmetrics")
     datas += copy_metadata("torchaudio")
