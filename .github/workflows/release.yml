@@ -53,32 +53,41 @@ jobs:
         env:
           RUNNER_OS_NAME: ${{ runner.os }}
         run: |
-          python - <<'PY'
-          import os
-          import shutil
-          from pathlib import Path
+          set -euo pipefail
+          profile="${MULTISOCIAL_BUILD_PROFILE}"
+          runner_os="$(echo "${RUNNER_OS_NAME}" | tr '[:upper:]' '[:lower:]')"
+          app_name="MultiSOCIAL-Standard"
+          if [[ "${profile}" == "complete" ]]; then
+            app_name="MultiSOCIAL-Complete"
+          fi
 
-          dist_dir = Path("dist")
-          out_dir = Path("release-artifacts")
-          out_dir.mkdir(exist_ok=True)
-          profile = os.environ["MULTISOCIAL_BUILD_PROFILE"]
-          runner_os = os.environ["RUNNER_OS_NAME"].lower()
-          app_name = "MultiSOCIAL-Complete" if profile == "complete" else "MultiSOCIAL-Standard"
+          mkdir -p release-artifacts
 
-          if runner_os == "macos":
-              target = dist_dir / f"{app_name}.app"
-          else:
-              target = dist_dir / app_name
-
-          if not target.exists():
-              raise SystemExit(f"Expected build output not found: {target}")
-
-          archive_base = out_dir / f"{app_name}-{runner_os}"
-          if target.is_dir():
-              shutil.make_archive(str(archive_base), "zip", root_dir=target.parent, base_dir=target.name)
-          else:
-              shutil.copy2(target, archive_base.with_suffix(target.suffix))
-          PY
+          if [[ "${runner_os}" == "macos" ]]; then
+            target="dist/${app_name}.app"
+            if [[ ! -d "${target}" ]]; then
+              echo "Expected build output not found: ${target}" >&2
+              exit 1
+            fi
+            # Preserve symlinks/resource forks in .app bundles.
+            ditto -c -k --sequesterRsrc --keepParent "${target}" "release-artifacts/${app_name}-${runner_os}.zip"
+          else
+            target="dist/${app_name}"
+            if [[ -d "${target}" ]]; then
+              python - <<'PY'
+import os
+import shutil
+app_name = "MultiSOCIAL-Complete" if os.environ["MULTISOCIAL_BUILD_PROFILE"] == "complete" else "MultiSOCIAL-Standard"
+runner_os = os.environ["RUNNER_OS_NAME"].lower()
+shutil.make_archive(f"release-artifacts/{app_name}-{runner_os}", "zip", root_dir="dist", base_dir=app_name)
+PY
+            elif [[ -f "${target}" ]]; then
+              cp "${target}" "release-artifacts/${app_name}-${runner_os}${target##${app_name}}"
+            else
+              echo "Expected build output not found: ${target}" >&2
+              exit 1
+            fi
+          fi
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7

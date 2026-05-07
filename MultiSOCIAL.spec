@@ -40,6 +40,17 @@ if IS_WINDOWS:
         binaries += collect_dynamic_libs("msvc_runtime")
     except Exception:
         pass
+    # Prevent bundling VC runtime DLLs from package-local folders (notably wx),
+    # which can conflict with the system redist and crash at startup.
+    _blocked_runtime_dlls = {"msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"}
+    binaries = [
+        entry for entry in binaries
+        if not (
+            isinstance(entry, tuple)
+            and len(entry) >= 2
+            and str(entry[0]).lower().endswith(tuple(_blocked_runtime_dlls))
+        )
+    ]
 
 if BUILD_PROFILE == "complete":
     hiddenimports += [
