@@ -1,0 +1,91 @@
+name: Build Releases
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+        profile: [standard, complete]
+
+    runs-on: ${{ matrix.os }}
+    env:
+      MULTISOCIAL_BUILD_PROFILE: ${{ matrix.profile }}
+      MPLCONFIGDIR: ${{ runner.temp }}/mplconfig
+      PYINSTALLER_CONFIG_DIR: ${{ runner.temp }}/pyinstaller
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install standard build dependencies
+        if: matrix.profile == 'standard'
+        run: python -m pip install ".[dev]"
+
+      - name: Install complete build dependencies
+        if: matrix.profile == 'complete'
+        run: python -m pip install ".[complete,dev]"
+
+      - name: Build PyInstaller bundle
+        run: pyinstaller --clean --noconfirm MultiSOCIAL.spec
+
+      - name: Archive release bundle
+        shell: bash
+        env:
+          RUNNER_OS_NAME: ${{ runner.os }}
+        run: |
+          python - <<'PY'
+          import os
+          import shutil
+          from pathlib import Path
+
+          dist_dir = Path("dist")
+          out_dir = Path("release-artifacts")
+          out_dir.mkdir(exist_ok=True)
+          profile = os.environ["MULTISOCIAL_BUILD_PROFILE"]
+          runner_os = os.environ["RUNNER_OS_NAME"].lower()
+          app_name = "MultiSOCIAL-Complete" if profile == "complete" else "MultiSOCIAL-Standard"
+
+          if runner_os == "macos":
+              target = dist_dir / f"{app_name}.app"
+          else:
+              target = dist_dir / app_name
+
+          if not target.exists():
+              raise SystemExit(f"Expected build output not found: {target}")
+
+          archive_base = out_dir / f"{app_name}-{runner_os}"
+          if target.is_dir():
+              shutil.make_archive(str(archive_base), "zip", root_dir=target.parent, base_dir=target.name)
+          else:
+              shutil.copy2(target, archive_base.with_suffix(target.suffix))
+          PY
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MultiSOCIAL-${{ matrix.profile }}-${{ runner.os }}
+          path: release-artifacts/*
+
+      - name: Publish tagged release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-artifacts/*

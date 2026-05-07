@@ -14,7 +14,8 @@ import librosa
 import opensmile
 import gc
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
-from pyannote.audio import Pipeline
+
+from runtime_services import DIARIZATION_MODEL_ID
 
 
 class AudioProcessor:
@@ -1096,9 +1097,16 @@ class PyAnnoteSpeakerDiarizer:
             
             # 1. Try offline load first (use cached model if available)
             try:
+                from pyannote.audio import Pipeline
+            except Exception as e:
+                raise Exception(
+                    "Optional diarization support is not installed. Install the Complete toolbox profile first."
+                ) from e
+
+            try:
                 print("Attempting to load PyAnnote model from local cache...")
                 self.diarization_pipeline = Pipeline.from_pretrained(
-                    "pyannote/speaker-diarization",
+                    DIARIZATION_MODEL_ID,
                     local_files_only=True,
                     **kw
                 )
@@ -1112,7 +1120,7 @@ class PyAnnoteSpeakerDiarizer:
                 try:
                     print("Downloading/Loading PyAnnote model (online)...")
                     self.diarization_pipeline = Pipeline.from_pretrained(
-                        "pyannote/speaker-diarization",
+                        DIARIZATION_MODEL_ID,
                         **kw
                     )
                     loaded = True

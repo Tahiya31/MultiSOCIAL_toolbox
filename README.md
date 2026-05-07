@@ -1,6 +1,11 @@
 # MultiSOCIAL_toolbox
 Toolbox for multimodal interaction analysis for text, audio, and video information.
 
+Current release/runtime baseline:
+- Python `3.10.x`
+- `Standard` profile: base toolbox
+- `Complete` profile: base toolbox plus optional speaker diarization support
+
 ## How can I use MultiSOCIAL Toolbox?
 
 The toolbox allows you to process audio and video files of conversation.
@@ -15,6 +20,9 @@ The toolbox allows you to process audio and video files of conversation.
    * You can run ``cd Downloads/MultiSOCIAL_toolbox`` to achieve this.
 5. Run this single command to set up and launch the toolbox:
    * ``bash run_app.sh``
+6. The launcher will ask whether you want:
+   * `Standard` toolbox
+   * `Complete` toolbox (includes optional speaker diarization support)
 
 
 ## WINDOWS
@@ -26,6 +34,16 @@ The toolbox allows you to process audio and video files of conversation.
    * You can run ``cd Downloads\MultiSOCIAL_toolbox`` to achieve this.
 5. Run this single command to set up and launch the toolbox:
    * ``run_app.bat``
+6. The launcher will ask whether you want:
+   * `Standard` toolbox
+   * `Complete` toolbox (includes optional speaker diarization support)
+
+## Versioned desktop releases
+
+Tagged releases (`vMAJOR.MINOR.PATCH`) can produce packaged Windows and macOS artifacts from GitHub Actions.
+- `Standard` build: no diarization dependencies bundled
+- `Complete` build: diarization support bundled
+- Source installs remain available for contributors via the launch scripts above
 
 
 # Usage
@@ -99,6 +117,9 @@ After extracting pose CSVs and generating embedded pose videos, you can run **Ve
 ### Optional: Speaker diarization with PyAnnote
 You can optionally label who is speaking in the transcript (speaker diarization). In the GUI, enable the checkbox for speaker diarization before running **Extract Transcripts**.
 
+- If diarization is not installed yet and your build supports self-install, click **Install Complete Toolbox** in the audio panel.
+- Source installs can also select the `Complete` profile directly from `run_app.sh` or `run_app.bat`.
+
 - **If the checkbox is OFF**: Only Whisper runs and a plain transcript is saved.
 - **If the checkbox is ON**: Whisper runs and PyAnnote is used to add speaker labels. The first time, you will be prompted for a Hugging Face access token because PyAnnote models require one. The diarized output is saved directly in the transcript file with inline speaker segments, e.g.:
 
@@ -113,8 +134,8 @@ How to get and use the Hugging Face token (one-time setup):
    * ``https://huggingface.co/pyannote/speaker-diarization``
    * ``https://huggingface.co/pyannote/segmentation``
 3. Create an access token: go to ``https://huggingface.co/settings/tokens`` → **New token** (scope: "Read") → copy the token.
-4. In MultiSOCIAL Toolbox, when prompted, paste the token and confirm. The app will remember it during the session.
-   * **Tip**: To avoid entering the token every time, create a `.env` file in the project root and add `HF_TOKEN=your_token_here`. The app will load it automatically.
+4. In MultiSOCIAL Toolbox, when prompted, paste the token and confirm. The app stores it in local app settings for future runs.
+   * **Tip**: You can still set `HF_TOKEN` in your environment or a local `.env` file if you prefer.
 
 Notes:
 - If you cancel or the token is invalid, the app continues with transcript only (no diarization).
@@ -140,12 +161,13 @@ This feature aligns your extracted audio features (from OpenSMILE) with word-lev
 
   in **Extract Transcript** step that says ``An error occured during transcript extraction: ffmpeg was not found but required to load audio file form filename``
 
-  * We need ffmpeg framework for these two steps. For Windows we need to ffmpeg from [here](https://ffmpeg.org/download.html).
-  * Follow the steps described here to add [ffmpeg](https://phoenixnap.com/kb/ffmpeg-windows) to the environment PATH so that it can be used from Command Prompt.
-  * You may need to close **Command Prompt** and re-open to allow this change to take effect.
+  * The packaged app and current source setup try a bundled `ffmpeg` fallback automatically, so most users should not need to install `ffmpeg` manually.
+  * If you still see this error, first relaunch the app once so it can re-check the bundled binary.
+  * Only if the bundled fallback is unavailable on your machine should you install `ffmpeg` yourself and add it to `PATH`. For Windows you can start from [ffmpeg.org](https://ffmpeg.org/download.html) and these [PATH setup steps](https://phoenixnap.com/kb/ffmpeg-windows).
  
 * I am seeing warnings suggesting to set the path to certain package directories installed by this toolbox.
-  * You can follow the link to add ``ffmpeg`` to the environment PATH above or [this link](https://stackoverflow.com/questions/44272416/how-to-add-a-folder-to-path-environment-variable-in-windows-10-with-screensho) to add them.
+  * For packaged releases, you should usually ignore these warnings unless a feature is failing at runtime.
+  * For source installs, if a tool is truly missing, add it to `PATH` or rerun `run_app.sh` / `run_app.bat` so the environment is recreated cleanly.
  
 * I am getting an error during installation similar to ``ERROR: Failed building wheel for pi-heif`` or ``error: failed-wheel-build-for-install``
   * Why this happens: ``pi-heif`` provides HEIF/AVIF image support in Python and needs the system ``libheif`` library when a prebuilt wheel is not available for your OS/Python/architecture. On some machines, ``pip`` falls back to building from source, which fails without ``libheif`` present.

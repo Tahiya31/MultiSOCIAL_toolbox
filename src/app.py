@@ -26,6 +26,7 @@ load_dotenv()
 from pose import PoseProcessor
 from audio import AudioProcessor
 import gui_utils
+import runtime_services
 from gui_utils import Theme
 from ui_components import GradientPanel, GlassPanel, ElevatedLogoPanel, TooltipButton, CustomGauge
 
@@ -46,6 +47,7 @@ class VideoToWavConverter(wx.Frame):
         self._baseline_size = None  # will be captured on first resize to drive responsive scaling
         # Track if a background process is running to prevent UI resets during tab switches
         self._process_running = False
+        self._diarization_install_running = False
         # File extensions constants
         self.VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv")
         self.AUDIO_EXTENSIONS = (".wav",)
@@ -262,11 +264,25 @@ class VideoToWavConverter(wx.Frame):
         audio_sizer.Add(self.placeholderAudioLabel, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
         
         # Diarization
-        self.diarizationCheckbox = wx.CheckBox(self.audioPanel, label="Enable speaker diarization (requires Hugging Face token)")
+        self.diarizationCheckbox = wx.CheckBox(self.audioPanel, label="Enable speaker diarization")
         self.diarizationCheckbox.SetFont(Theme.get_font(12))
         self.diarizationCheckbox.SetForegroundColour(Theme.COLOR_TEXT_WHITE)
         gui_utils.style_checkbox_for_glass(self.diarizationCheckbox)
         audio_sizer.Add(self.diarizationCheckbox, flag=wx.ALIGN_CENTER|wx.ALL, border=6)
+
+        self.diarizationStatusLabel = gui_utils.create_transparent_text(
+            self.audioPanel,
+            label="Diarization status: checking optional component...",
+            style=wx.ALIGN_CENTER,
+        )
+        self.diarizationStatusLabel.SetFont(Theme.get_font(11))
+        self.diarizationStatusLabel.SetForegroundColour(Theme.COLOR_TEXT_WHITE)
+        audio_sizer.Add(self.diarizationStatusLabel, flag=wx.ALIGN_CENTER|wx.LEFT|wx.RIGHT|wx.BOTTOM, border=8)
+
+        self.installDiarizationBtn = wx.Button(self.audioPanel, label="Install Complete Toolbox")
+        self.installDiarizationBtn.SetFont(Theme.get_font(11, bold=True))
+        self.installDiarizationBtn.Bind(wx.EVT_BUTTON, self.on_install_diarization)
+        audio_sizer.Add(self.installDiarizationBtn, flag=wx.ALIGN_CENTER|wx.BOTTOM, border=10)
         
         # Buttons
         button_font = Theme.get_font(16)
@@ -333,7 +349,7 @@ class VideoToWavConverter(wx.Frame):
         min_h = min(base_h, max_h)
         self.SetSizeHints(min_w, min_h, max_w, max_h)
         self.SetSize((min_w, min_h))
-        self.SetTitle('MultiSOCIAL Toolbox')
+        self.SetTitle(runtime_services.get_app_title())
         
         # Set Window Icon
         try:
@@ -349,8 +365,9 @@ class VideoToWavConverter(wx.Frame):
         
         self.active_mode = 'video'
         # Try to load token from environment variable first
-        self.hf_token = os.getenv("HF_TOKEN")
+        self.hf_token = runtime_services.load_hf_token()
         self.switch_mode('video')
+        self.refresh_diarization_state()
         self._update_panel_sizes()
         self.update_buttons_enabled()
         try:
@@ -406,6 +423,63 @@ class VideoToWavConverter(wx.Frame):
     def on_folder_changed(self, event):
         self.ensure_output_folders(self.folderPicker.GetPath())
         self.update_buttons_enabled()
+
+    def refresh_diarization_state(self):
+        self.diarizationFeatureState = runtime_services.get_diarization_feature_state()
+        if not hasattr(self, 'diarizationCheckbox'):
+            return
+
+        state = self.diarizationFeatureState
+        status = state["status"]
+        installed = bool(state["installed"])
+        can_self_install = bool(state["can_self_install"])
+        last_error = str(state.get("last_error") or "").strip()
+
+        if installed:
+            checkbox_label = "Enable speaker diarization (installed; requires Hugging Face token)"
+            status_label = "Diarization status: installed and ready."
+            button_label = "Optional Component Installed"
+            button_enabled = False
+        elif status == "installing":
+            checkbox_label = "Enable speaker diarization (optional add-on)"
+            status_label = "Diarization status: installing optional component..."
+            button_label = "Installing Optional Component..."
+            button_enabled = False
+        elif status == "failed":
+            checkbox_label = "Enable speaker diarization (optional add-on)"
+            detail = f" Last error: {last_error}" if last_error else ""
+            if can_self_install:
+                status_label = f"Diarization status: install failed.{detail}"
+                button_label = "Retry Complete Install"
+                button_enabled = True
+            else:
+                status_label = f"Diarization status: not available in this build.{detail}"
+                button_label = "Use a Complete Build"
+                button_enabled = False
+        else:
+            checkbox_label = "Enable speaker diarization (optional add-on)"
+            if can_self_install:
+                status_label = "Diarization status: not installed. Click Install Complete Toolbox for one-click setup."
+                button_label = "Install Complete Toolbox"
+                button_enabled = True
+            else:
+                status_label = "Diarization status: not installed in this build. Use a Complete installer."
+                button_label = "Use a Complete Build"
+                button_enabled = False
+
+        self.diarizationCheckbox.SetLabel(checkbox_label)
+        if not installed and status != "installing":
+            self.diarizationCheckbox.SetValue(False)
+        self.diarizationStatusLabel.SetLabel(status_label)
+        self.installDiarizationBtn.SetLabel(button_label)
+        self.installDiarizationBtn.Enable(button_enabled and not self._diarization_install_running)
+
+        try:
+            self.audioPanel.Layout()
+            self.mainPanel.Layout()
+            self.Layout()
+        except Exception:
+            pass
 
     def _update_panel_sizes(self):
         # Keep panels at a reasonable width fraction of the frame
@@ -505,6 +579,12 @@ class VideoToWavConverter(wx.Frame):
                 self.multiPersonCheckbox.SetFont(self._scale_font(14, scale))
             if hasattr(self, 'diarizationCheckbox') and self.diarizationCheckbox:
                 self.diarizationCheckbox.SetFont(self._scale_font(12, scale))
+            if hasattr(self, 'diarizationStatusLabel') and self.diarizationStatusLabel:
+                self.diarizationStatusLabel.SetFont(self._scale_font(11, scale))
+                try:
+                    self.diarizationStatusLabel.Wrap(max(240, int(cur_w * 0.55)))
+                except Exception:
+                    pass
             if hasattr(self, 'frameStrideInput'):
                 self.frameStrideInput.SetFont(self._scale_font(12, scale))
             if hasattr(self, 'downscaleCheckbox'):
@@ -528,6 +608,8 @@ class VideoToWavConverter(wx.Frame):
                 self.extractTranscriptsBtn.SetFont(button_font)
             if hasattr(self, 'alignFeaturesBtn') and self.alignFeaturesBtn:
                 self.alignFeaturesBtn.SetFont(button_font)
+            if hasattr(self, 'installDiarizationBtn') and self.installDiarizationBtn:
+                self.installDiarizationBtn.SetFont(self._scale_font(11, scale))
             # Status label: scale font and wrap to panel width for responsiveness
             if hasattr(self, 'statusLabel') and self.statusLabel:
                 self.statusLabel.SetFont(self._scale_font(12, scale))
@@ -605,6 +687,65 @@ class VideoToWavConverter(wx.Frame):
         """Update the progress bar."""
         if hasattr(self, 'progress') and self.progress:
             wx.CallAfter(self.progress.SetValue, value)
+
+    def on_install_diarization(self, event):
+        state = runtime_services.get_diarization_feature_state()
+        if state["installed"]:
+            wx.MessageBox(
+                "Optional diarization support is already installed.",
+                "Installed",
+                wx.OK | wx.ICON_INFORMATION,
+            )
+            return
+
+        if not state["can_self_install"]:
+            wx.MessageBox(
+                "This build cannot install diarization in-place. Use a Complete build or rerun the installer with the complete profile.",
+                "Complete Build Required",
+                wx.OK | wx.ICON_INFORMATION,
+            )
+            return
+
+        if self._diarization_install_running:
+            return
+
+        thread = threading.Thread(target=self._install_diarization_worker, daemon=True)
+        thread.start()
+
+    def _install_diarization_worker(self):
+        self._diarization_install_running = True
+        runtime_services.update_feature_state(runtime_services.DIARIZATION_FEATURE, status="installing", requested=True, last_error="")
+        wx.CallAfter(self.refresh_diarization_state)
+        try:
+            success, error_message = runtime_services.install_diarization_support(
+                status_callback=self.set_status_message,
+                progress_callback=self.update_progress,
+            )
+            if success:
+                wx.CallAfter(self._handle_diarization_install_success)
+            else:
+                wx.CallAfter(self._handle_diarization_install_failure, error_message or "Unknown install error")
+        finally:
+            self._diarization_install_running = False
+            wx.CallAfter(self.refresh_diarization_state)
+            wx.CallAfter(self.update_progress, 0)
+
+    def _handle_diarization_install_success(self):
+        self.refresh_diarization_state()
+        self.diarizationCheckbox.SetValue(True)
+        wx.MessageBox(
+            "Optional speaker diarization support has been installed.\n\nRestarting the app is recommended before running diarized transcripts.",
+            "Install Complete",
+            wx.OK | wx.ICON_INFORMATION,
+        )
+
+    def _handle_diarization_install_failure(self, error_message):
+        self.refresh_diarization_state()
+        wx.MessageBox(
+            f"Could not install optional diarization support:\n\n{error_message}",
+            "Install Failed",
+            wx.OK | wx.ICON_ERROR,
+        )
 
     def make_overall_progress_cb(self, item_index, total_items):
         """Return a callback mapping per-item percent (0-100) to overall percent (0-100)."""
@@ -987,6 +1128,24 @@ class VideoToWavConverter(wx.Frame):
         # Determine diarization preference and collect token if needed
         enable_diarization = False
         if hasattr(self, 'diarizationCheckbox') and self.diarizationCheckbox.GetValue():
+            diarization_state = runtime_services.get_diarization_feature_state()
+            if not diarization_state["installed"]:
+                if diarization_state["can_self_install"]:
+                    install_now = wx.MessageBox(
+                        "Speaker diarization is not installed yet.\n\nWould you like MultiSOCIAL Toolbox to install the optional component now?",
+                        "Install Optional Diarization",
+                        wx.YES_NO | wx.ICON_QUESTION,
+                    )
+                    if install_now == wx.YES:
+                        self.on_install_diarization(None)
+                    return
+                wx.MessageBox(
+                    "Speaker diarization is not installed in this build. Use a Complete build or rerun the installer with the complete profile.",
+                    "Diarization Not Installed",
+                    wx.OK | wx.ICON_INFORMATION,
+                )
+                return
+
             enable_diarization = True
             # Check if we already have a token (from env or previous entry)
             if not self.hf_token:
@@ -995,7 +1154,7 @@ class VideoToWavConverter(wx.Frame):
                     message=(
                         "Speaker diarization requires a Hugging Face token for pyannote.\n\n"
                         "Please see the README for setup steps. Once complete, enter your token here:\n"
-                        "(It will be saved to .env for future use)"
+                        "(It will be saved in local app settings for future use)"
                     ),
                     caption="Enter Hugging Face Token"
                 )
@@ -1003,14 +1162,11 @@ class VideoToWavConverter(wx.Frame):
                     token_val = dlg.GetValue().strip()
                     if token_val:
                         self.hf_token = token_val
-                        # Save to .env file
                         try:
-                            env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
-                            with open(env_path, "a") as f:
-                                f.write(f"\nHF_TOKEN={token_val}\n")
-                            print(f"Token saved to {env_path}")
+                            runtime_services.save_hf_token(token_val)
+                            print("Token saved to local app settings")
                         except Exception as e:
-                            print(f"Failed to save token to .env: {e}")
+                            print(f"Failed to save token to app settings: {e}")
                     else:
                         self.hf_token = None
                 dlg.Destroy()
@@ -1174,6 +1330,8 @@ def main():
             "Alternatively, ensure imageio-ffmpeg is installed (already in requirements)."
         )
         wx.MessageBox(msg, "ffmpeg not found", wx.OK | wx.ICON_ERROR)
+
+    print(f"Startup diagnostics: {runtime_services.get_startup_diagnostics()}")
     
     frm = VideoToWavConverter(None)
     frm.Show()

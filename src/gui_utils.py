@@ -232,6 +232,7 @@ def ensure_ffmpeg_available():
     """
     # System ffmpeg available?
     if shutil.which("ffmpeg"):
+        os.environ["MULTISOCIAL_FFMPEG_SOURCE"] = "system"
         return True
     # Try bundled binary from imageio-ffmpeg
     try:
@@ -240,9 +241,11 @@ def ensure_ffmpeg_available():
         if exe_path and os.path.exists(exe_path):
             exe_dir = os.path.dirname(exe_path)
             os.environ["PATH"] = exe_dir + os.pathsep + os.environ.get("PATH", "")
+            os.environ["MULTISOCIAL_FFMPEG_SOURCE"] = "bundled"
             return True
     except Exception:
         pass
+    os.environ["MULTISOCIAL_FFMPEG_SOURCE"] = "missing"
     return False
 
 def get_files_from_folder(folder_path, extensions):
