@@ -38,6 +38,26 @@ def collect_sidecar_binaries(module_name, patterns):
     return collected
 
 
+def collect_named_runtime_dlls(candidate_dirs, dll_names):
+    collected = []
+    seen = set()
+    normalized_names = {name.lower() for name in dll_names}
+    for directory in candidate_dirs:
+        if not directory:
+            continue
+        dir_path = Path(directory)
+        if not dir_path.exists():
+            continue
+        for name in normalized_names:
+            candidate = dir_path / name
+            if candidate.is_file():
+                key = os.path.normcase(str(candidate.resolve()))
+                if key not in seen:
+                    seen.add(key)
+                    collected.append((str(candidate), "."))
+    return collected
+
+
 def normalized_source_path(entry):
     if not (isinstance(entry, tuple) and len(entry) >= 1):
         return None
@@ -89,6 +109,13 @@ binaries += collect_dynamic_libs("audinterface")
 
 if IS_WINDOWS:
     msvc_runtime_binaries = collect_sidecar_binaries("msvc_runtime", ["*.dll"])
+    # GitHub-hosted Windows runners may not provide sidecar DLLs via msvc_runtime,
+    # so also pull the runtime DLLs from the active Python install.
+    fallback_runtime_binaries = collect_named_runtime_dlls(
+        [sys.base_prefix, sys.base_exec_prefix],
+        ["msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"],
+    )
+    msvc_runtime_binaries += fallback_runtime_binaries
     binaries += msvc_runtime_binaries
     allowed_runtime_sources = {
         normalized_source_path(entry) for entry in msvc_runtime_binaries if normalized_source_path(entry)
