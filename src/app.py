@@ -99,7 +99,7 @@ class VideoToWavConverter(wx.Frame):
         top_box = wx.BoxSizer(wx.HORIZONTAL)
         
         # Logo
-        logo_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "MultiSOCIAL_logo.png")
+        logo_path = runtime_services.resource_path("assets", "MultiSOCIAL_logo.png")
         logo_image = wx.Image(logo_path, wx.BITMAP_TYPE_ANY)
         logo_image = logo_image.Scale(logo_size, logo_size, wx.IMAGE_QUALITY_HIGH)
         logo_bmp = wx.Bitmap(logo_image)
@@ -353,7 +353,7 @@ class VideoToWavConverter(wx.Frame):
         
         # Set Window Icon
         try:
-            logo_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "MultiSOCIAL_logo.png")
+            logo_path = runtime_services.resource_path("assets", "MultiSOCIAL_logo.png")
             if os.path.exists(logo_path):
                 icon = wx.Icon()
                 icon.CopyFromBitmap(wx.Bitmap(logo_path, wx.BITMAP_TYPE_ANY))
@@ -1317,6 +1317,10 @@ class VideoToWavConverter(wx.Frame):
             self.update_progress(0)
 
 def main():
+    if os.environ.get("MULTISOCIAL_IMPORT_SMOKE_TEST") == "1":
+        print("Import smoke test passed.")
+        return
+
     # Create wx.App FIRST before any wx calls (including MessageBox)
     app = wx.App()
     

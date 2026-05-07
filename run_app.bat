@@ -111,6 +111,14 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
+echo Pinning setuptools for yolov5 compatibility
+python -m pip install "setuptools==80.10.2"
+if %errorlevel% neq 0 (
+    echo ERROR: Failed to install the required setuptools version
+    pause
+    exit /b 1
+)
+
 if "%NEEDS_INSTALL%"=="1" (
     echo Installing MultiSOCIAL Toolbox (%MULTISOCIAL_INSTALL_PROFILE% profile)
     pushd "%SCRIPT_DIR%"

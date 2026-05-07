@@ -12,6 +12,8 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 from yolov5 import YOLOv5
 
+import runtime_services
+
 def _sanitize_frame_for_video(frame, expected_size=None):
     """Ensure a frame is BGR, uint8, 3-channels and matches expected size for VideoWriter."""
     if frame is None:
@@ -42,7 +44,7 @@ def _sanitize_frame_for_video(frame, expected_size=None):
 
 def ensure_yolov5_weights():
     """Ensure yolov5s weights exist without triggering network calls at import in other modules."""
-    weights_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "yolov5s.pt")
+    weights_path = runtime_services.resource_path("assets", "yolov5s.pt")
     if not os.path.exists(weights_path):
         try:
             import requests
@@ -360,7 +362,7 @@ class PoseProcessor:
         if self.yolo is None:
             try:
                 ensure_yolov5_weights()
-                self.yolo = YOLOv5(os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "yolov5s.pt"))
+                self.yolo = YOLOv5(runtime_services.resource_path("assets", "yolov5s.pt"))
                 if self.status_callback:
                     self.status_callback("🤖 YOLOv5 model loaded for multi-person detection")
             except Exception as e:

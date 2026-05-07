@@ -22,8 +22,18 @@ DIARIZATION_PIP_SPEC = "pyannote.audio==3.4.0"
 DIARIZATION_MODEL_ID = "pyannote/speaker-diarization-3.1"
 
 
-def project_root() -> str:
+def bundle_root() -> str:
+    if getattr(sys, "frozen", False):
+        return getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
     return os.path.dirname(os.path.dirname(__file__))
+
+
+def project_root() -> str:
+    return bundle_root()
+
+
+def resource_path(*parts: str) -> str:
+    return os.path.join(bundle_root(), *parts)
 
 
 def _config_root() -> str:

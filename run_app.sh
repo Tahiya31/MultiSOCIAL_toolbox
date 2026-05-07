@@ -77,6 +77,12 @@ if ! python -m pip install --upgrade pip; then
     exit 1
 fi
 
+echo "Pinning setuptools for yolov5 compatibility"
+if ! python -m pip install "setuptools==80.10.2"; then
+    echo "ERROR: Failed to install the required setuptools version"
+    exit 1
+fi
+
 if [ "$NEEDS_INSTALL" -eq 1 ]; then
     echo "Installing MultiSOCIAL Toolbox ($INSTALL_PROFILE profile)"
     pushd "$SCRIPT_DIR" >/dev/null

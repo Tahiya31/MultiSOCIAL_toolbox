@@ -35,7 +35,7 @@ jobs:
         run: python -m pip install --upgrade pip
 
       - name: Pin setuptools for PyInstaller runtime hook compatibility
-        run: python -m pip install "setuptools<81"
+        run: python -m pip install "setuptools==80.10.2"
 
       - name: Install standard build dependencies
         if: matrix.profile == 'standard'
@@ -56,7 +56,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -c "import os,sys; from pathlib import Path; profile=os.environ['MULTISOCIAL_BUILD_PROFILE']; app='MultiSOCIAL-Complete' if profile=='complete' else 'MultiSOCIAL-Standard'; root=Path('dist')/app; blocked={'msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll'}; hits=[str(p.relative_to(root)) for p in root.rglob('*') if p.is_file() and p.name.lower() in blocked] if root.exists() else None; (print(f'Expected dist folder missing: {root}', file=sys.stderr), sys.exit(1)) if hits is None else None; (print('Blocked VC runtime DLLs found in packaged app:', file=sys.stderr), [print(f'  - {h}', file=sys.stderr) for h in hits], sys.exit(1)) if hits else print('Windows DLL exclusion check passed.')"
+          python -c "import os,sys; from pathlib import Path; profile=os.environ['MULTISOCIAL_BUILD_PROFILE']; app='MultiSOCIAL-Complete' if profile=='complete' else 'MultiSOCIAL-Standard'; root=Path('dist')/app; blocked={'msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll'}; allowed={name for name in blocked if (root / name).exists()}; hits=[str(p.relative_to(root)) for p in root.rglob('*') if p.is_file() and p.name.lower() in blocked and p.parent != root] if root.exists() else None; (print(f'Expected dist folder missing: {root}', file=sys.stderr), sys.exit(1)) if hits is None else None; missing=[name for name in blocked if name not in allowed]; (print('Required VC runtime DLLs missing from app root:', file=sys.stderr), [print(f'  - {name}', file=sys.stderr) for name in missing], sys.exit(1)) if missing else None; (print('Blocked duplicate VC runtime DLLs found in packaged app:', file=sys.stderr), [print(f'  - {h}', file=sys.stderr) for h in hits], sys.exit(1)) if hits else print('Windows DLL validation passed.')"
+
+      - name: Validate Windows bundled native library paths
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -c "import os,sys; from pathlib import Path; profile=os.environ['MULTISOCIAL_BUILD_PROFILE']; app='MultiSOCIAL-Complete' if profile=='complete' else 'MultiSOCIAL-Standard'; root=Path('dist')/app; required=['audresample/core/bin/win_amd64/audresample.dll','opensmile/core/bin/win_amd64/SMILEapi.dll']; missing=[path for path in required if not (root / path).exists()]; mediapipe_hits=list(root.rglob('_framework_bindings*.pyd')); (print(f'Expected dist folder missing: {root}', file=sys.stderr), sys.exit(1)) if not root.exists() else None; (print('Missing bundled native libraries:', file=sys.stderr), [print(f'  - {path}', file=sys.stderr) for path in missing], sys.exit(1)) if missing else None; (print('Missing mediapipe _framework_bindings binary.', file=sys.stderr), sys.exit(1)) if not mediapipe_hits else None; print('Windows native library layout validation passed.')"
 
       - name: Validate macOS app symlink integrity
         if: runner.os == 'macOS'
@@ -78,6 +85,28 @@ jobs:
             exit 1
           fi
           echo "macOS symlink integrity check passed."
+
+      - name: Run packaged import smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_name="MultiSOCIAL-Standard"
+          if [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]]; then
+            app_name="MultiSOCIAL-Complete"
+          fi
+
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            target="dist/${app_name}/${app_name}.exe"
+          else
+            target="dist/${app_name}.app/Contents/MacOS/${app_name}"
+          fi
+
+          if [[ ! -e "${target}" ]]; then
+            echo "Expected executable not found: ${target}" >&2
+            exit 1
+          fi
+
+          MULTISOCIAL_IMPORT_SMOKE_TEST=1 "${target}"
 
       - name: Archive release bundle
         shell: bash
