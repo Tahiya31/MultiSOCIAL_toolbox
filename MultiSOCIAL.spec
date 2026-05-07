@@ -247,9 +247,8 @@ else:
     exe = EXE(
         pyz,
         a.scripts,
-        a.binaries,
-        a.datas,
         [],
+        exclude_binaries=True,
         name=APP_NAME,
         debug=False,
         bootloader_ignore_signals=False,
@@ -257,6 +256,7 @@ else:
         upx=True,
         console=False,
         icon=ICON_ICO if os.path.exists(ICON_ICO) else None,
+        contents_directory='.',
     )
     coll = COLLECT(
         exe,
