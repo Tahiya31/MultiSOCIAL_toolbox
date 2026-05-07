@@ -22,13 +22,19 @@ from dotenv import load_dotenv
 # Load environment variables from .env file if present
 load_dotenv()
 
-# Import the core processing classes
-from pose import PoseProcessor
-from audio import AudioProcessor
 import gui_utils
 import runtime_services
 from gui_utils import Theme
 from ui_components import GradientPanel, GlassPanel, ElevatedLogoPanel, TooltipButton, CustomGauge
+
+# Keep the packaged import smoke test lightweight by avoiding heavy ML/native
+# imports until the full app actually runs.
+if os.environ.get("MULTISOCIAL_IMPORT_SMOKE_TEST") != "1":
+    from pose import PoseProcessor
+    from audio import AudioProcessor
+else:
+    PoseProcessor = None
+    AudioProcessor = None
 
 # Enable High DPI on Windows
 gui_utils.setup_high_dpi()
