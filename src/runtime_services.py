@@ -18,7 +18,7 @@ APP_DISPLAY_NAME = "MultiSOCIAL Toolbox"
 PROJECT_DIST_NAME = "multisocial-toolbox"
 DEFAULT_BUILD_PROFILE = "standard"
 DIARIZATION_FEATURE = "diarization"
-DIARIZATION_PIP_SPEC = "pyannote.audio==3.4.0"
+DIARIZATION_PIP_SPEC = ("pyannote.audio==3.2.0", "speechbrain==0.5.16", "torchaudio==2.5.1")
 DIARIZATION_MODEL_ID = "pyannote/speaker-diarization-3.1"
 
 
@@ -187,19 +187,28 @@ def save_install_profile(profile: str) -> None:
     save_state(state)
 
 
+def _normalize_hf_token(value: Optional[str]) -> Optional[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.upper().startswith("HF_TOKEN="):
+        raw = raw.split("=", 1)[1].strip()
+    return raw or None
+
+
 def load_hf_token() -> Optional[str]:
-    env_token = os.environ.get("HF_TOKEN")
+    env_token = _normalize_hf_token(os.environ.get("HF_TOKEN"))
     if env_token:
-        return env_token.strip() or None
+        return env_token
     state = load_state()
-    token = str(state.get("secrets", {}).get("hf_token") or "").strip()
-    return token or None
+    token = _normalize_hf_token(state.get("secrets", {}).get("hf_token"))
+    return token
 
 
 def save_hf_token(token: str) -> None:
     state = load_state()
     secrets = dict(state.get("secrets", {}))
-    secrets["hf_token"] = token.strip()
+    secrets["hf_token"] = _normalize_hf_token(token) or ""
     state["secrets"] = secrets
     save_state(state)
 
@@ -273,8 +282,7 @@ def install_diarization_support(
         "install",
         "--upgrade",
         "--disable-pip-version-check",
-        DIARIZATION_PIP_SPEC,
-    ]
+    ] + list(DIARIZATION_PIP_SPEC)
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,

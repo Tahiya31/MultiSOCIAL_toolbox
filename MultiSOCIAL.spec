@@ -5,8 +5,12 @@ import sys
 from importlib.util import find_spec
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
-
+from PyInstaller.utils.hooks import (
+    collect_data_files,
+    collect_dynamic_libs,
+    collect_submodules,
+    copy_metadata,
+)
 
 # PyInstaller can hit Python's default recursion depth on large dependency
 # graphs, especially on Windows with the current ML stack.
@@ -151,6 +155,7 @@ datas += collect_data_files("opensmile")
 datas += collect_data_files("audinterface")
 datas += collect_data_files("imageio_ffmpeg")
 datas += collect_data_files("yolov5")
+datas += collect_data_files("lightning_fabric")
 binaries = collect_dynamic_libs("mediapipe")
 binaries += collect_dynamic_libs("audresample")
 binaries += collect_dynamic_libs("opensmile")
@@ -206,12 +211,36 @@ if IS_WINDOWS:
     binaries = filter_blocked_runtime_dlls(binaries, _blocked_runtime_dlls, allowed_runtime_sources)
 
 if BUILD_PROFILE == "complete":
+    hiddenimports += collect_submodules("pyannote")
+    hiddenimports += collect_submodules("speechbrain")
+    hiddenimports += collect_submodules("huggingface_hub")
+    hiddenimports += collect_submodules("pytorch_lightning")
+    hiddenimports += collect_submodules("torchaudio")
     hiddenimports += [
-        "pyannote.audio",
-        "pyannote.core",
-        "pyannote.pipeline",
+        "pyannote.audio.pipelines.speaker_diarization",
+        "pyannote.audio.models.segmentation",
+        "pyannote.audio.models.segmentation.debug",
+        "pyannote.audio.tasks.segmentation",
+        "asteroid_filterbanks",
+        "omegaconf",
+        "torchmetrics",
     ]
-
+    datas += copy_metadata("pyannote.audio")
+    datas += copy_metadata("pyannote.core")
+    datas += copy_metadata("huggingface_hub")
+    datas += copy_metadata("speechbrain")
+    datas += copy_metadata("torch")
+    datas += copy_metadata("pytorch_lightning")
+    datas += copy_metadata("lightning_fabric")
+    datas += copy_metadata("transformers")
+    datas += copy_metadata("torchmetrics")
+    datas += copy_metadata("torchaudio")
+    datas += copy_metadata("torchvision")
+    datas += collect_data_files("pyannote")
+    datas += collect_data_files("speechbrain")
+    datas += collect_data_files("huggingface_hub")
+    datas += collect_data_files("pytorch_lightning")
+    datas += collect_data_files("torchaudio")
 
 a = Analysis(
     [os.path.join(SRC, "app.py")],

@@ -316,6 +316,8 @@ class AudioProcessor:
     def _load_speaker_diarizer(self, progress_callback=None):
         """Load the PyAnnote speaker diarization model (lazy loading)"""
         if self.speaker_diarizer is not None:
+            # Ensure preload paths actually verify model import/load state.
+            self.speaker_diarizer._load_diarization_model()
             return
             
         try:
@@ -325,6 +327,8 @@ class AudioProcessor:
             print("Loading PyAnnote speaker diarization model...")
             # Use PyAnnote diarization
             self.speaker_diarizer = PyAnnoteSpeakerDiarizer(progress_callback, self.auth_token, device=self.device)
+            # Force an actual model load so "preload" validates availability.
+            self.speaker_diarizer._load_diarization_model()
             
             if progress_callback:
                 progress_callback(15)
@@ -334,12 +338,9 @@ class AudioProcessor:
     
     def preload_speaker_diarizer(self):
         """Pre-load the speaker diarization model to avoid delays during first use"""
-        try:
-            print("Pre-loading PyAnnote speaker diarization model...")
-            self._load_speaker_diarizer()
-            print("✓ PyAnnote model pre-loaded successfully")
-        except Exception as e:
-            print(f"Warning: Could not pre-load PyAnnote model: {e}")
+        print("Pre-loading PyAnnote speaker diarization model...")
+        self._load_speaker_diarizer()
+        print("✓ PyAnnote model pre-loaded successfully")
 
     def extract_transcript(self, filepath, progress_callback=None, word_timestamps=False):
         """
@@ -423,7 +424,7 @@ class AudioProcessor:
             if speaker_segments and len(speaker_segments) > 0:
                 formatted_transcript = self._format_transcript_with_speakers(transcript, speaker_segments)
             else:
-                formatted_transcript = transcript
+                formatted_transcript = self._format_plain_transcript(transcript)
 
             # Save transcript to text file (always done)
             output_txt = os.path.join(
@@ -495,6 +496,32 @@ class AudioProcessor:
         except Exception as e:
             print(f"Warning: Could not align transcript with speakers: {e}")
             return transcript
+
+    def _format_plain_transcript(self, transcript):
+        """
+        Format a non-diarized transcript into readable line-broken segments.
+
+        Args:
+            transcript (str): Raw transcript from Whisper
+
+        Returns:
+            str: Line-broken transcript using Whisper's chunk timing when available
+        """
+        try:
+            whisper_segments = self._extract_whisper_segments(transcript)
+        except Exception:
+            whisper_segments = []
+
+        if whisper_segments:
+            lines = []
+            for seg in whisper_segments:
+                text = str(seg.get('text') or '').strip()
+                if text:
+                    lines.append(text)
+            if lines:
+                return "\n".join(lines)
+
+        return transcript
     
     def _extract_whisper_segments(self, transcript):
         """
@@ -875,7 +902,8 @@ class AudioProcessor:
                 self.whisper_result = whisper_result
                 formatted_transcript = self._format_transcript_with_speakers(transcript, speaker_segments)
             else:
-                formatted_transcript = transcript
+                self.whisper_result = whisper_result
+                formatted_transcript = self._format_plain_transcript(transcript)
             
             # Save transcript to file
             base_name = os.path.splitext(os.path.basename(audio_file))[0]
@@ -1112,44 +1140,40 @@ class PyAnnoteSpeakerDiarizer:
         try:
             if self.progress_callback:
                 self.progress_callback(5)
-            
-            loaded = False
-            kw = {"use_auth_token": self.auth_token} if self.auth_token else {}
-            
-            # 1. Try offline load first (use cached model if available)
+
+            if not self.auth_token:
+                raise Exception(
+                    "A Hugging Face token is required for speaker diarization."
+                )
+
+            kw = {"use_auth_token": self.auth_token}
+
             try:
                 from pyannote.audio import Pipeline
-            except Exception as e:
+            except ModuleNotFoundError as e:
                 raise Exception(
                     "Optional diarization support is not installed. Install the Complete toolbox profile first."
                 ) from e
+            except Exception as e:
+                raise Exception(
+                    f"Failed to import pyannote.audio dependencies: {e}"
+                ) from e
 
             try:
-                print("Attempting to load PyAnnote model from local cache...")
+                print("Loading PyAnnote speaker diarization pipeline...")
                 self.diarization_pipeline = Pipeline.from_pretrained(
                     DIARIZATION_MODEL_ID,
-                    local_files_only=True,
                     **kw
                 )
-                print("✓ Loaded PyAnnote model from cache.")
-                loaded = True
             except Exception as e:
-                print(f"Offline load failed ({e}). Trying online...")
-            
-            # 2. Fallback to standard load (online)
-            if not loaded:
-                try:
-                    print("Downloading/Loading PyAnnote model (online)...")
-                    self.diarization_pipeline = Pipeline.from_pretrained(
-                        DIARIZATION_MODEL_ID,
-                        **kw
-                    )
-                    loaded = True
-                except Exception as e:
-                    print(f"Standard load failed: {e}")
-
-            if not loaded:
-                raise Exception("Could not load PyAnnote pipeline.")
+                import traceback
+                error_trace = traceback.format_exc()
+                print(f"PyAnnote loading failed with trace:\n{error_trace}")
+                raise Exception(
+                    f"Could not load the PyAnnote pipeline. Check that your Hugging Face token is valid, "
+                    f"that you accepted the pyannote model terms, and that the app can reach Hugging Face. "
+                    f"Original error: {repr(e)}"
+                ) from e
             
             # Move pipeline to the specified device
             if self.diarization_pipeline is not None:

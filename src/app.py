@@ -1341,7 +1341,17 @@ class VideoToWavConverter(wx.Frame):
 
 def main():
     if os.environ.get("MULTISOCIAL_IMPORT_SMOKE_TEST") == "1":
-        print("Import smoke test passed.")
+        profile = runtime_services.get_build_profile().lower()
+        if profile == "complete":
+            try:
+                import pyannote.audio
+                print("Import smoke test passed (complete profile).")
+            except ImportError as e:
+                import sys
+                print(f"ERROR: pyannote.audio import failed: {e}", file=sys.stderr)
+                sys.exit(1)
+        else:
+            print("Import smoke test passed (standard profile).")
         return
 
     # Create wx.App FIRST before any wx calls (including MessageBox)

@@ -36,10 +36,14 @@ dependencies = [
 
 [project.optional-dependencies]
 diarization = [
-  "pyannote.audio==3.4.0",
+  "pyannote.audio==3.2.0",
+  "speechbrain==0.5.16",
+  "torchaudio==2.5.1",
 ]
 complete = [
-  "pyannote.audio==3.4.0",
+  "pyannote.audio==3.2.0",
+  "speechbrain==0.5.16",
+  "torchaudio==2.5.1",
 ]
 dev = [
   "pyinstaller==6.11.1",

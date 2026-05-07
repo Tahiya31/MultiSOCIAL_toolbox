@@ -95,6 +95,11 @@ jobs:
           fi
           echo "macOS symlink integrity check passed."
 
+      - name: Validate complete profile bundle layout
+        if: matrix.profile == 'complete'
+        shell: bash
+        run: python .github/scripts/validate_complete_bundle_layout.py
+
       - name: Run packaged import smoke test
         shell: bash
         run: |
