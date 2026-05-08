@@ -19,13 +19,11 @@ from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 from runtime_services import DIARIZATION_MODEL_ID
 
 
-def _load_wav_for_opensmile(filepath):
-    """Load a WAV file into a mono float32 array suitable for OpenSMILE."""
-    sr, audio = wavfile.read(filepath)
-
+def _pcm_audio_to_mono_float32(audio, sampling_rate):
+    """Normalize arbitrary PCM/float waveform to mono float32 in [-1, 1] (approximate for float clips)."""
+    audio = np.asarray(audio)
     if audio.ndim > 1:
         audio = audio.mean(axis=1)
-
     if np.issubdtype(audio.dtype, np.integer):
         scale = float(np.iinfo(audio.dtype).max)
         if scale > 0:
@@ -34,29 +32,58 @@ def _load_wav_for_opensmile(filepath):
             audio = audio.astype(np.float32)
     else:
         audio = audio.astype(np.float32, copy=False)
+    return audio, int(sampling_rate)
 
-    return audio, int(sr)
 
-
-def _whisper_pipeline_audio_input(filepath):
+def _decode_wav_file(filepath):
     """
-    Build pipeline inputs from WAV without relying on torchaudio/ffmpeg decoding.
+    Decode WAV to mono float32 without FFmpeg.
 
-    Passing a path through Hugging Face ASR often triggers torchaudio, which on Windows
-    may require FFmpeg DLLs not present with a CLI-only install. SciPy reads PCM WAV directly.
+    Hugging Face ASR passes string paths through ffmpeg_read(bytes(...)); SciPy fails on some
+    WAV variants (e.g. certain extensible headers). libsndfile via soundfile covers those cases.
     """
     filepath = os.path.normpath(os.path.abspath(filepath))
     if not os.path.isfile(filepath):
         raise FileNotFoundError(f"Audio file not found: {filepath}")
+
+    errors = []
+
     try:
-        audio, sr = _load_wav_for_opensmile(filepath)
-        return {"array": audio, "sampling_rate": int(sr)}
+        sr, audio = wavfile.read(filepath)
+        return _pcm_audio_to_mono_float32(audio, sr)
     except Exception as e:
-        print(
-            f"Warning: scipy WAV decode failed ({e}); falling back to path-based load "
-            "(may require working FFmpeg/torchaudio)."
-        )
-        return filepath
+        errors.append(f"scipy.io.wavfile: {e}")
+
+    try:
+        import soundfile as sf
+
+        audio, sr = sf.read(filepath, dtype="float32", always_2d=False)
+        return _pcm_audio_to_mono_float32(audio, sr)
+    except ImportError:
+        errors.append("soundfile: not installed (required for some WAV formats on Windows)")
+    except Exception as e:
+        errors.append(f"soundfile: {e}")
+
+    raise RuntimeError(
+        "Could not decode this WAV without FFmpeg-based loaders.\n\n"
+        + "\n".join(errors)
+        + "\n\nTry re-exporting as 16-bit PCM WAV, or ensure the 'soundfile' dependency is bundled."
+    )
+
+
+def _load_wav_for_opensmile(filepath):
+    """Load a WAV file into a mono float32 array suitable for OpenSMILE."""
+    return _decode_wav_file(filepath)
+
+
+def _whisper_pipeline_audio_input(filepath):
+    """
+    Build HF ASR inputs dict so preprocess() never receives a str path.
+
+    A string path makes transformers read raw bytes then call ffmpeg_read(), which requires FFmpeg.
+    """
+    audio, sr = _decode_wav_file(filepath)
+    return {"array": audio, "sampling_rate": sr}
 
 
 class AudioProcessor:
@@ -161,8 +188,7 @@ class AudioProcessor:
             if progress_callback:
                 progress_callback(20)
             
-            # Audio input is restricted to WAV files, so scipy is sufficient
-            # and avoids the heavier librosa/numba runtime stack.
+            # Audio input is WAV; decode via scipy then soundfile fallback (no FFmpeg).
             y, sr = _load_wav_for_opensmile(filepath)
             
             if progress_callback:

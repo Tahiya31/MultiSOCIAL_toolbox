@@ -141,6 +141,7 @@ hiddenimports = [
     "mediapipe.python.solutions.pose",
     "mediapipe.python.solutions.pose_connections",
     "opensmile",
+    "soundfile",
     "transformers",
 ]
 
@@ -160,6 +161,7 @@ binaries = collect_dynamic_libs("mediapipe")
 binaries += collect_dynamic_libs("audresample")
 binaries += collect_dynamic_libs("opensmile")
 binaries += collect_dynamic_libs("audinterface")
+binaries += collect_dynamic_libs("soundfile")
 
 if IS_WINDOWS:
     _required_runtime_dlls = ["msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"]
