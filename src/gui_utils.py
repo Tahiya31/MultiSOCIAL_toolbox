@@ -357,8 +357,8 @@ def resolved_converted_audio_folder(folder_path):
 
 
 def transcripts_output_folder(folder_path):
-    """Text transcripts go next to WAVs: ``…/converted_audio/transcripts``."""
-    return os.path.join(resolved_converted_audio_folder(folder_path), "transcripts")
+    """Transcript text files live at the dataset root beside ``audio_features``."""
+    return os.path.join(resolved_dataset_root(folder_path), "transcripts")
 
 
 def get_audio_files_for_processing(folder_path, extensions):

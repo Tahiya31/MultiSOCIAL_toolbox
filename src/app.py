@@ -27,15 +27,26 @@ import runtime_services
 from gui_utils import Theme
 from ui_components import GradientPanel, GlassPanel, ElevatedLogoPanel, TooltipButton, CustomGauge
 
-# Keep packaged import smoke test lightweight by avoiding heavy ML/native
-# imports until the full app actually runs.
+_PoseProcessorCls = None
+
+
+def _get_pose_processor_class():
+    """Load pose/Mediapipe only when the user starts a video step (startup stays light on Windows)."""
+    global _PoseProcessorCls
+    if os.environ.get("MULTISOCIAL_IMPORT_SMOKE_TEST") == "1":
+        return None
+    if _PoseProcessorCls is None:
+        from pose import PoseProcessor
+
+        _PoseProcessorCls = PoseProcessor
+    return _PoseProcessorCls
+
+
+# Keep packaged import smoke test lightweight by avoiding heavy ML/native imports.
 if os.environ.get("MULTISOCIAL_IMPORT_SMOKE_TEST") != "1":
-    # Resolve FFmpeg before torch/torchaudio so Windows DLL directories are registered early.
     gui_utils.ensure_ffmpeg_available()
-    from pose import PoseProcessor
     from audio import AudioProcessor
 else:
-    PoseProcessor = None
     AudioProcessor = None
 
 # Enable High DPI on Windows
@@ -792,40 +803,37 @@ class VideoToWavConverter(wx.Frame):
             return
     
         workspace_root = gui_utils.resolved_dataset_root(folder_path)
-        converted_audio_dir = gui_utils.resolved_converted_audio_folder(folder_path)
+        converted_audio_dir = os.path.join(workspace_root, "converted_audio")
 
-        # Standard layout: converted WAVs under converted_audio/; transcripts alongside those WAVs.
-        self.converted_audio_folder = converted_audio_dir
+        # Canonical paths (actually created only when the folder has matching media).
         self.extracted_pose_folder = os.path.join(workspace_root, "pose_features")
         self.embedded_pose_folder = os.path.join(workspace_root, "embedded_pose")
         self.extracted_audio_folder = os.path.join(workspace_root, "audio_features")
         self.extracted_transcripts_folder = gui_utils.transcripts_output_folder(folder_path)
 
-        # Videos live at the dataset root (not inside converted_audio/)
         video_files = gui_utils.get_files_from_folder(workspace_root, self.VIDEO_EXTENSIONS)
         if video_files:
+            self.converted_audio_folder = converted_audio_dir
             try:
                 os.makedirs(converted_audio_dir, exist_ok=True)
-                for folder in [self.extracted_pose_folder, self.embedded_pose_folder]:
-                    os.makedirs(folder, exist_ok=True)
+                os.makedirs(self.extracted_pose_folder, exist_ok=True)
+                os.makedirs(self.embedded_pose_folder, exist_ok=True)
             except (OSError, PermissionError) as e:
-                # Can't create pose folders; keep converted_audio path for WAV/transcript workflows
+                self.converted_audio_folder = None
                 self.extracted_pose_folder = None
                 self.embedded_pose_folder = None
                 wx.CallAfter(wx.MessageBox, f"Cannot create output folders: {e}", "Warning", wx.OK | wx.ICON_WARNING)
         else:
+            self.converted_audio_folder = None
             self.extracted_pose_folder = None
             self.embedded_pose_folder = None
 
-        # WAV files may sit at dataset root or under converted_audio/
         audio_files = gui_utils.get_audio_files_for_processing(folder_path, self.AUDIO_EXTENSIONS)
         if audio_files:
             try:
-                os.makedirs(converted_audio_dir, exist_ok=True)
                 for folder in [self.extracted_audio_folder, self.extracted_transcripts_folder]:
                     os.makedirs(folder, exist_ok=True)
             except (OSError, PermissionError) as e:
-                # Can't create folders, disable audio processing
                 self.extracted_audio_folder = None
                 self.extracted_transcripts_folder = None
                 wx.CallAfter(wx.MessageBox, f"Cannot create output folders: {e}", "Warning", wx.OK | wx.ICON_WARNING)
@@ -1021,26 +1029,55 @@ class VideoToWavConverter(wx.Frame):
             wx.MessageBox("No video files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
             return
 
-        # Run in a separate thread to keep UI responsive
-        thread = threading.Thread(target=self.extract_pose_features_batch, args=(video_files,))
+        if not self.extracted_pose_folder:
+            wx.MessageBox(
+                "Pose output folder unavailable. Ensure the dataset folder contains video files.",
+                "Error",
+                wx.OK | wx.ICON_ERROR,
+            )
+            return
+
+        PoseCls = _get_pose_processor_class()
+        if PoseCls is None:
+            wx.MessageBox("Pose extraction is unavailable in this launch mode.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        stride_val = 1
+        try:
+            stride_val = max(1, int(self.frameStrideInput.GetValue()))
+        except Exception:
+            stride_val = 1
+        downscale_to = (1280, 720) if (hasattr(self, "downscaleCheckbox") and self.downscaleCheckbox.GetValue()) else None
+
+        try:
+            pose_processor = PoseCls(
+                self.extracted_pose_folder,
+                status_callback=self.set_status_message,
+                frame_threshold=self.frameThresholdInput.GetValue(),
+                frame_stride=stride_val,
+                downscale_to=downscale_to,
+            )
+            pose_processor.set_multi_person_mode(self.multiPersonCheckbox.GetValue())
+        except Exception as e:
+            wx.MessageBox(
+                (
+                    "Could not load pose processing (Mediapipe). On Windows this is often missing Visual C++ "
+                    "runtime DLLs.\n\n"
+                    f"{e}"
+                ),
+                "Pose Engine Error",
+                wx.OK | wx.ICON_ERROR,
+            )
+            return
+
+        thread = threading.Thread(target=self.extract_pose_features_batch, args=(video_files, pose_processor))
         thread.start()
 
-    def extract_pose_features_batch(self, video_files):
+    def extract_pose_features_batch(self, video_files, pose_processor):
         """Batch process all video files to extract pose features."""
         self._process_running = True
         try:
             total_files = len(video_files)
-            
-            # Read processing options
-            stride_val = 1
-            try:
-                stride_val = max(1, int(self.frameStrideInput.GetValue()))
-            except Exception:
-                stride_val = 1
-            downscale_to = (1280, 720) if (hasattr(self, 'downscaleCheckbox') and self.downscaleCheckbox.GetValue()) else None
-
-            pose_processor = PoseProcessor(self.extracted_pose_folder, status_callback=self.set_status_message, frame_threshold=self.frameThresholdInput.GetValue(), frame_stride=stride_val, downscale_to=downscale_to)
-            pose_processor.set_multi_person_mode(self.multiPersonCheckbox.GetValue())
 
             for index, video_file in enumerate(video_files, start=1):
                 self.set_status_message(f"📸 Extracting pose from: {os.path.basename(video_file)}")
@@ -1063,23 +1100,53 @@ class VideoToWavConverter(wx.Frame):
         self.ensure_output_folders(folder_path)
         workspace_root = gui_utils.resolved_dataset_root(folder_path)
         video_files = gui_utils.get_files_from_folder(workspace_root, (".mp4", ".avi", ".mov"))
-        
-      
+
+        if not video_files:
+            wx.MessageBox("No video files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        if not self.extracted_pose_folder or not self.embedded_pose_folder:
+            wx.MessageBox(
+                "Pose output folders unavailable. Ensure the dataset folder contains video files.",
+                "Error",
+                wx.OK | wx.ICON_ERROR,
+            )
+            return
+
+        PoseCls = _get_pose_processor_class()
+        if PoseCls is None:
+            wx.MessageBox("Pose embedding is unavailable in this launch mode.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
         stride_val = 1
         try:
             stride_val = max(1, int(self.frameStrideInput.GetValue()))
         except Exception:
             stride_val = 1
-        downscale_to = (1280, 720) if (hasattr(self, 'downscaleCheckbox') and self.downscaleCheckbox.GetValue()) else None
+        downscale_to = (1280, 720) if (hasattr(self, "downscaleCheckbox") and self.downscaleCheckbox.GetValue()) else None
 
-        pose_processor = PoseProcessor(output_csv_folder=self.extracted_pose_folder, output_video_folder=self.embedded_pose_folder, status_callback=self.set_status_message, frame_threshold=self.frameThresholdInput.GetValue(), frame_stride=stride_val, downscale_to=downscale_to)
-        pose_processor.set_multi_person_mode(self.multiPersonCheckbox.GetValue())
-        
-        if not video_files:
-            wx.MessageBox("No video files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
+        try:
+            pose_processor = PoseCls(
+                output_csv_folder=self.extracted_pose_folder,
+                output_video_folder=self.embedded_pose_folder,
+                status_callback=self.set_status_message,
+                frame_threshold=self.frameThresholdInput.GetValue(),
+                frame_stride=stride_val,
+                downscale_to=downscale_to,
+            )
+            pose_processor.set_multi_person_mode(self.multiPersonCheckbox.GetValue())
+        except Exception as e:
+            wx.MessageBox(
+                (
+                    "Could not load pose processing (Mediapipe). On Windows this is often missing Visual C++ "
+                    "runtime DLLs.\n\n"
+                    f"{e}"
+                ),
+                "Pose Engine Error",
+                wx.OK | wx.ICON_ERROR,
+            )
             return
 
-        # Run in a separate thread to keep UI responsive
         thread = threading.Thread(target=self.embed_pose_batch, args=(video_files, pose_processor))
         thread.start()
 
@@ -1167,7 +1234,7 @@ class VideoToWavConverter(wx.Frame):
 
         if not self.extracted_transcripts_folder:
             wx.MessageBox(
-                "Cannot create or resolve the transcript output folder (converted_audio/transcripts). "
+                "Cannot create or resolve the transcript output folder (<dataset>/transcripts). "
                 "Check folder permissions or pick your dataset folder again.",
                 "Error",
                 wx.OK | wx.ICON_ERROR,

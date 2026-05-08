@@ -839,7 +839,7 @@ class AudioProcessor:
         if self.output_transcripts_folder is None:
             raise ValueError(
                 "Transcripts output folder is not configured. "
-                "The app should write under …/converted_audio/transcripts — select your dataset folder again."
+                "The transcript output folder is not configured (<dataset>/transcripts). Select your dataset folder again."
             )
 
         total_files = len(audio_files)
