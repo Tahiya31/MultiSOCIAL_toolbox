@@ -19,6 +19,9 @@ from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 from runtime_services import DIARIZATION_MODEL_ID
 
 
+_SCIPY_WAV_EXTENSIONS = {".wav", ".wave"}
+
+
 def _pcm_audio_to_mono_float32(audio, sampling_rate):
     """Normalize arbitrary PCM/float waveform to mono float32 in [-1, 1] (approximate for float clips)."""
     audio = np.asarray(audio)
@@ -35,24 +38,27 @@ def _pcm_audio_to_mono_float32(audio, sampling_rate):
     return audio, int(sampling_rate)
 
 
-def _decode_wav_file(filepath):
+def _decode_audio_file(filepath):
     """
-    Decode WAV to mono float32 without FFmpeg.
+    Decode a supported audio file to mono float32 without FFmpeg.
 
     Hugging Face ASR passes string paths through ffmpeg_read(bytes(...)); SciPy fails on some
-    WAV variants (e.g. certain extensible headers). libsndfile via soundfile covers those cases.
+    WAV variants (e.g. certain extensible headers). libsndfile via soundfile covers those cases
+    and also supports additional low-risk formats like AIFF, FLAC, CAF, AU, and SND.
     """
     filepath = os.path.normpath(os.path.abspath(filepath))
     if not os.path.isfile(filepath):
         raise FileNotFoundError(f"Audio file not found: {filepath}")
 
+    ext = os.path.splitext(filepath)[1].lower()
     errors = []
 
-    try:
-        sr, audio = wavfile.read(filepath)
-        return _pcm_audio_to_mono_float32(audio, sr)
-    except Exception as e:
-        errors.append(f"scipy.io.wavfile: {e}")
+    if ext in _SCIPY_WAV_EXTENSIONS:
+        try:
+            sr, audio = wavfile.read(filepath)
+            return _pcm_audio_to_mono_float32(audio, sr)
+        except Exception as e:
+            errors.append(f"scipy.io.wavfile: {e}")
 
     try:
         import soundfile as sf
@@ -60,20 +66,20 @@ def _decode_wav_file(filepath):
         audio, sr = sf.read(filepath, dtype="float32", always_2d=False)
         return _pcm_audio_to_mono_float32(audio, sr)
     except ImportError:
-        errors.append("soundfile: not installed (required for some WAV formats on Windows)")
+        errors.append("soundfile: not installed (required for non-WAV inputs and some WAV formats on Windows)")
     except Exception as e:
         errors.append(f"soundfile: {e}")
 
     raise RuntimeError(
-        "Could not decode this WAV without FFmpeg-based loaders.\n\n"
+        f"Could not decode this audio file ({ext or 'unknown extension'}) without FFmpeg-based loaders.\n\n"
         + "\n".join(errors)
-        + "\n\nTry re-exporting as 16-bit PCM WAV, or ensure the 'soundfile' dependency is bundled."
+        + "\n\nTry re-exporting as WAV, AIFF, or FLAC, or ensure the 'soundfile' dependency is bundled."
     )
 
 
-def _load_wav_for_opensmile(filepath):
-    """Load a WAV file into a mono float32 array suitable for OpenSMILE."""
-    return _decode_wav_file(filepath)
+def _load_audio_for_opensmile(filepath):
+    """Load a supported audio file into a mono float32 array suitable for OpenSMILE."""
+    return _decode_audio_file(filepath)
 
 
 def _whisper_pipeline_audio_input(filepath):
@@ -82,7 +88,7 @@ def _whisper_pipeline_audio_input(filepath):
 
     A string path makes transformers read raw bytes then call ffmpeg_read(), which requires FFmpeg.
     """
-    audio, sr = _decode_wav_file(filepath)
+    audio, sr = _decode_audio_file(filepath)
     return {"array": audio, "sampling_rate": sr}
 
 
@@ -188,8 +194,8 @@ class AudioProcessor:
             if progress_callback:
                 progress_callback(20)
             
-            # Audio input is WAV; decode via scipy then soundfile fallback (no FFmpeg).
-            y, sr = _load_wav_for_opensmile(filepath)
+            # Audio input is decoded via scipy for WAV and soundfile/libsndfile otherwise.
+            y, sr = _load_audio_for_opensmile(filepath)
             
             if progress_callback:
                 progress_callback(40)

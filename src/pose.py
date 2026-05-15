@@ -401,6 +401,11 @@ class PoseProcessor:
     def extract_pose_features(self, video_path, progress_callback=None):
         """Extract pose features from video, saving one CSV per person."""
         cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise RuntimeError(
+                f"Could not open video for pose extraction: {video_path}. "
+                "This container or codec may not be supported by the current OpenCV backend on this machine."
+            )
         raw_frame_idx = 0
         frame_idx = 0  # processed frame index (after stride)
         keypoints_by_person = {} # Dictionary to store keypoints per person
@@ -531,6 +536,11 @@ class PoseProcessor:
             return None
 
         cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise RuntimeError(
+                f"Could not open video for pose embedding: {video_path}. "
+                "This container or codec may not be supported by the current OpenCV backend on this machine."
+            )
         fps = int(cap.get(cv2.CAP_PROP_FPS))
         orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))

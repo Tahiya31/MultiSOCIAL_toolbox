@@ -141,10 +141,10 @@ Once launched, MultiSOCIAL Toolbox application looks like this.
 
 <img src="./assets/ApplicationUI.png" width="350">
 
-The toolbox takes two types of input: audio (.wav file) and video (.mp4, .avi, .mov, .mkv files).
+The toolbox takes two types of input: audio (`.wav`, `.wave`, `.aiff`, `.aif`, `.aifc`, `.flac`, `.caf`, `.au`, `.snd`) and video (`.mp4`, `.avi`, `.mov`, `.mkv`, `.m4v`).
 
 ## Video file
-**Convert video to audio** If you have a video file of human interaction and would like to convert it to a audio file in .wav format, this step is for you.
+**Convert video to audio** If you have a supported video file of human interaction and would like to convert it to an audio file in `.wav` format, this step is for you.
   * Use the ``Browse`` button to locate your input video file.
   * Then press **Convert video to audio** button.
   * Once the .wav file is ready, a dialogue box will let you know the output file is ready.
@@ -188,7 +188,7 @@ After extracting pose CSVs and generating embedded pose videos, you can run **Ve
 
 ## Audio file
 **Extract Audio Features** If you are interested in extracting speech features from human speech during interaction, this step uses [OpenSMILE](https://audeering.github.io/opensmile-python/) to achieve this. This step currently uses predetermined feature sets (ComParE 2016) from OpenSMILE. For more details on OpenSMILE, please check their official [documentation page](https://audeering.github.io/opensmile-python/).
-  * Use the ``Browse`` button to locate your input audio file. You can select the audio located in **converted_audio** folder as well.
+  * Use the ``Browse`` button to locate your supported input audio file. You can select audio located in **converted_audio** as well.
   * Then press **Extract Audio Features** button.
   * Once the audio features are extracted, a dialogue box will let you know the output file is ready.
 

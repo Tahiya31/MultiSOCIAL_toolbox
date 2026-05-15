@@ -68,8 +68,11 @@ class VideoToWavConverter(wx.Frame):
         self._process_running = False
         self._diarization_install_running = False
         # File extensions constants
-        self.VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv")
-        self.AUDIO_EXTENSIONS = (".wav",)
+        self.VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv", ".m4v")
+        self.AUDIO_EXTENSIONS = (".wav", ".wave", ".aiff", ".aif", ".aifc", ".flac", ".caf", ".au", ".snd")
+
+    def _format_supported_extensions(self, extensions):
+        return ", ".join(extensions)
         
     def _init_ui(self):
         pnl = GradientPanel(self)
@@ -237,7 +240,7 @@ class VideoToWavConverter(wx.Frame):
         self.convertBtn, hbox_convert = TooltipButton.create_with_icon(
             self.videoPanel, 
             'Convert video to audio', 
-            'Converts video files (.mp4, .avi, .mov, .mkv) to audio files (.wav) for further processing',
+            f'Converts video files ({self._format_supported_extensions(self.VIDEO_EXTENSIONS)}) to audio files (.wav) for further processing',
             font=button_font,
             handler=self.on_convert
         )
@@ -309,7 +312,7 @@ class VideoToWavConverter(wx.Frame):
         self.extractAudioFeaturesBtn, hbox_extract_audio = TooltipButton.create_with_icon(
             self.audioPanel,
             'Extract Audio Features',
-            'Extracts acoustic features from audio files (.wav) including MFCC, spectral features, and prosodic characteristics.',
+            f'Extracts acoustic features from supported audio files ({self._format_supported_extensions(self.AUDIO_EXTENSIONS)}) including MFCC, spectral features, and prosodic characteristics.',
             font=button_font,
             handler=self.on_extract_audio_features
         )
@@ -318,7 +321,7 @@ class VideoToWavConverter(wx.Frame):
         self.extractTranscriptsBtn, hbox_extract_transcripts = TooltipButton.create_with_icon(
             self.audioPanel,
             'Extract Transcripts',
-            'Converts speech in audio files (.wav) to text transcripts using automatic speech recognition (ASR) technology.',
+            f'Converts speech in supported audio files ({self._format_supported_extensions(self.AUDIO_EXTENSIONS)}) to text transcripts using automatic speech recognition (ASR) technology.',
             font=button_font,
             handler=self.on_extract_transcripts
         )
@@ -414,7 +417,9 @@ class VideoToWavConverter(wx.Frame):
         else:
             self.videoPanel.Hide()
             self.audioPanel.Show()
-            self.folderCaption.SetLabel("Select a folder containing AUDIO (.wav) files")
+            self.folderCaption.SetLabel(
+                f"Select a folder containing AUDIO files ({self._format_supported_extensions(self.AUDIO_EXTENSIONS)})"
+            )
             self.videoModeBtn.Enable(True)
             self.audioModeBtn.Enable(False)
             # Underline: show under audio, hide under video
@@ -898,7 +903,7 @@ class VideoToWavConverter(wx.Frame):
         os.makedirs(worst_frames_root, exist_ok=True)
 
         # Collect embedded videos and match CSVs by basename
-        embedded_videos = gui_utils.get_files_from_folder(self.embedded_pose_folder, (".mp4", ".avi", ".mov"))
+        embedded_videos = gui_utils.get_files_from_folder(self.embedded_pose_folder, self.VIDEO_EXTENSIONS)
         if not embedded_videos:
             wx.MessageBox("No embedded videos found in embedded_pose/", "Error", wx.OK | wx.ICON_ERROR)
             return
@@ -1023,7 +1028,7 @@ class VideoToWavConverter(wx.Frame):
 
         self.ensure_output_folders(folder_path)
         workspace_root = gui_utils.resolved_dataset_root(folder_path)
-        video_files = gui_utils.get_files_from_folder(workspace_root, (".mp4", ".avi"))
+        video_files = gui_utils.get_files_from_folder(workspace_root, self.VIDEO_EXTENSIONS)
         
         if not video_files:
             wx.MessageBox("No video files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
@@ -1099,7 +1104,7 @@ class VideoToWavConverter(wx.Frame):
 
         self.ensure_output_folders(folder_path)
         workspace_root = gui_utils.resolved_dataset_root(folder_path)
-        video_files = gui_utils.get_files_from_folder(workspace_root, (".mp4", ".avi", ".mov"))
+        video_files = gui_utils.get_files_from_folder(workspace_root, self.VIDEO_EXTENSIONS)
 
         if not video_files:
             wx.MessageBox("No video files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
@@ -1170,7 +1175,7 @@ class VideoToWavConverter(wx.Frame):
     
 
     def on_extract_audio_features(self, event):
-        """Extract audio features from all WAV files in the folder."""
+        """Extract audio features from all supported audio files in the folder."""
         folder_path = self.get_selected_folder_path()
         if not folder_path:
             wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
@@ -1180,7 +1185,7 @@ class VideoToWavConverter(wx.Frame):
         audio_files = gui_utils.get_audio_files_for_processing(folder_path, self.AUDIO_EXTENSIONS)
 
         if not audio_files:
-            wx.MessageBox("No WAV files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
+            wx.MessageBox("No supported audio files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
             return
 
         if not self.extracted_audio_folder:
@@ -1219,7 +1224,7 @@ class VideoToWavConverter(wx.Frame):
 
 
     def on_extract_transcripts(self, event):
-        """Extract transcripts from all WAV files in the folder."""
+        """Extract transcripts from all supported audio files in the folder."""
         folder_path = self.get_selected_folder_path()
         if not folder_path:
             wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
@@ -1229,7 +1234,7 @@ class VideoToWavConverter(wx.Frame):
         audio_files = gui_utils.get_audio_files_for_processing(folder_path, self.AUDIO_EXTENSIONS)
 
         if not audio_files:
-            wx.MessageBox("No WAV files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
+            wx.MessageBox("No supported audio files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
             return
 
         if not self.extracted_transcripts_folder:
