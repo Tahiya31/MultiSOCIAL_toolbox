@@ -204,6 +204,9 @@ __marimo__/
 
 # MacOS
 .DS_Store
+.RData
+.Rhistory
+.Rapp.history
 
 # Virtual environment
 venv/
