@@ -13,7 +13,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # Make sure the system uses the GPU
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 
-# Third-party libraries (assumed pre-installed via requirements.txt)
+# Third-party libraries (assumed pre-installed via the project package metadata)
 import ffmpeg
 import wx
 import unicodedata
@@ -22,17 +22,37 @@ from dotenv import load_dotenv
 # Load environment variables from .env file if present
 load_dotenv()
 
-# Import the core processing classes
-from pose import PoseProcessor
-from audio import AudioProcessor
 import gui_utils
+import runtime_services
 from gui_utils import Theme
 from ui_components import GradientPanel, GlassPanel, ElevatedLogoPanel, TooltipButton, CustomGauge
+
+_PoseProcessorCls = None
+
+
+def _get_pose_processor_class():
+    """Load pose/Mediapipe only when the user starts a video step (startup stays light on Windows)."""
+    global _PoseProcessorCls
+    if os.environ.get("MULTISOCIAL_IMPORT_SMOKE_TEST") == "1":
+        return None
+    if _PoseProcessorCls is None:
+        from pose import PoseProcessor
+
+        _PoseProcessorCls = PoseProcessor
+    return _PoseProcessorCls
+
+
+# Keep packaged import smoke test lightweight by avoiding heavy ML/native imports.
+if os.environ.get("MULTISOCIAL_IMPORT_SMOKE_TEST") != "1":
+    gui_utils.ensure_ffmpeg_available()
+    from audio import AudioProcessor
+else:
+    AudioProcessor = None
 
 # Enable High DPI on Windows
 gui_utils.setup_high_dpi()
 
-## All dependencies are expected to be installed ahead of time via requirements.txt
+## All dependencies are expected to be installed ahead of time via the project package metadata.
 
 class VideoToWavConverter(wx.Frame):
     def __init__(self, *args, **kw):
@@ -46,9 +66,13 @@ class VideoToWavConverter(wx.Frame):
         self._baseline_size = None  # will be captured on first resize to drive responsive scaling
         # Track if a background process is running to prevent UI resets during tab switches
         self._process_running = False
+        self._diarization_install_running = False
         # File extensions constants
-        self.VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv")
-        self.AUDIO_EXTENSIONS = (".wav",)
+        self.VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv", ".m4v")
+        self.AUDIO_EXTENSIONS = (".wav", ".wave", ".aiff", ".aif", ".aifc", ".flac", ".caf", ".au", ".snd")
+
+    def _format_supported_extensions(self, extensions):
+        return ", ".join(extensions)
         
     def _init_ui(self):
         pnl = GradientPanel(self)
@@ -97,7 +121,7 @@ class VideoToWavConverter(wx.Frame):
         top_box = wx.BoxSizer(wx.HORIZONTAL)
         
         # Logo
-        logo_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "MultiSOCIAL_logo.png")
+        logo_path = runtime_services.resource_path("assets", "MultiSOCIAL_logo.png")
         logo_image = wx.Image(logo_path, wx.BITMAP_TYPE_ANY)
         logo_image = logo_image.Scale(logo_size, logo_size, wx.IMAGE_QUALITY_HIGH)
         logo_bmp = wx.Bitmap(logo_image)
@@ -216,7 +240,7 @@ class VideoToWavConverter(wx.Frame):
         self.convertBtn, hbox_convert = TooltipButton.create_with_icon(
             self.videoPanel, 
             'Convert video to audio', 
-            'Converts video files (.mp4, .avi, .mov, .mkv) to audio files (.wav) for further processing',
+            f'Converts video files ({self._format_supported_extensions(self.VIDEO_EXTENSIONS)}) to audio files (.wav) for further processing',
             font=button_font,
             handler=self.on_convert
         )
@@ -262,11 +286,25 @@ class VideoToWavConverter(wx.Frame):
         audio_sizer.Add(self.placeholderAudioLabel, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
         
         # Diarization
-        self.diarizationCheckbox = wx.CheckBox(self.audioPanel, label="Enable speaker diarization (requires Hugging Face token)")
+        self.diarizationCheckbox = wx.CheckBox(self.audioPanel, label="Enable speaker diarization")
         self.diarizationCheckbox.SetFont(Theme.get_font(12))
         self.diarizationCheckbox.SetForegroundColour(Theme.COLOR_TEXT_WHITE)
         gui_utils.style_checkbox_for_glass(self.diarizationCheckbox)
         audio_sizer.Add(self.diarizationCheckbox, flag=wx.ALIGN_CENTER|wx.ALL, border=6)
+
+        self.diarizationStatusLabel = gui_utils.create_transparent_text(
+            self.audioPanel,
+            label="Diarization status: checking optional component...",
+            style=wx.ALIGN_CENTER,
+        )
+        self.diarizationStatusLabel.SetFont(Theme.get_font(11))
+        self.diarizationStatusLabel.SetForegroundColour(Theme.COLOR_TEXT_WHITE)
+        audio_sizer.Add(self.diarizationStatusLabel, flag=wx.ALIGN_CENTER|wx.LEFT|wx.RIGHT|wx.BOTTOM, border=8)
+
+        self.installDiarizationBtn = wx.Button(self.audioPanel, label="Install Complete Toolbox")
+        self.installDiarizationBtn.SetFont(Theme.get_font(11, bold=True))
+        self.installDiarizationBtn.Bind(wx.EVT_BUTTON, self.on_install_diarization)
+        audio_sizer.Add(self.installDiarizationBtn, flag=wx.ALIGN_CENTER|wx.BOTTOM, border=10)
         
         # Buttons
         button_font = Theme.get_font(16)
@@ -274,7 +312,7 @@ class VideoToWavConverter(wx.Frame):
         self.extractAudioFeaturesBtn, hbox_extract_audio = TooltipButton.create_with_icon(
             self.audioPanel,
             'Extract Audio Features',
-            'Extracts acoustic features from audio files (.wav) including MFCC, spectral features, and prosodic characteristics.',
+            f'Extracts acoustic features from supported audio files ({self._format_supported_extensions(self.AUDIO_EXTENSIONS)}) including MFCC, spectral features, and prosodic characteristics.',
             font=button_font,
             handler=self.on_extract_audio_features
         )
@@ -283,7 +321,7 @@ class VideoToWavConverter(wx.Frame):
         self.extractTranscriptsBtn, hbox_extract_transcripts = TooltipButton.create_with_icon(
             self.audioPanel,
             'Extract Transcripts',
-            'Converts speech in audio files (.wav) to text transcripts using automatic speech recognition (ASR) technology.',
+            f'Converts speech in supported audio files ({self._format_supported_extensions(self.AUDIO_EXTENSIONS)}) to text transcripts using automatic speech recognition (ASR) technology.',
             font=button_font,
             handler=self.on_extract_transcripts
         )
@@ -333,11 +371,11 @@ class VideoToWavConverter(wx.Frame):
         min_h = min(base_h, max_h)
         self.SetSizeHints(min_w, min_h, max_w, max_h)
         self.SetSize((min_w, min_h))
-        self.SetTitle('MultiSOCIAL Toolbox')
+        self.SetTitle(runtime_services.get_app_title())
         
         # Set Window Icon
         try:
-            logo_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "MultiSOCIAL_logo.png")
+            logo_path = runtime_services.resource_path("assets", "MultiSOCIAL_logo.png")
             if os.path.exists(logo_path):
                 icon = wx.Icon()
                 icon.CopyFromBitmap(wx.Bitmap(logo_path, wx.BITMAP_TYPE_ANY))
@@ -349,8 +387,9 @@ class VideoToWavConverter(wx.Frame):
         
         self.active_mode = 'video'
         # Try to load token from environment variable first
-        self.hf_token = os.getenv("HF_TOKEN")
+        self.hf_token = runtime_services.load_hf_token()
         self.switch_mode('video')
+        self.refresh_diarization_state()
         self._update_panel_sizes()
         self.update_buttons_enabled()
         try:
@@ -378,7 +417,9 @@ class VideoToWavConverter(wx.Frame):
         else:
             self.videoPanel.Hide()
             self.audioPanel.Show()
-            self.folderCaption.SetLabel("Select a folder containing AUDIO (.wav) files")
+            self.folderCaption.SetLabel(
+                f"Select a folder containing AUDIO files ({self._format_supported_extensions(self.AUDIO_EXTENSIONS)})"
+            )
             self.videoModeBtn.Enable(True)
             self.audioModeBtn.Enable(False)
             # Underline: show under audio, hide under video
@@ -404,8 +445,74 @@ class VideoToWavConverter(wx.Frame):
         self.update_buttons_enabled()
 
     def on_folder_changed(self, event):
-        self.ensure_output_folders(self.folderPicker.GetPath())
+        normalized_path = self.get_selected_folder_path()
+        if normalized_path and normalized_path != self.folderPicker.GetPath():
+            try:
+                self.folderPicker.SetPath(normalized_path)
+            except Exception:
+                pass
+        self.ensure_output_folders(normalized_path)
         self.update_buttons_enabled()
+
+    def get_selected_folder_path(self):
+        return gui_utils.normalize_path(self.folderPicker.GetPath())
+
+    def refresh_diarization_state(self):
+        self.diarizationFeatureState = runtime_services.get_diarization_feature_state()
+        if not hasattr(self, 'diarizationCheckbox'):
+            return
+
+        state = self.diarizationFeatureState
+        status = state["status"]
+        installed = bool(state["installed"])
+        can_self_install = bool(state["can_self_install"])
+        last_error = str(state.get("last_error") or "").strip()
+
+        if installed:
+            checkbox_label = "Enable speaker diarization (installed; requires Hugging Face token)"
+            status_label = "Diarization status: installed and ready."
+            button_label = "Optional Component Installed"
+            button_enabled = False
+        elif status == "installing":
+            checkbox_label = "Enable speaker diarization (optional add-on)"
+            status_label = "Diarization status: installing optional component..."
+            button_label = "Installing Optional Component..."
+            button_enabled = False
+        elif status == "failed":
+            checkbox_label = "Enable speaker diarization (optional add-on)"
+            detail = f" Last error: {last_error}" if last_error else ""
+            if can_self_install:
+                status_label = f"Diarization status: install failed.{detail}"
+                button_label = "Retry Complete Install"
+                button_enabled = True
+            else:
+                status_label = f"Diarization status: not available in this build.{detail}"
+                button_label = "Use a Complete Build"
+                button_enabled = False
+        else:
+            checkbox_label = "Enable speaker diarization (optional add-on)"
+            if can_self_install:
+                status_label = "Diarization status: not installed. Click Install Complete Toolbox for one-click setup."
+                button_label = "Install Complete Toolbox"
+                button_enabled = True
+            else:
+                status_label = "Diarization status: not installed in this build. Use a Complete installer."
+                button_label = "Use a Complete Build"
+                button_enabled = False
+
+        self.diarizationCheckbox.SetLabel(checkbox_label)
+        if not installed and status != "installing":
+            self.diarizationCheckbox.SetValue(False)
+        self.diarizationStatusLabel.SetLabel(status_label)
+        self.installDiarizationBtn.SetLabel(button_label)
+        self.installDiarizationBtn.Enable(button_enabled and not self._diarization_install_running)
+
+        try:
+            self.audioPanel.Layout()
+            self.mainPanel.Layout()
+            self.Layout()
+        except Exception:
+            pass
 
     def _update_panel_sizes(self):
         # Keep panels at a reasonable width fraction of the frame
@@ -437,15 +544,16 @@ class VideoToWavConverter(wx.Frame):
             pass
 
     def update_buttons_enabled(self):
-        folder_path = self.folderPicker.GetPath()
+        folder_path = self.get_selected_folder_path()
         has_folder = bool(folder_path)
         # Detect files
         video_files = []
         audio_files = []
         try:
             if has_folder:
-                video_files = gui_utils.get_files_from_folder(folder_path, self.VIDEO_EXTENSIONS)
-                audio_files = gui_utils.get_files_from_folder(folder_path, self.AUDIO_EXTENSIONS)
+                workspace_root = gui_utils.resolved_dataset_root(folder_path)
+                video_files = gui_utils.get_files_from_folder(workspace_root, self.VIDEO_EXTENSIONS)
+                audio_files = gui_utils.get_audio_files_for_processing(folder_path, self.AUDIO_EXTENSIONS)
         except Exception:
             pass
         # Video buttons
@@ -505,6 +613,12 @@ class VideoToWavConverter(wx.Frame):
                 self.multiPersonCheckbox.SetFont(self._scale_font(14, scale))
             if hasattr(self, 'diarizationCheckbox') and self.diarizationCheckbox:
                 self.diarizationCheckbox.SetFont(self._scale_font(12, scale))
+            if hasattr(self, 'diarizationStatusLabel') and self.diarizationStatusLabel:
+                self.diarizationStatusLabel.SetFont(self._scale_font(11, scale))
+                try:
+                    self.diarizationStatusLabel.Wrap(max(240, int(cur_w * 0.55)))
+                except Exception:
+                    pass
             if hasattr(self, 'frameStrideInput'):
                 self.frameStrideInput.SetFont(self._scale_font(12, scale))
             if hasattr(self, 'downscaleCheckbox'):
@@ -528,6 +642,8 @@ class VideoToWavConverter(wx.Frame):
                 self.extractTranscriptsBtn.SetFont(button_font)
             if hasattr(self, 'alignFeaturesBtn') and self.alignFeaturesBtn:
                 self.alignFeaturesBtn.SetFont(button_font)
+            if hasattr(self, 'installDiarizationBtn') and self.installDiarizationBtn:
+                self.installDiarizationBtn.SetFont(self._scale_font(11, scale))
             # Status label: scale font and wrap to panel width for responsiveness
             if hasattr(self, 'statusLabel') and self.statusLabel:
                 self.statusLabel.SetFont(self._scale_font(12, scale))
@@ -606,6 +722,65 @@ class VideoToWavConverter(wx.Frame):
         if hasattr(self, 'progress') and self.progress:
             wx.CallAfter(self.progress.SetValue, value)
 
+    def on_install_diarization(self, event):
+        state = runtime_services.get_diarization_feature_state()
+        if state["installed"]:
+            wx.MessageBox(
+                "Optional diarization support is already installed.",
+                "Installed",
+                wx.OK | wx.ICON_INFORMATION,
+            )
+            return
+
+        if not state["can_self_install"]:
+            wx.MessageBox(
+                "This build cannot install diarization in-place. Use a Complete build or rerun the installer with the complete profile.",
+                "Complete Build Required",
+                wx.OK | wx.ICON_INFORMATION,
+            )
+            return
+
+        if self._diarization_install_running:
+            return
+
+        thread = threading.Thread(target=self._install_diarization_worker, daemon=True)
+        thread.start()
+
+    def _install_diarization_worker(self):
+        self._diarization_install_running = True
+        runtime_services.update_feature_state(runtime_services.DIARIZATION_FEATURE, status="installing", requested=True, last_error="")
+        wx.CallAfter(self.refresh_diarization_state)
+        try:
+            success, error_message = runtime_services.install_diarization_support(
+                status_callback=self.set_status_message,
+                progress_callback=self.update_progress,
+            )
+            if success:
+                wx.CallAfter(self._handle_diarization_install_success)
+            else:
+                wx.CallAfter(self._handle_diarization_install_failure, error_message or "Unknown install error")
+        finally:
+            self._diarization_install_running = False
+            wx.CallAfter(self.refresh_diarization_state)
+            wx.CallAfter(self.update_progress, 0)
+
+    def _handle_diarization_install_success(self):
+        self.refresh_diarization_state()
+        self.diarizationCheckbox.SetValue(True)
+        wx.MessageBox(
+            "Optional speaker diarization support has been installed.\n\nRestarting the app is recommended before running diarized transcripts.",
+            "Install Complete",
+            wx.OK | wx.ICON_INFORMATION,
+        )
+
+    def _handle_diarization_install_failure(self, error_message):
+        self.refresh_diarization_state()
+        wx.MessageBox(
+            f"Could not install optional diarization support:\n\n{error_message}",
+            "Install Failed",
+            wx.OK | wx.ICON_ERROR,
+        )
+
     def make_overall_progress_cb(self, item_index, total_items):
         """Return a callback mapping per-item percent (0-100) to overall percent (0-100)."""
         total_items = max(1, int(total_items))
@@ -622,8 +797,9 @@ class VideoToWavConverter(wx.Frame):
 
     def ensure_output_folders(self, folder_path):
         """Ensures output directories exist inside the selected folder only when needed."""
+        folder_path = gui_utils.normalize_path(folder_path)
         # Guard against empty/invalid path
-        if not folder_path or not os.path.exists(folder_path):
+        if not folder_path or not os.path.isdir(folder_path):
             self.converted_audio_folder = None
             self.extracted_pose_folder = None
             self.embedded_pose_folder = None
@@ -631,21 +807,23 @@ class VideoToWavConverter(wx.Frame):
             self.extracted_transcripts_folder = None
             return
     
-        # Define folder paths
-        self.converted_audio_folder = os.path.join(folder_path, "converted_audio")
-        self.extracted_pose_folder = os.path.join(folder_path, "pose_features")
-        self.embedded_pose_folder = os.path.join(folder_path, "embedded_pose")
-        self.extracted_audio_folder = os.path.join(folder_path, "audio_features")
-        self.extracted_transcripts_folder = os.path.join(folder_path, "transcripts")
+        workspace_root = gui_utils.resolved_dataset_root(folder_path)
+        converted_audio_dir = os.path.join(workspace_root, "converted_audio")
 
-        # Check if the selected folder has video files
-        video_files = gui_utils.get_files_from_folder(folder_path, (".mp4", ".avi", ".mov"))
+        # Canonical paths (actually created only when the folder has matching media).
+        self.extracted_pose_folder = os.path.join(workspace_root, "pose_features")
+        self.embedded_pose_folder = os.path.join(workspace_root, "embedded_pose")
+        self.extracted_audio_folder = os.path.join(workspace_root, "audio_features")
+        self.extracted_transcripts_folder = gui_utils.transcripts_output_folder(folder_path)
+
+        video_files = gui_utils.get_files_from_folder(workspace_root, self.VIDEO_EXTENSIONS)
         if video_files:
+            self.converted_audio_folder = converted_audio_dir
             try:
-                for folder in [self.converted_audio_folder, self.extracted_pose_folder, self.embedded_pose_folder]:
-                    os.makedirs(folder, exist_ok=True)
+                os.makedirs(converted_audio_dir, exist_ok=True)
+                os.makedirs(self.extracted_pose_folder, exist_ok=True)
+                os.makedirs(self.embedded_pose_folder, exist_ok=True)
             except (OSError, PermissionError) as e:
-                # Can't create folders, disable video processing
                 self.converted_audio_folder = None
                 self.extracted_pose_folder = None
                 self.embedded_pose_folder = None
@@ -655,14 +833,12 @@ class VideoToWavConverter(wx.Frame):
             self.extracted_pose_folder = None
             self.embedded_pose_folder = None
 
-        # Check if the selected folder has audio files
-        audio_files = gui_utils.get_files_from_folder(folder_path, (".wav",))
+        audio_files = gui_utils.get_audio_files_for_processing(folder_path, self.AUDIO_EXTENSIONS)
         if audio_files:
             try:
                 for folder in [self.extracted_audio_folder, self.extracted_transcripts_folder]:
                     os.makedirs(folder, exist_ok=True)
             except (OSError, PermissionError) as e:
-                # Can't create folders, disable audio processing
                 self.extracted_audio_folder = None
                 self.extracted_transcripts_folder = None
                 wx.CallAfter(wx.MessageBox, f"Cannot create output folders: {e}", "Warning", wx.OK | wx.ICON_WARNING)
@@ -674,13 +850,14 @@ class VideoToWavConverter(wx.Frame):
       
     def on_convert(self, event):
         """Convert all videos in a selected folder to WAV."""
-        folder_path = self.folderPicker.GetPath()
+        folder_path = self.get_selected_folder_path()
         if not folder_path:
             wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
             return
 
         self.ensure_output_folders(folder_path)
-        video_files = gui_utils.get_files_from_folder(folder_path, self.VIDEO_EXTENSIONS)
+        workspace_root = gui_utils.resolved_dataset_root(folder_path)
+        video_files = gui_utils.get_files_from_folder(workspace_root, self.VIDEO_EXTENSIONS)
 
         if not video_files:
             wx.MessageBox("No video files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
@@ -709,7 +886,7 @@ class VideoToWavConverter(wx.Frame):
             self.update_progress(0)  # Reset progress bar
 
     def on_verify_consistency(self, event):
-        folder_path = self.folderPicker.GetPath()
+        folder_path = self.get_selected_folder_path()
         if not folder_path:
             wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
             return
@@ -720,13 +897,13 @@ class VideoToWavConverter(wx.Frame):
             wx.MessageBox("No pose or embedded outputs found. Extract and embed first.", "Error", wx.OK | wx.ICON_ERROR)
             return
 
-        verification_dir = os.path.join(folder_path, "verification")
+        verification_dir = os.path.join(gui_utils.resolved_dataset_root(folder_path), "verification")
         os.makedirs(verification_dir, exist_ok=True)
         worst_frames_root = os.path.join(verification_dir, "worst_frames")
         os.makedirs(worst_frames_root, exist_ok=True)
 
         # Collect embedded videos and match CSVs by basename
-        embedded_videos = gui_utils.get_files_from_folder(self.embedded_pose_folder, (".mp4", ".avi", ".mov"))
+        embedded_videos = gui_utils.get_files_from_folder(self.embedded_pose_folder, self.VIDEO_EXTENSIONS)
         if not embedded_videos:
             wx.MessageBox("No embedded videos found in embedded_pose/", "Error", wx.OK | wx.ICON_ERROR)
             return
@@ -810,7 +987,14 @@ class VideoToWavConverter(wx.Frame):
     def convert_to_wav(self, filepath, progress_callback=None):
         """Convert a single video file to WAV using ffmpeg."""
         try:
+            filepath = gui_utils.normalize_path(filepath)
+            if not os.path.isfile(filepath):
+                raise FileNotFoundError(filepath)
+            if not self.converted_audio_folder:
+                raise FileNotFoundError("converted_audio output folder is unavailable")
+            os.makedirs(self.converted_audio_folder, exist_ok=True)
             output_path = os.path.join(self.converted_audio_folder, os.path.splitext(os.path.basename(filepath))[0] + ".wav")
+            ffmpeg_cmd = gui_utils.get_ffmpeg_executable() or "ffmpeg"
         
             # Run ffmpeg conversion with progress tracking
             if progress_callback:
@@ -824,7 +1008,7 @@ class VideoToWavConverter(wx.Frame):
                 ffmpeg
                 .input(filepath)
                 .output(output_path, format='wav', acodec='pcm_s16le')
-                .run(overwrite_output=True)
+                .run(cmd=ffmpeg_cmd, overwrite_output=True)
             )
             
             if progress_callback:
@@ -833,42 +1017,72 @@ class VideoToWavConverter(wx.Frame):
             print(f"Conversion complete: {output_path}")
 
         except Exception as e:
-            wx.MessageBox(f'Error converting {filepath}: {e}', 'Error', wx.OK | wx.ICON_ERROR)
+            wx.CallAfter(wx.MessageBox, f'Error converting {filepath}: {e}', 'Error', wx.OK | wx.ICON_ERROR)
 
 
     def on_extract_features(self, event):
-        folder_path = self.folderPicker.GetPath()
+        folder_path = self.get_selected_folder_path()
         if not folder_path:
             wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
             return
 
         self.ensure_output_folders(folder_path)
-        video_files = gui_utils.get_files_from_folder(folder_path, (".mp4", ".avi"))
+        workspace_root = gui_utils.resolved_dataset_root(folder_path)
+        video_files = gui_utils.get_files_from_folder(workspace_root, self.VIDEO_EXTENSIONS)
         
         if not video_files:
             wx.MessageBox("No video files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
             return
 
-        # Run in a separate thread to keep UI responsive
-        thread = threading.Thread(target=self.extract_pose_features_batch, args=(video_files,))
+        if not self.extracted_pose_folder:
+            wx.MessageBox(
+                "Pose output folder unavailable. Ensure the dataset folder contains video files.",
+                "Error",
+                wx.OK | wx.ICON_ERROR,
+            )
+            return
+
+        PoseCls = _get_pose_processor_class()
+        if PoseCls is None:
+            wx.MessageBox("Pose extraction is unavailable in this launch mode.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        stride_val = 1
+        try:
+            stride_val = max(1, int(self.frameStrideInput.GetValue()))
+        except Exception:
+            stride_val = 1
+        downscale_to = (1280, 720) if (hasattr(self, "downscaleCheckbox") and self.downscaleCheckbox.GetValue()) else None
+
+        try:
+            pose_processor = PoseCls(
+                self.extracted_pose_folder,
+                status_callback=self.set_status_message,
+                frame_threshold=self.frameThresholdInput.GetValue(),
+                frame_stride=stride_val,
+                downscale_to=downscale_to,
+            )
+            pose_processor.set_multi_person_mode(self.multiPersonCheckbox.GetValue())
+        except Exception as e:
+            wx.MessageBox(
+                (
+                    "Could not load pose processing (Mediapipe). On Windows this is often missing Visual C++ "
+                    "runtime DLLs.\n\n"
+                    f"{e}"
+                ),
+                "Pose Engine Error",
+                wx.OK | wx.ICON_ERROR,
+            )
+            return
+
+        thread = threading.Thread(target=self.extract_pose_features_batch, args=(video_files, pose_processor))
         thread.start()
 
-    def extract_pose_features_batch(self, video_files):
+    def extract_pose_features_batch(self, video_files, pose_processor):
         """Batch process all video files to extract pose features."""
         self._process_running = True
         try:
             total_files = len(video_files)
-            
-            # Read processing options
-            stride_val = 1
-            try:
-                stride_val = max(1, int(self.frameStrideInput.GetValue()))
-            except Exception:
-                stride_val = 1
-            downscale_to = (1280, 720) if (hasattr(self, 'downscaleCheckbox') and self.downscaleCheckbox.GetValue()) else None
-
-            pose_processor = PoseProcessor(self.extracted_pose_folder, status_callback=self.set_status_message, frame_threshold=self.frameThresholdInput.GetValue(), frame_stride=stride_val, downscale_to=downscale_to)
-            pose_processor.set_multi_person_mode(self.multiPersonCheckbox.GetValue())
 
             for index, video_file in enumerate(video_files, start=1):
                 self.set_status_message(f"📸 Extracting pose from: {os.path.basename(video_file)}")
@@ -883,30 +1097,61 @@ class VideoToWavConverter(wx.Frame):
             
            
     def on_embed_poses(self, event):
-        folder_path = self.folderPicker.GetPath()
+        folder_path = self.get_selected_folder_path()
         if not folder_path:
             wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
             return
 
         self.ensure_output_folders(folder_path)
-        video_files = gui_utils.get_files_from_folder(folder_path, (".mp4", ".avi", ".mov"))
-        
-      
+        workspace_root = gui_utils.resolved_dataset_root(folder_path)
+        video_files = gui_utils.get_files_from_folder(workspace_root, self.VIDEO_EXTENSIONS)
+
+        if not video_files:
+            wx.MessageBox("No video files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        if not self.extracted_pose_folder or not self.embedded_pose_folder:
+            wx.MessageBox(
+                "Pose output folders unavailable. Ensure the dataset folder contains video files.",
+                "Error",
+                wx.OK | wx.ICON_ERROR,
+            )
+            return
+
+        PoseCls = _get_pose_processor_class()
+        if PoseCls is None:
+            wx.MessageBox("Pose embedding is unavailable in this launch mode.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
         stride_val = 1
         try:
             stride_val = max(1, int(self.frameStrideInput.GetValue()))
         except Exception:
             stride_val = 1
-        downscale_to = (1280, 720) if (hasattr(self, 'downscaleCheckbox') and self.downscaleCheckbox.GetValue()) else None
+        downscale_to = (1280, 720) if (hasattr(self, "downscaleCheckbox") and self.downscaleCheckbox.GetValue()) else None
 
-        pose_processor = PoseProcessor(output_csv_folder=self.extracted_pose_folder, output_video_folder=self.embedded_pose_folder, status_callback=self.set_status_message, frame_threshold=self.frameThresholdInput.GetValue(), frame_stride=stride_val, downscale_to=downscale_to)
-        pose_processor.set_multi_person_mode(self.multiPersonCheckbox.GetValue())
-        
-        if not video_files:
-            wx.MessageBox("No video files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
+        try:
+            pose_processor = PoseCls(
+                output_csv_folder=self.extracted_pose_folder,
+                output_video_folder=self.embedded_pose_folder,
+                status_callback=self.set_status_message,
+                frame_threshold=self.frameThresholdInput.GetValue(),
+                frame_stride=stride_val,
+                downscale_to=downscale_to,
+            )
+            pose_processor.set_multi_person_mode(self.multiPersonCheckbox.GetValue())
+        except Exception as e:
+            wx.MessageBox(
+                (
+                    "Could not load pose processing (Mediapipe). On Windows this is often missing Visual C++ "
+                    "runtime DLLs.\n\n"
+                    f"{e}"
+                ),
+                "Pose Engine Error",
+                wx.OK | wx.ICON_ERROR,
+            )
             return
 
-        # Run in a separate thread to keep UI responsive
         thread = threading.Thread(target=self.embed_pose_batch, args=(video_files, pose_processor))
         thread.start()
 
@@ -930,17 +1175,25 @@ class VideoToWavConverter(wx.Frame):
     
 
     def on_extract_audio_features(self, event):
-        """Extract audio features from all WAV files in the folder."""
-        folder_path = self.folderPicker.GetPath()
+        """Extract audio features from all supported audio files in the folder."""
+        folder_path = self.get_selected_folder_path()
         if not folder_path:
             wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
             return
 
         self.ensure_output_folders(folder_path)
-        audio_files = gui_utils.get_files_from_folder(folder_path, self.AUDIO_EXTENSIONS)
+        audio_files = gui_utils.get_audio_files_for_processing(folder_path, self.AUDIO_EXTENSIONS)
 
         if not audio_files:
-            wx.MessageBox("No WAV files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
+            wx.MessageBox("No supported audio files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        if not self.extracted_audio_folder:
+            wx.MessageBox(
+                "Cannot resolve the audio features output folder. Pick your dataset folder again or check permissions.",
+                "Error",
+                wx.OK | wx.ICON_ERROR,
+            )
             return
 
         # Initialize audio processor
@@ -971,22 +1224,49 @@ class VideoToWavConverter(wx.Frame):
 
 
     def on_extract_transcripts(self, event):
-        """Extract transcripts from all WAV files in the folder."""
-        folder_path = self.folderPicker.GetPath()
+        """Extract transcripts from all supported audio files in the folder."""
+        folder_path = self.get_selected_folder_path()
         if not folder_path:
             wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
             return
 
         self.ensure_output_folders(folder_path)
-        audio_files = gui_utils.get_files_from_folder(folder_path, self.AUDIO_EXTENSIONS)
+        audio_files = gui_utils.get_audio_files_for_processing(folder_path, self.AUDIO_EXTENSIONS)
 
         if not audio_files:
-            wx.MessageBox("No WAV files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
+            wx.MessageBox("No supported audio files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        if not self.extracted_transcripts_folder:
+            wx.MessageBox(
+                "Cannot create or resolve the transcript output folder (<dataset>/transcripts). "
+                "Check folder permissions or pick your dataset folder again.",
+                "Error",
+                wx.OK | wx.ICON_ERROR,
+            )
             return
 
         # Determine diarization preference and collect token if needed
         enable_diarization = False
         if hasattr(self, 'diarizationCheckbox') and self.diarizationCheckbox.GetValue():
+            diarization_state = runtime_services.get_diarization_feature_state()
+            if not diarization_state["installed"]:
+                if diarization_state["can_self_install"]:
+                    install_now = wx.MessageBox(
+                        "Speaker diarization is not installed yet.\n\nWould you like MultiSOCIAL Toolbox to install the optional component now?",
+                        "Install Optional Diarization",
+                        wx.YES_NO | wx.ICON_QUESTION,
+                    )
+                    if install_now == wx.YES:
+                        self.on_install_diarization(None)
+                    return
+                wx.MessageBox(
+                    "Speaker diarization is not installed in this build. Use a Complete build or rerun the installer with the complete profile.",
+                    "Diarization Not Installed",
+                    wx.OK | wx.ICON_INFORMATION,
+                )
+                return
+
             enable_diarization = True
             # Check if we already have a token (from env or previous entry)
             if not self.hf_token:
@@ -995,7 +1275,7 @@ class VideoToWavConverter(wx.Frame):
                     message=(
                         "Speaker diarization requires a Hugging Face token for pyannote.\n\n"
                         "Please see the README for setup steps. Once complete, enter your token here:\n"
-                        "(It will be saved to .env for future use)"
+                        "(It will be saved in local app settings for future use)"
                     ),
                     caption="Enter Hugging Face Token"
                 )
@@ -1003,14 +1283,11 @@ class VideoToWavConverter(wx.Frame):
                     token_val = dlg.GetValue().strip()
                     if token_val:
                         self.hf_token = token_val
-                        # Save to .env file
                         try:
-                            env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
-                            with open(env_path, "a") as f:
-                                f.write(f"\nHF_TOKEN={token_val}\n")
-                            print(f"Token saved to {env_path}")
+                            runtime_services.save_hf_token(token_val)
+                            print("Token saved to local app settings")
                         except Exception as e:
-                            print(f"Failed to save token to .env: {e}")
+                            print(f"Failed to save token to app settings: {e}")
                     else:
                         self.hf_token = None
                 dlg.Destroy()
@@ -1065,7 +1342,7 @@ class VideoToWavConverter(wx.Frame):
             self.update_progress(0)  # Reset progress bar
 
     def on_align_features(self, event):
-        folder_path = self.folderPicker.GetPath()
+        folder_path = self.get_selected_folder_path()
         if not folder_path:
             wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
             return
@@ -1079,7 +1356,7 @@ class VideoToWavConverter(wx.Frame):
             
         # We don't strictly need transcripts folder to exist yet if we are going to generate them,
         # but we need audio files.
-        audio_files = gui_utils.get_files_from_folder(folder_path, self.AUDIO_EXTENSIONS)
+        audio_files = gui_utils.get_audio_files_for_processing(folder_path, self.AUDIO_EXTENSIONS)
         if not audio_files:
             wx.MessageBox("No audio files found.", "Error", wx.OK | wx.ICON_ERROR)
             return
@@ -1161,6 +1438,20 @@ class VideoToWavConverter(wx.Frame):
             self.update_progress(0)
 
 def main():
+    if os.environ.get("MULTISOCIAL_IMPORT_SMOKE_TEST") == "1":
+        profile = runtime_services.get_build_profile().lower()
+        if profile == "complete":
+            try:
+                import pyannote.audio
+                print("Import smoke test passed (complete profile).")
+            except ImportError as e:
+                import sys
+                print(f"ERROR: pyannote.audio import failed: {e}", file=sys.stderr)
+                sys.exit(1)
+        else:
+            print("Import smoke test passed (standard profile).")
+        return
+
     # Create wx.App FIRST before any wx calls (including MessageBox)
     app = wx.App()
     
@@ -1174,6 +1465,8 @@ def main():
             "Alternatively, ensure imageio-ffmpeg is installed (already in requirements)."
         )
         wx.MessageBox(msg, "ffmpeg not found", wx.OK | wx.ICON_ERROR)
+
+    print(f"Startup diagnostics: {runtime_services.get_startup_diagnostics()}")
     
     frm = VideoToWavConverter(None)
     frm.Show()

@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools==80.10.2", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multisocial-toolbox"
+version = "1.0.0"
+description = "Desktop toolbox for multimodal interaction analysis across video and audio."
+readme = "README.md"
+requires-python = ">=3.10,<3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Tahiya Chowdhury" },
+  { name = "Veronica Romero" },
+  { name = "Alexandra Paxton" },
+  { name = "Muneeb Nafees" }
+]
+dependencies = [
+  "ffmpeg-python==0.2.0",
+  "imageio-ffmpeg==0.6.0",
+  "mediapipe==0.10.21",
+  "msvc-runtime>=14.40; platform_system == 'Windows'",
+  "numpy==1.26.4",
+  "opensmile==2.6.0",
+  "pandas==2.3.3",
+  "python-dotenv==1.2.1",
+  "scikit-image==0.25.2",
+  "scipy==1.15.3",
+  "soundfile==0.13.1",
+  "torch==2.5.1",
+  "torchvision==0.20.1",
+  "transformers==4.44.2",
+  "wxPython==4.2.3",
+  "yolov5==7.0.14",
+]
+
+[project.optional-dependencies]
+diarization = [
+  "pyannote.audio==3.2.0",
+  "speechbrain==0.5.16",
+  "torchaudio==2.5.1",
+]
+complete = [
+  "pyannote.audio==3.2.0",
+  "speechbrain==0.5.16",
+  "torchaudio==2.5.1",
+]
+dev = [
+  "pyinstaller==6.11.1",
+  "pytest>=8,<9",
+  "setuptools==80.10.2",
+]
+
+[tool.setuptools]
+include-package-data = true
+py-modules = [
+  "app",
+  "audio",
+  "gui_utils",
+  "pose",
+  "runtime_services",
+  "ui_components",
+  "verify_pose_embedding",
+]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["backports*"]

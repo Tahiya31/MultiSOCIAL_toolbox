@@ -1,0 +1,288 @@
+name: Build Releases
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.repository == 'Tahiya31/MultiSOCIAL_toolbox') }}
+    runs-on: ubuntu-latest
+    outputs:
+      app_version: ${{ steps.meta.outputs.app_version }}
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+      should_publish_release: ${{ steps.meta.outputs.should_publish_release }}
+      trigger_kind: ${{ steps.meta.outputs.trigger_kind }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Derive release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_VERSION="$(python - <<'PY'
+          import pathlib
+          import re
+
+          pyproject = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
+          match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, re.MULTILINE)
+          if not match:
+              raise SystemExit("Could not determine version from pyproject.toml")
+          print(match.group(1))
+          PY
+          )"
+
+          RELEASE_TAG="v${APP_VERSION}"
+          TRIGGER_KIND="manual"
+          SHOULD_PUBLISH_RELEASE="false"
+
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TRIGGER_KIND="tag"
+          elif [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            TRIGGER_KIND="main"
+            if [[ "${GITHUB_REPOSITORY}" == "Tahiya31/MultiSOCIAL_toolbox" ]]; then
+              SHOULD_PUBLISH_RELEASE="true"
+            fi
+          fi
+
+          echo "app_version=${APP_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "release_tag=${RELEASE_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "should_publish_release=${SHOULD_PUBLISH_RELEASE}" >> "${GITHUB_OUTPUT}"
+          echo "trigger_kind=${TRIGGER_KIND}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create upstream release record
+        if: steps.meta.outputs.should_publish_release == 'true'
+        uses: actions/github-script@v8
+        env:
+          RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
+          APP_VERSION: ${{ steps.meta.outputs.app_version }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const tag = process.env.RELEASE_TAG;
+            const version = process.env.APP_VERSION;
+
+            try {
+              await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+              core.setFailed(`Release ${tag} already exists. Bump pyproject.toml before merging to main.`);
+              return;
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+            }
+
+            try {
+              await github.rest.git.getRef({ owner, repo, ref: `tags/${tag}` });
+              core.setFailed(`Git tag ${tag} already exists. Bump pyproject.toml before merging to main.`);
+              return;
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+            }
+
+            await github.rest.repos.createRelease({
+              owner,
+              repo,
+              tag_name: tag,
+              target_commitish: context.sha,
+              name: tag,
+              body: `Automated release for version ${version} from ${context.sha}.`,
+              generate_release_notes: true,
+              draft: false,
+              prerelease: false,
+            });
+
+  build:
+    if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.repository == 'Tahiya31/MultiSOCIAL_toolbox') }}
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+        profile: [standard, complete]
+
+    runs-on: ${{ matrix.os }}
+    env:
+      APP_VERSION: ${{ needs.prepare.outputs.app_version }}
+      MULTISOCIAL_BUILD_PROFILE: ${{ matrix.profile }}
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      PIP_NO_CACHE_DIR: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONPYCACHEPREFIX: ${{ github.workspace }}/.tmp/pycache-${{ matrix.os }}-${{ matrix.profile }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+
+      - name: Clear local caches used by packaging tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "${HOME}/.cache/pip" "${HOME}/.cache/pyinstaller" "${HOME}/Library/Caches/pip" || true
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Pin setuptools for PyInstaller runtime hook compatibility
+        run: python -m pip install "setuptools==80.10.2"
+
+      - name: Install standard build dependencies
+        if: matrix.profile == 'standard'
+        run: python -m pip install ".[dev]"
+
+      - name: Install complete build dependencies
+        if: matrix.profile == 'complete'
+        run: python -m pip install ".[complete,dev]"
+
+      - name: Build PyInstaller bundle
+        env:
+          MPLCONFIGDIR: ${{ github.workspace }}/.tmp/mplconfig-${{ matrix.os }}-${{ matrix.profile }}
+          PYINSTALLER_CONFIG_DIR: ${{ github.workspace }}/.tmp/pyinstaller-${{ matrix.os }}-${{ matrix.profile }}
+        run: pyinstaller --clean --noconfirm MultiSOCIAL.spec
+
+      - name: Validate Windows runtime DLL exclusions
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -c "import os,sys; from pathlib import Path; profile=os.environ['MULTISOCIAL_BUILD_PROFILE']; app='MultiSOCIAL-Complete' if profile=='complete' else 'MultiSOCIAL-Standard'; root=Path('dist')/app; blocked={'msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll'}; allowed={name for name in blocked if (root / name).exists()}; hits=[str(p.relative_to(root)) for p in root.rglob('*') if p.is_file() and p.name.lower() in blocked and p.parent != root] if root.exists() else None; (print(f'Expected dist folder missing: {root}', file=sys.stderr), sys.exit(1)) if hits is None else None; missing=[name for name in blocked if name not in allowed]; (print('Required VC runtime DLLs missing from app root:', file=sys.stderr), [print(f'  - {name}', file=sys.stderr) for name in missing], sys.exit(1)) if missing else None; (print('Blocked duplicate VC runtime DLLs found in packaged app:', file=sys.stderr), [print(f'  - {h}', file=sys.stderr) for h in hits], sys.exit(1)) if hits else print('Windows DLL validation passed.')"
+
+      - name: Validate Windows bundled native library paths
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -c "import os,sys; from pathlib import Path; profile=os.environ['MULTISOCIAL_BUILD_PROFILE']; app='MultiSOCIAL-Complete' if profile=='complete' else 'MultiSOCIAL-Standard'; root=Path('dist')/app; required=['audresample/core/bin/win_amd64/audresample.dll','opensmile/core/bin/win_amd64/SMILEapi.dll']; missing=[path for path in required if not (root / path).exists()]; mediapipe_hits=list(root.rglob('_framework_bindings*.pyd')); (print(f'Expected dist folder missing: {root}', file=sys.stderr), sys.exit(1)) if not root.exists() else None; (print('Missing bundled native libraries:', file=sys.stderr), [print(f'  - {path}', file=sys.stderr) for path in missing], sys.exit(1)) if missing else None; (print('Missing mediapipe _framework_bindings binary.', file=sys.stderr), sys.exit(1)) if not mediapipe_hits else None; print('Windows native library layout validation passed.')"
+
+      - name: Validate macOS app symlink integrity
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_name="MultiSOCIAL-Standard"
+          if [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]]; then
+            app_name="MultiSOCIAL-Complete"
+          fi
+          app_path="dist/${app_name}.app"
+          link_path="${app_path}/Contents/Frameworks/Python.framework/Versions/Current"
+          if [[ ! -d "${app_path}" ]]; then
+            echo "Expected app not found: ${app_path}" >&2
+            exit 1
+          fi
+          if [[ ! -L "${link_path}" ]]; then
+            echo "Broken app bundle layout: ${link_path} must be a symlink." >&2
+            exit 1
+          fi
+          echo "macOS symlink integrity check passed."
+
+      - name: Validate complete profile bundle layout
+        if: matrix.profile == 'complete'
+        shell: bash
+        run: python .github/scripts/validate_complete_bundle_layout.py
+
+      - name: Run packaged import smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_name="MultiSOCIAL-Standard"
+          if [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]]; then
+            app_name="MultiSOCIAL-Complete"
+          fi
+
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            target="dist/${app_name}/${app_name}.exe"
+          else
+            target="dist/${app_name}.app/Contents/MacOS/${app_name}"
+          fi
+
+          if [[ ! -e "${target}" ]]; then
+            echo "Expected executable not found: ${target}" >&2
+            exit 1
+          fi
+
+          MULTISOCIAL_IMPORT_SMOKE_TEST=1 "${target}"
+
+      - name: Archive release bundle
+        shell: bash
+        env:
+          RUNNER_OS_NAME: ${{ runner.os }}
+        run: |
+          set -euo pipefail
+          profile="${MULTISOCIAL_BUILD_PROFILE}"
+          runner_os="$(echo "${RUNNER_OS_NAME}" | tr '[:upper:]' '[:lower:]')"
+          app_name="MultiSOCIAL-Standard"
+          if [[ "${profile}" == "complete" ]]; then
+            app_name="MultiSOCIAL-Complete"
+          fi
+
+          mkdir -p release-artifacts
+
+          if [[ "${runner_os}" == "macos" ]]; then
+            target="dist/${app_name}.app"
+            if [[ ! -d "${target}" ]]; then
+              echo "Expected build output not found: ${target}" >&2
+              exit 1
+            fi
+            ditto -c -k --sequesterRsrc --keepParent "${target}" "release-artifacts/${app_name}-${runner_os}.zip"
+          else
+            target="dist/${app_name}"
+            if [[ -d "${target}" ]]; then
+              python -c "import os,shutil; app='MultiSOCIAL-Complete' if os.environ['MULTISOCIAL_BUILD_PROFILE']=='complete' else 'MultiSOCIAL-Standard'; runner=os.environ['RUNNER_OS_NAME'].lower(); shutil.make_archive(f'release-artifacts/{app}-{runner}', 'zip', root_dir='dist', base_dir=app)"
+            elif [[ -f "${target}" ]]; then
+              cp "${target}" "release-artifacts/${app_name}-${runner_os}${target##${app_name}}"
+            else
+              echo "Expected build output not found: ${target}" >&2
+              exit 1
+            fi
+          fi
+
+      - name: Prepare workflow artifact
+        shell: bash
+        env:
+          RUNNER_OS_NAME: ${{ runner.os }}
+        run: |
+          set -euo pipefail
+          profile="${MULTISOCIAL_BUILD_PROFILE}"
+          runner_os="$(echo "${RUNNER_OS_NAME}" | tr '[:upper:]' '[:lower:]')"
+          app_name="MultiSOCIAL-Standard"
+          if [[ "${profile}" == "complete" ]]; then
+            app_name="MultiSOCIAL-Complete"
+          fi
+
+          mkdir -p workflow-artifacts
+
+          if [[ "${runner_os}" == "macos" ]]; then
+            cp -R "dist/${app_name}.app" "workflow-artifacts/"
+          else
+            cp -R "dist/${app_name}" "workflow-artifacts/"
+          fi
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MultiSOCIAL-${{ env.APP_VERSION }}-${{ matrix.profile }}-${{ runner.os }}
+          path: workflow-artifacts/*
+
+      - name: Upload release assets to upstream release
+        if: needs.prepare.outputs.should_publish_release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.release_tag }}
+          files: release-artifacts/*

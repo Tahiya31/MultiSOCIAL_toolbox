@@ -10,11 +10,88 @@ This module provides functionality for:
 
 import os
 import torch
-import librosa
 import opensmile
 import gc
+import numpy as np
+from scipy.io import wavfile
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
-from pyannote.audio import Pipeline
+
+from runtime_services import DIARIZATION_MODEL_ID
+
+
+_SCIPY_WAV_EXTENSIONS = {".wav", ".wave"}
+
+
+def _pcm_audio_to_mono_float32(audio, sampling_rate):
+    """Normalize arbitrary PCM/float waveform to mono float32 in [-1, 1] (approximate for float clips)."""
+    audio = np.asarray(audio)
+    if np.issubdtype(audio.dtype, np.integer):
+        scale = float(np.iinfo(audio.dtype).max)
+        if audio.ndim > 1:
+            audio = audio.astype(np.float32).mean(axis=1)
+        if scale > 0:
+            audio = audio / scale
+        else:
+            audio = audio.astype(np.float32)
+    else:
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1)
+        audio = audio.astype(np.float32, copy=False)
+    return audio, int(sampling_rate)
+
+
+def _decode_audio_file(filepath):
+    """
+    Decode a supported audio file to mono float32 without FFmpeg.
+
+    Hugging Face ASR passes string paths through ffmpeg_read(bytes(...)); SciPy fails on some
+    WAV variants (e.g. certain extensible headers). libsndfile via soundfile covers those cases
+    and also supports additional low-risk formats like AIFF, FLAC, CAF, AU, and SND.
+    """
+    filepath = os.path.normpath(os.path.abspath(filepath))
+    if not os.path.isfile(filepath):
+        raise FileNotFoundError(f"Audio file not found: {filepath}")
+
+    ext = os.path.splitext(filepath)[1].lower()
+    errors = []
+
+    if ext in _SCIPY_WAV_EXTENSIONS:
+        try:
+            sr, audio = wavfile.read(filepath)
+            return _pcm_audio_to_mono_float32(audio, sr)
+        except Exception as e:
+            errors.append(f"scipy.io.wavfile: {e}")
+
+    try:
+        import soundfile as sf
+
+        audio, sr = sf.read(filepath, dtype="float32", always_2d=False)
+        return _pcm_audio_to_mono_float32(audio, sr)
+    except ImportError:
+        errors.append("soundfile: not installed (required for non-WAV inputs and some WAV formats on Windows)")
+    except Exception as e:
+        errors.append(f"soundfile: {e}")
+
+    raise RuntimeError(
+        f"Could not decode this audio file ({ext or 'unknown extension'}) without FFmpeg-based loaders.\n\n"
+        + "\n".join(errors)
+        + "\n\nTry re-exporting as WAV, AIFF, or FLAC, or ensure the 'soundfile' dependency is bundled."
+    )
+
+
+def _load_audio_for_opensmile(filepath):
+    """Load a supported audio file into a mono float32 array suitable for OpenSMILE."""
+    return _decode_audio_file(filepath)
+
+
+def _whisper_pipeline_audio_input(filepath):
+    """
+    Build HF ASR inputs dict so preprocess() never receives a str path.
+
+    A string path makes transformers read raw bytes then call ffmpeg_read(), which requires FFmpeg.
+    """
+    audio, sr = _decode_audio_file(filepath)
+    return {"array": audio, "sampling_rate": sr}
 
 
 class AudioProcessor:
@@ -119,8 +196,8 @@ class AudioProcessor:
             if progress_callback:
                 progress_callback(20)
             
-            # Load audio file using librosa
-            y, sr = librosa.load(filepath)
+            # Audio input is decoded via scipy for WAV and soundfile/libsndfile otherwise.
+            y, sr = _load_audio_for_opensmile(filepath)
             
             if progress_callback:
                 progress_callback(40)
@@ -224,7 +301,7 @@ class AudioProcessor:
             self.whisper_model = AutoModelForSpeechSeq2Seq.from_pretrained(
                 model_id, 
                 torch_dtype=self.torch_dtype, 
-                low_cpu_mem_usage=True, 
+                low_cpu_mem_usage=False,
                 use_safetensors=True,
                 local_files_only=True
             )
@@ -234,7 +311,7 @@ class AudioProcessor:
             self.whisper_model = AutoModelForSpeechSeq2Seq.from_pretrained(
                 model_id, 
                 torch_dtype=self.torch_dtype, 
-                low_cpu_mem_usage=True, 
+                low_cpu_mem_usage=False,
                 use_safetensors=True,
                 local_files_only=False
             )
@@ -294,6 +371,8 @@ class AudioProcessor:
     def _load_speaker_diarizer(self, progress_callback=None):
         """Load the PyAnnote speaker diarization model (lazy loading)"""
         if self.speaker_diarizer is not None:
+            # Ensure preload paths actually verify model import/load state.
+            self.speaker_diarizer._load_diarization_model()
             return
             
         try:
@@ -303,6 +382,8 @@ class AudioProcessor:
             print("Loading PyAnnote speaker diarization model...")
             # Use PyAnnote diarization
             self.speaker_diarizer = PyAnnoteSpeakerDiarizer(progress_callback, self.auth_token, device=self.device)
+            # Force an actual model load so "preload" validates availability.
+            self.speaker_diarizer._load_diarization_model()
             
             if progress_callback:
                 progress_callback(15)
@@ -312,12 +393,9 @@ class AudioProcessor:
     
     def preload_speaker_diarizer(self):
         """Pre-load the speaker diarization model to avoid delays during first use"""
-        try:
-            print("Pre-loading PyAnnote speaker diarization model...")
-            self._load_speaker_diarizer()
-            print("✓ PyAnnote model pre-loaded successfully")
-        except Exception as e:
-            print(f"Warning: Could not pre-load PyAnnote model: {e}")
+        print("Pre-loading PyAnnote speaker diarization model...")
+        self._load_speaker_diarizer()
+        print("✓ PyAnnote model pre-loaded successfully")
 
     def extract_transcript(self, filepath, progress_callback=None, word_timestamps=False):
         """
@@ -357,7 +435,7 @@ class AudioProcessor:
             ts_mode = "word" if word_timestamps else True
             
             result = self.whisper_pipe(
-                filepath,
+                _whisper_pipeline_audio_input(filepath),
                 return_timestamps=ts_mode, 
                 generate_kwargs={"task": "transcribe"}
             )
@@ -401,7 +479,7 @@ class AudioProcessor:
             if speaker_segments and len(speaker_segments) > 0:
                 formatted_transcript = self._format_transcript_with_speakers(transcript, speaker_segments)
             else:
-                formatted_transcript = transcript
+                formatted_transcript = self._format_plain_transcript(transcript)
 
             # Save transcript to text file (always done)
             output_txt = os.path.join(
@@ -409,7 +487,7 @@ class AudioProcessor:
                 os.path.splitext(os.path.basename(filepath))[0] + ".txt"
             )
 
-            with open(output_txt, 'w') as f:
+            with open(output_txt, 'w', encoding='utf-8', newline='\n') as f:
                 f.write(formatted_transcript)
             
             # If word timestamps were requested, save the detailed JSON sidecar
@@ -425,8 +503,8 @@ class AudioProcessor:
                 # We'll save the whole result structure to be safe.
                 # Note: result might contain non-serializable objects (like tensors), but pipeline usually returns python types.
                 try:
-                    with open(output_json, 'w') as f:
-                        json.dump(result, f, indent=2)
+                    with open(output_json, 'w', encoding='utf-8') as f:
+                        json.dump(result, f, indent=2, ensure_ascii=False)
                     print(f"Saved word-level info: {output_json}")
                 except Exception as e:
                     print(f"Warning: Could not save word-level JSON: {e}")
@@ -473,6 +551,32 @@ class AudioProcessor:
         except Exception as e:
             print(f"Warning: Could not align transcript with speakers: {e}")
             return transcript
+
+    def _format_plain_transcript(self, transcript):
+        """
+        Format a non-diarized transcript into readable line-broken segments.
+
+        Args:
+            transcript (str): Raw transcript from Whisper
+
+        Returns:
+            str: Line-broken transcript using Whisper's chunk timing when available
+        """
+        try:
+            whisper_segments = self._extract_whisper_segments(transcript)
+        except Exception:
+            whisper_segments = []
+
+        if whisper_segments:
+            lines = []
+            for seg in whisper_segments:
+                text = str(seg.get('text') or '').strip()
+                if text:
+                    lines.append(text)
+            if lines:
+                return "\n".join(lines)
+
+        return transcript
     
     def _extract_whisper_segments(self, transcript):
         """
@@ -739,7 +843,13 @@ class AudioProcessor:
         """
         if not audio_files:
             return
-            
+
+        if self.output_transcripts_folder is None:
+            raise ValueError(
+                "Transcripts output folder is not configured. "
+                "The transcript output folder is not configured (<dataset>/transcripts). Select your dataset folder again."
+            )
+
         total_files = len(audio_files)
         
         # Calculate progress allocation:
@@ -772,14 +882,18 @@ class AudioProcessor:
         transcription_results = {}  # filepath -> (transcript_text, whisper_result)
         transcription_range = transcription_end - transcription_start
         
+        transcription_errors = []
         for i, audio_file in enumerate(audio_files):
             self.set_status_message(f"🗣️ Transcribing ({i+1}/{total_files}): {os.path.basename(audio_file)}")
             
             try:
+                audio_path = os.path.normpath(os.path.abspath(audio_file))
+                if not os.path.isfile(audio_path):
+                    raise FileNotFoundError(f"Audio file not found: {audio_path}")
                 # Transcribe without loading/offloading model
                 ts_mode = True  # Use segment-level timestamps; word-level if needed for alignment
                 result = self.whisper_pipe(
-                    audio_file,
+                    _whisper_pipeline_audio_input(audio_path),
                     return_timestamps=ts_mode,
                     generate_kwargs={"task": "transcribe"}
                 )
@@ -788,13 +902,24 @@ class AudioProcessor:
                 
             except Exception as e:
                 print(f"Error transcribing {audio_file}: {e}")
+                transcription_errors.append((audio_file, str(e)))
                 transcription_results[audio_file] = (None, None)
             
             # Update progress
             if progress_callback:
                 file_progress = ((i + 1) / total_files) * transcription_range
                 progress_callback(int(transcription_start + file_progress))
-        
+
+        if not any(transcription_results.get(af, (None, None))[0] is not None for af in audio_files):
+            detail_bits = [
+                f"{os.path.basename(path)}: {err}"
+                for path, err in transcription_errors[:8]
+            ]
+            detail = "\n".join(detail_bits) if detail_bits else "(see console / log for details)"
+            raise RuntimeError(
+                "Speech recognition failed for every file; no transcripts were produced.\n\n" + detail
+            )
+
         # ===== PHASE 3: Diarization (if enabled) =====
         diarization_results = {}  # filepath -> speaker_segments
         
@@ -822,7 +947,8 @@ class AudioProcessor:
                     self.set_status_message(f"🎭 Diarizing ({i+1}/{total_files}): {os.path.basename(audio_file)}")
                     
                     try:
-                        speaker_segments = self.speaker_diarizer.diarize_speakers(audio_file)
+                        audio_path = os.path.normpath(os.path.abspath(audio_file))
+                        speaker_segments = self.speaker_diarizer.diarize_speakers(audio_path)
                         diarization_results[audio_file] = speaker_segments
                     except Exception as e:
                         print(f"Error diarizing {audio_file}: {e}")
@@ -839,7 +965,11 @@ class AudioProcessor:
         
         # ===== PHASE 4: Save all results =====
         self.set_status_message("💾 Saving transcripts...")
-        
+        os.makedirs(self.output_transcripts_folder, exist_ok=True)
+
+        save_errors = []
+        saved_count = 0
+
         for audio_file in audio_files:
             transcript, whisper_result = transcription_results.get(audio_file, (None, None))
             if transcript is None:
@@ -853,19 +983,37 @@ class AudioProcessor:
                 self.whisper_result = whisper_result
                 formatted_transcript = self._format_transcript_with_speakers(transcript, speaker_segments)
             else:
-                formatted_transcript = transcript
+                self.whisper_result = whisper_result
+                formatted_transcript = self._format_plain_transcript(transcript)
             
             # Save transcript to file
             base_name = os.path.splitext(os.path.basename(audio_file))[0]
             output_txt = os.path.join(self.output_transcripts_folder, f"{base_name}.txt")
             
             try:
-                with open(output_txt, 'w') as f:
+                with open(output_txt, 'w', encoding='utf-8', newline='\n') as f:
                     f.write(formatted_transcript)
+                saved_count += 1
                 print(f"Saved transcript: {output_txt}")
-            except Exception as e:
+            except OSError as e:
+                msg = f"{output_txt}: {e}"
                 print(f"Error saving transcript for {audio_file}: {e}")
-        
+                save_errors.append(msg)
+
+        if save_errors:
+            raise RuntimeError(
+                "Could not write one or more transcript files:\n\n" + "\n".join(save_errors)
+            )
+
+        expected_saves = sum(
+            1 for af in audio_files if transcription_results.get(af, (None, None))[0] is not None
+        )
+        if expected_saves > 0 and saved_count == 0:
+            raise RuntimeError(
+                "Transcription succeeded but no .txt files were saved (unexpected). "
+                f"Output folder: {self.output_transcripts_folder}"
+            )
+
         if progress_callback:
             progress_callback(100)
 
@@ -954,7 +1102,7 @@ class AudioProcessor:
 
         # Load transcript words
         try:
-            with open(transcript_json, 'r') as f:
+            with open(transcript_json, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
             words = []
@@ -1090,37 +1238,40 @@ class PyAnnoteSpeakerDiarizer:
         try:
             if self.progress_callback:
                 self.progress_callback(5)
-            
-            loaded = False
-            kw = {"use_auth_token": self.auth_token} if self.auth_token else {}
-            
-            # 1. Try offline load first (use cached model if available)
+
+            if not self.auth_token:
+                raise Exception(
+                    "A Hugging Face token is required for speaker diarization."
+                )
+
+            kw = {"use_auth_token": self.auth_token}
+
             try:
-                print("Attempting to load PyAnnote model from local cache...")
+                from pyannote.audio import Pipeline
+            except ModuleNotFoundError as e:
+                raise Exception(
+                    "Optional diarization support is not installed. Install the Complete toolbox profile first."
+                ) from e
+            except Exception as e:
+                raise Exception(
+                    f"Failed to import pyannote.audio dependencies: {e}"
+                ) from e
+
+            try:
+                print("Loading PyAnnote speaker diarization pipeline...")
                 self.diarization_pipeline = Pipeline.from_pretrained(
-                    "pyannote/speaker-diarization",
-                    local_files_only=True,
+                    DIARIZATION_MODEL_ID,
                     **kw
                 )
-                print("✓ Loaded PyAnnote model from cache.")
-                loaded = True
             except Exception as e:
-                print(f"Offline load failed ({e}). Trying online...")
-            
-            # 2. Fallback to standard load (online)
-            if not loaded:
-                try:
-                    print("Downloading/Loading PyAnnote model (online)...")
-                    self.diarization_pipeline = Pipeline.from_pretrained(
-                        "pyannote/speaker-diarization",
-                        **kw
-                    )
-                    loaded = True
-                except Exception as e:
-                    print(f"Standard load failed: {e}")
-
-            if not loaded:
-                raise Exception("Could not load PyAnnote pipeline.")
+                import traceback
+                error_trace = traceback.format_exc()
+                print(f"PyAnnote loading failed with trace:\n{error_trace}")
+                raise Exception(
+                    f"Could not load the PyAnnote pipeline. Check that your Hugging Face token is valid, "
+                    f"that you accepted the pyannote model terms, and that the app can reach Hugging Face. "
+                    f"Original error: {repr(e)}"
+                ) from e
             
             # Move pipeline to the specified device
             if self.diarization_pipeline is not None:

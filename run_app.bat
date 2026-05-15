@@ -11,18 +11,29 @@ set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 
 REM Choose venv directory name
 set "VENV_DIR=%SCRIPT_DIR%\.venv"
+set "INSTALL_STAMP_FILE=%VENV_DIR%\.multisocial-install-stamp"
 
 REM Desired Python version (major.minor). Override by setting DESIRED_PYTHON env var before running.
 if "%DESIRED_PYTHON%"=="" (
-    set "DESIRED_PYTHON=3.11"
+    set "DESIRED_PYTHON=3.10"
 )
 
-REM Check for Python 3.11
+REM Install profile: standard or complete.
+if "%MULTISOCIAL_INSTALL_PROFILE%"=="" (
+    set /p PROFILE_CHOICE=Choose install profile: [1] Standard  [2] Complete : 
+    if "!PROFILE_CHOICE!"=="2" (
+        set "MULTISOCIAL_INSTALL_PROFILE=complete"
+    ) else (
+        set "MULTISOCIAL_INSTALL_PROFILE=standard"
+    )
+)
+
+REM Check for Python 3.10
 set "PYTHON_EXEC=python%DESIRED_PYTHON%"
 %PYTHON_EXEC% --version >nul 2>&1
 if %errorlevel% neq 0 (
     REM Try just 'python' and check version
-    python -c "import sys; sys.exit(0 if sys.version_info.major == 3 and sys.version_info.minor == 11 else 1)" >nul 2>&1
+    python -c "import sys; sys.exit(0 if sys.version_info.major == 3 and sys.version_info.minor == 10 else 1)" >nul 2>&1
     if !errorlevel! equ 0 (
         set "PYTHON_EXEC=python"
     ) else (
@@ -32,7 +43,7 @@ if %errorlevel% neq 0 (
             set "PYTHON_EXEC=py -%DESIRED_PYTHON%"
         ) else (
             echo ERROR: Python %DESIRED_PYTHON% is not installed or not in PATH
-            echo Please install Python 3.11 from https://www.python.org/downloads/
+            echo Please install Python 3.10 from https://www.python.org/downloads/
             echo Make sure to check "Add Python to PATH" during installation
             pause
             exit /b 1
@@ -82,21 +93,51 @@ if not exist "%VENV_DIR%" (
 echo Activating virtual environment
 call "%VENV_DIR%\Scripts\activate.bat"
 
-echo Upgrading pip
-python -m pip install --upgrade pip
-if %errorlevel% neq 0 (
-    echo ERROR: Failed to upgrade pip
-    pause
-    exit /b 1
+set "CURRENT_STAMP="
+for /f "usebackq delims=" %%h in (`python -c "from pathlib import Path; import hashlib; print(r'%MULTISOCIAL_INSTALL_PROFILE%|%DESIRED_PYTHON%|' + hashlib.sha256(Path(r'%SCRIPT_DIR%\pyproject.toml').read_bytes()).hexdigest())"`) do set "CURRENT_STAMP=%%h"
+set "NEEDS_INSTALL=1"
+if exist "%INSTALL_STAMP_FILE%" (
+    set /p EXISTING_STAMP=<"%INSTALL_STAMP_FILE%"
+    if "!EXISTING_STAMP!"=="!CURRENT_STAMP!" (
+        set "NEEDS_INSTALL=0"
+    )
 )
 
-echo Installing requirements
-pip install -r "%SCRIPT_DIR%\requirements.txt"
-if %errorlevel% neq 0 (
-    echo ERROR: Failed to install requirements
-    echo Please check your internet connection and try again
-    pause
-    exit /b 1
+if "%NEEDS_INSTALL%"=="1" (
+    echo Installing MultiSOCIAL Toolbox (%MULTISOCIAL_INSTALL_PROFILE% profile)
+    echo Upgrading pip
+    python -m pip install --upgrade pip
+    if %errorlevel% neq 0 (
+        echo ERROR: Failed to upgrade pip
+        pause
+        exit /b 1
+    )
+
+    echo Pinning setuptools for yolov5 compatibility
+    python -m pip install "setuptools==80.10.2"
+    if %errorlevel% neq 0 (
+        echo ERROR: Failed to install the required setuptools version
+        pause
+        exit /b 1
+    )
+
+    pushd "%SCRIPT_DIR%"
+    if /I "%MULTISOCIAL_INSTALL_PROFILE%"=="complete" (
+        python -m pip install -e ".[complete]"
+    ) else (
+        python -m pip install -e .
+    )
+    if %errorlevel% neq 0 (
+        echo ERROR: Failed to install toolbox dependencies
+        echo Please check your internet connection and try again
+        popd
+        pause
+        exit /b 1
+    )
+    popd
+    >"%INSTALL_STAMP_FILE%" echo !CURRENT_STAMP!
+) else (
+    echo Environment already matches the %MULTISOCIAL_INSTALL_PROFILE% profile. Skipping reinstall.
 )
 
 echo Verifying MediaPipe installation...
