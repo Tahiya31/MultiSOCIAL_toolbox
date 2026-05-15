@@ -9,6 +9,7 @@ VENV_DIR="$SCRIPT_DIR/.venv"
 INSTALL_STAMP_FILE="$VENV_DIR/.multisocial-install-stamp"
 # Desired Python version (major.minor). Override by exporting DESIRED_PYTHON=3.10
 DESIRED_PYTHON="${DESIRED_PYTHON:-3.10}"
+PYTHON_EXEC=""
 
 # Install profile: standard or complete. complete includes optional diarization support.
 INSTALL_PROFILE="${MULTISOCIAL_INSTALL_PROFILE:-}"
@@ -27,7 +28,13 @@ INSTALL_PROFILE="${INSTALL_PROFILE:-standard}"
 
 # Check if Python 3.10 is available
 echo "Checking for Python ${DESIRED_PYTHON}..."
-if ! command -v python${DESIRED_PYTHON} &> /dev/null; then
+if command -v "python${DESIRED_PYTHON}" &> /dev/null; then
+    PYTHON_EXEC="python${DESIRED_PYTHON}"
+elif command -v python3 &> /dev/null && python3 -c "import sys; sys.exit(0 if f'{sys.version_info.major}.{sys.version_info.minor}' == '${DESIRED_PYTHON}' else 1)" &> /dev/null; then
+    PYTHON_EXEC="python3"
+elif command -v python &> /dev/null && python -c "import sys; sys.exit(0 if f'{sys.version_info.major}.{sys.version_info.minor}' == '${DESIRED_PYTHON}' else 1)" &> /dev/null; then
+    PYTHON_EXEC="python"
+else
     echo "ERROR: Python ${DESIRED_PYTHON} is not installed or not in PATH"
     echo "Please install Python 3.10:"
     echo "  macOS: brew install python@3.10"
@@ -37,8 +44,8 @@ if ! command -v python${DESIRED_PYTHON} &> /dev/null; then
 fi
 
 # Display Python version for confirmation
-echo "Found Python ${DESIRED_PYTHON}:"
-python${DESIRED_PYTHON} --version
+echo "Found Python ${DESIRED_PYTHON} using command: ${PYTHON_EXEC}"
+"$PYTHON_EXEC" --version
 
 if [ -d "$VENV_DIR" ]; then
   echo "Found existing virtual environment at: $VENV_DIR"
@@ -53,7 +60,7 @@ fi
 
 if [ ! -d "$VENV_DIR" ]; then
   echo "Creating virtual environment with Python ${DESIRED_PYTHON} at: $VENV_DIR"
-  if ! python${DESIRED_PYTHON} -m venv "$VENV_DIR"; then
+  if ! "$PYTHON_EXEC" -m venv "$VENV_DIR"; then
     echo "ERROR: Failed to create virtual environment"
     exit 1
   fi
