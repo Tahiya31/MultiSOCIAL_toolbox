@@ -5,7 +5,7 @@ This document is for maintainers and contributors using the automated MultiSOCIA
 ## Release model
 
 - Fork tags are for contributor test builds.
-- Push a tag like `v0.2.0-test7` in your fork to produce build artifacts in your fork's Actions run.
+- Push a tag like `v1.0.0-test1` in your fork to produce build artifacts in your fork's Actions run.
 - Merges to `upstream/main` automatically build the official desktop release using the exact version in `pyproject.toml` at merge time.
 - GitHub Actions workflow: `.github/workflows/release.yml`
 - Official user downloads are the assets attached to **GitHub Releases** on the upstream repository.
@@ -29,14 +29,14 @@ Profiles:
 1. Update `pyproject.toml` in the PR to the exact release version you want:
 
 ```toml
-version = "0.2.1"
+version = "1.0.0"
 ```
 
 2. Merge that PR into `upstream/main`.
 
 3. GitHub Actions will automatically:
-   - read `version = "0.2.1"` from `pyproject.toml`
-   - create the upstream GitHub Release `v0.2.1`
+   - read `version = "1.0.0"` from `pyproject.toml`
+   - create the upstream GitHub Release `v1.0.0`
    - build the macOS and Windows packages
    - upload the release assets to that upstream release
 
@@ -46,7 +46,7 @@ No manual tag push is required for upstream releases.
 
 - The version in `pyproject.toml` is the source of truth for upstream releases.
 - Each merged upstream release version must be new.
-  - Example: if `v0.2.1` already exists upstream, another merge with `version = "0.2.1"` will fail the release workflow.
+  - Example: if `v1.0.0` already exists upstream, another merge with `version = "1.0.0"` will fail the release workflow.
 - Do not publish official user builds from a fork tag.
 - Use fork tags only for pre-release testing.
 
@@ -58,8 +58,8 @@ Recommended flow for contributors:
 2. Create a temporary test tag on the fork, for example:
 
 ```bash
-git tag v0.2.0-test7
-git push origin v0.2.0-test7
+git tag v1.0.0-test1
+git push origin v1.0.0-test1
 ```
 
 3. Let GitHub Actions build the test artifacts in your fork.

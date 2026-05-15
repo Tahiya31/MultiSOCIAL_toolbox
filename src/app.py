@@ -13,7 +13,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # Make sure the system uses the GPU
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 
-# Third-party libraries (assumed pre-installed via requirements.txt)
+# Third-party libraries (assumed pre-installed via the project package metadata)
 import ffmpeg
 import wx
 import unicodedata
@@ -52,7 +52,7 @@ else:
 # Enable High DPI on Windows
 gui_utils.setup_high_dpi()
 
-## All dependencies are expected to be installed ahead of time via requirements.txt
+## All dependencies are expected to be installed ahead of time via the project package metadata.
 
 class VideoToWavConverter(wx.Frame):
     def __init__(self, *args, **kw):

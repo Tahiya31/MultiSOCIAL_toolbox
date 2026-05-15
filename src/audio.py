@@ -25,15 +25,17 @@ _SCIPY_WAV_EXTENSIONS = {".wav", ".wave"}
 def _pcm_audio_to_mono_float32(audio, sampling_rate):
     """Normalize arbitrary PCM/float waveform to mono float32 in [-1, 1] (approximate for float clips)."""
     audio = np.asarray(audio)
-    if audio.ndim > 1:
-        audio = audio.mean(axis=1)
     if np.issubdtype(audio.dtype, np.integer):
         scale = float(np.iinfo(audio.dtype).max)
+        if audio.ndim > 1:
+            audio = audio.astype(np.float32).mean(axis=1)
         if scale > 0:
-            audio = audio.astype(np.float32) / scale
+            audio = audio / scale
         else:
             audio = audio.astype(np.float32)
     else:
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1)
         audio = audio.astype(np.float32, copy=False)
     return audio, int(sampling_rate)
 

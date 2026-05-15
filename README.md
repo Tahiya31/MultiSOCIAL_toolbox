@@ -259,27 +259,6 @@ This feature aligns your extracted audio features (from OpenSMILE) with word-lev
   * For packaged releases, you should usually ignore these warnings unless a feature is failing at runtime.
   * For source installs, if a tool is truly missing, add it to `PATH` or rerun `run_app.sh` / `run_app.bat` so the environment is recreated cleanly.
  
-* I am getting an error during installation similar to ``ERROR: Failed building wheel for pi-heif`` or ``error: failed-wheel-build-for-install``
-  * Why this happens: ``pi-heif`` provides HEIF/AVIF image support in Python and needs the system ``libheif`` library when a prebuilt wheel is not available for your OS/Python/architecture. On some machines, ``pip`` falls back to building from source, which fails without ``libheif`` present.
-  * What to do:
-    * macOS:
-      * Install Homebrew if you don't have it yet by following the instructions here: [Homebrew](https://brew.sh).
-      * Then install ``libheif``:
-        * ``brew install libheif``
-      * Re-run the toolbox setup command (``bash run_app.sh``).
-    * Windows:
-      * Install vcpkg (Microsoft's C/C++ package manager). Quick start: [vcpkg getting started](https://learn.microsoft.com/en-us/vcpkg/get_started/get-started).
-      * In ``Command Prompt`` or ``PowerShell``:
-        * ``git clone https://github.com/microsoft/vcpkg.git``
-        * ``cd vcpkg``
-        * ``.\bootstrap-vcpkg.bat``
-        * (Optional, if you need specific codec backends for HEIF/AVIF) e.g., install AOM: ``vcpkg install aom:x64-windows``
-        * Install libheif: ``vcpkg install libheif:x64-windows``
-        * (Optional) Integrate with Visual Studio: ``vcpkg integrate install``
-      * Re-run the toolbox setup command (``run_app.bat``).
-  * After installing ``libheif``, ``pip`` can either use a compatible prebuilt wheel or successfully build ``pi-heif`` from source.
-
-
 ## Acknowledgement
 
 We thank the authors and developers of ``MediaPipe``, ``OpenSMILE``, ``YOLOv5`` and ``whisper`` for their awesome contributions and making their code open-sourced which we use to develop ``MultiSOCIAL toolbox``. 
