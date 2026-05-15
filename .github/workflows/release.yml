@@ -11,12 +11,9 @@ on:
 permissions:
   contents: write
 
-env:
-  UPSTREAM_REPOSITORY: Tahiya31/MultiSOCIAL_toolbox
-
 jobs:
   prepare:
-    if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.repository == env.UPSTREAM_REPOSITORY) }}
+    if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.repository == 'Tahiya31/MultiSOCIAL_toolbox') }}
     runs-on: ubuntu-latest
     outputs:
       app_version: ${{ steps.meta.outputs.app_version }}
@@ -52,7 +49,7 @@ jobs:
             TRIGGER_KIND="tag"
           elif [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == "refs/heads/main" ]]; then
             TRIGGER_KIND="main"
-            if [[ "${GITHUB_REPOSITORY}" == "${UPSTREAM_REPOSITORY}" ]]; then
+            if [[ "${GITHUB_REPOSITORY}" == "Tahiya31/MultiSOCIAL_toolbox" ]]; then
               SHOULD_PUBLISH_RELEASE="true"
             fi
           fi
@@ -108,7 +105,7 @@ jobs:
             });
 
   build:
-    if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.repository == env.UPSTREAM_REPOSITORY) }}
+    if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.repository == 'Tahiya31/MultiSOCIAL_toolbox') }}
     needs: prepare
     strategy:
       fail-fast: false
