@@ -103,24 +103,24 @@ if exist "%INSTALL_STAMP_FILE%" (
     )
 )
 
-echo Upgrading pip
-python -m pip install --upgrade pip
-if %errorlevel% neq 0 (
-    echo ERROR: Failed to upgrade pip
-    pause
-    exit /b 1
-)
-
-echo Pinning setuptools for yolov5 compatibility
-python -m pip install "setuptools==80.10.2"
-if %errorlevel% neq 0 (
-    echo ERROR: Failed to install the required setuptools version
-    pause
-    exit /b 1
-)
-
 if "%NEEDS_INSTALL%"=="1" (
     echo Installing MultiSOCIAL Toolbox (%MULTISOCIAL_INSTALL_PROFILE% profile)
+    echo Upgrading pip
+    python -m pip install --upgrade pip
+    if %errorlevel% neq 0 (
+        echo ERROR: Failed to upgrade pip
+        pause
+        exit /b 1
+    )
+
+    echo Pinning setuptools for yolov5 compatibility
+    python -m pip install "setuptools==80.10.2"
+    if %errorlevel% neq 0 (
+        echo ERROR: Failed to install the required setuptools version
+        pause
+        exit /b 1
+    )
+
     pushd "%SCRIPT_DIR%"
     if /I "%MULTISOCIAL_INSTALL_PROFILE%"=="complete" (
         python -m pip install -e ".[complete]"

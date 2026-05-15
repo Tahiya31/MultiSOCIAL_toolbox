@@ -71,20 +71,20 @@ if [ -f "$INSTALL_STAMP_FILE" ]; then
     fi
 fi
 
-echo "Upgrading pip"
-if ! python -m pip install --upgrade pip; then
-    echo "ERROR: Failed to upgrade pip"
-    exit 1
-fi
-
-echo "Pinning setuptools for yolov5 compatibility"
-if ! python -m pip install "setuptools==80.10.2"; then
-    echo "ERROR: Failed to install the required setuptools version"
-    exit 1
-fi
-
 if [ "$NEEDS_INSTALL" -eq 1 ]; then
     echo "Installing MultiSOCIAL Toolbox ($INSTALL_PROFILE profile)"
+    echo "Upgrading pip"
+    if ! python -m pip install --upgrade pip; then
+        echo "ERROR: Failed to upgrade pip"
+        exit 1
+    fi
+
+    echo "Pinning setuptools for yolov5 compatibility"
+    if ! python -m pip install "setuptools==80.10.2"; then
+        echo "ERROR: Failed to install the required setuptools version"
+        exit 1
+    fi
+
     pushd "$SCRIPT_DIR" >/dev/null
     if [ "$INSTALL_PROFILE" = "complete" ]; then
         INSTALL_CMD=(python -m pip install -e ".[complete]")
