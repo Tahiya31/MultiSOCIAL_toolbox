@@ -3,14 +3,113 @@ name: Build Releases
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - "v*"
 
 permissions:
   contents: write
 
+env:
+  UPSTREAM_REPOSITORY: Tahiya31/MultiSOCIAL_toolbox
+
 jobs:
+  prepare:
+    if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.repository == env.UPSTREAM_REPOSITORY) }}
+    runs-on: ubuntu-latest
+    outputs:
+      app_version: ${{ steps.meta.outputs.app_version }}
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+      should_publish_release: ${{ steps.meta.outputs.should_publish_release }}
+      trigger_kind: ${{ steps.meta.outputs.trigger_kind }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Derive release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_VERSION="$(python - <<'PY'
+          import pathlib
+          import re
+
+          pyproject = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
+          match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, re.MULTILINE)
+          if not match:
+              raise SystemExit("Could not determine version from pyproject.toml")
+          print(match.group(1))
+          PY
+          )"
+
+          RELEASE_TAG="v${APP_VERSION}"
+          TRIGGER_KIND="manual"
+          SHOULD_PUBLISH_RELEASE="false"
+
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TRIGGER_KIND="tag"
+          elif [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            TRIGGER_KIND="main"
+            if [[ "${GITHUB_REPOSITORY}" == "${UPSTREAM_REPOSITORY}" ]]; then
+              SHOULD_PUBLISH_RELEASE="true"
+            fi
+          fi
+
+          echo "app_version=${APP_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "release_tag=${RELEASE_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "should_publish_release=${SHOULD_PUBLISH_RELEASE}" >> "${GITHUB_OUTPUT}"
+          echo "trigger_kind=${TRIGGER_KIND}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create upstream release record
+        if: steps.meta.outputs.should_publish_release == 'true'
+        uses: actions/github-script@v8
+        env:
+          RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
+          APP_VERSION: ${{ steps.meta.outputs.app_version }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const tag = process.env.RELEASE_TAG;
+            const version = process.env.APP_VERSION;
+
+            try {
+              await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+              core.setFailed(`Release ${tag} already exists. Bump pyproject.toml before merging to main.`);
+              return;
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+            }
+
+            try {
+              await github.rest.git.getRef({ owner, repo, ref: `tags/${tag}` });
+              core.setFailed(`Git tag ${tag} already exists. Bump pyproject.toml before merging to main.`);
+              return;
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+            }
+
+            await github.rest.repos.createRelease({
+              owner,
+              repo,
+              tag_name: tag,
+              target_commitish: context.sha,
+              name: tag,
+              body: `Automated release for version ${version} from ${context.sha}.`,
+              generate_release_notes: true,
+              draft: false,
+              prerelease: false,
+            });
+
   build:
+    if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.repository == env.UPSTREAM_REPOSITORY) }}
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
@@ -19,6 +118,7 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     env:
+      APP_VERSION: ${{ needs.prepare.outputs.app_version }}
       MULTISOCIAL_BUILD_PROFILE: ${{ matrix.profile }}
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       PIP_NO_CACHE_DIR: "1"
@@ -143,7 +243,6 @@ jobs:
               echo "Expected build output not found: ${target}" >&2
               exit 1
             fi
-            # Preserve symlinks/resource forks in .app bundles.
             ditto -c -k --sequesterRsrc --keepParent "${target}" "release-artifacts/${app_name}-${runner_os}.zip"
           else
             target="dist/${app_name}"
@@ -179,13 +278,14 @@ jobs:
           fi
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
-          name: MultiSOCIAL-${{ matrix.profile }}-${{ runner.os }}
+          name: MultiSOCIAL-${{ env.APP_VERSION }}-${{ matrix.profile }}-${{ runner.os }}
           path: workflow-artifacts/*
 
-      - name: Publish tagged release assets
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v3
+      - name: Upload release assets to upstream release
+        if: needs.prepare.outputs.should_publish_release == 'true'
+        uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.prepare.outputs.release_tag }}
           files: release-artifacts/*
