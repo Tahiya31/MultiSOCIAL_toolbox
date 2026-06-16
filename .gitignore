@@ -213,3 +213,11 @@ venv/
 
 # Pretrained models
 /pretrained_models/
+
+# Agent cofig
+.cursor/
+CONTEXT.md
+
+# Testing Workflows
+/audio-test
+/pose-test
