@@ -292,6 +292,14 @@ class VideoToWavConverter(wx.Frame):
         gui_utils.style_checkbox_for_glass(self.diarizationCheckbox)
         audio_sizer.Add(self.diarizationCheckbox, flag=wx.ALIGN_CENTER|wx.ALL, border=6)
 
+        # Word-level timestamps (precomputes the JSON sidecar that Align Features needs,
+        # so alignment doesn't have to re-run transcription on every file later)
+        self.wordTimestampsCheckbox = wx.CheckBox(self.audioPanel, label="Save word-level timestamps (for Align Features)")
+        self.wordTimestampsCheckbox.SetFont(Theme.get_font(12))
+        self.wordTimestampsCheckbox.SetForegroundColour(Theme.COLOR_TEXT_WHITE)
+        gui_utils.style_checkbox_for_glass(self.wordTimestampsCheckbox)
+        audio_sizer.Add(self.wordTimestampsCheckbox, flag=wx.ALIGN_CENTER|wx.ALL, border=6)
+
         self.diarizationStatusLabel = gui_utils.create_transparent_text(
             self.audioPanel,
             label="Diarization status: checking optional component...",
@@ -613,6 +621,8 @@ class VideoToWavConverter(wx.Frame):
                 self.multiPersonCheckbox.SetFont(self._scale_font(14, scale))
             if hasattr(self, 'diarizationCheckbox') and self.diarizationCheckbox:
                 self.diarizationCheckbox.SetFont(self._scale_font(12, scale))
+            if hasattr(self, 'wordTimestampsCheckbox') and self.wordTimestampsCheckbox:
+                self.wordTimestampsCheckbox.SetFont(self._scale_font(12, scale))
             if hasattr(self, 'diarizationStatusLabel') and self.diarizationStatusLabel:
                 self.diarizationStatusLabel.SetFont(self._scale_font(11, scale))
                 try:
@@ -1321,19 +1331,30 @@ class VideoToWavConverter(wx.Frame):
                 )
                 audio_processor.enable_speaker_diarization = False
 
+        # Word-level timestamps are opt-in: they precompute the JSON sidecar Align Features
+        # needs, so alignment doesn't have to re-run transcription file-by-file later.
+        word_timestamps = bool(
+            hasattr(self, 'wordTimestampsCheckbox') and self.wordTimestampsCheckbox.GetValue()
+        )
+
         # Run transcription in a separate thread
-        thread = threading.Thread(target=self.extract_transcripts_batch, args=(audio_files, audio_processor))
+        thread = threading.Thread(
+            target=self.extract_transcripts_batch,
+            args=(audio_files, audio_processor, word_timestamps),
+        )
         thread.start()
 
 
-    def extract_transcripts_batch(self, audio_files, audio_processor):
+    def extract_transcripts_batch(self, audio_files, audio_processor, word_timestamps=False):
         """Batch process all audio files to generate transcripts."""
         self._process_running = True
         try:
             def progress_callback(progress):
                 self.update_progress(progress)
-            
-            audio_processor.extract_transcripts_batch(audio_files, progress_callback=progress_callback)
+
+            audio_processor.extract_transcripts_batch(
+                audio_files, progress_callback=progress_callback, word_timestamps=word_timestamps
+            )
             wx.CallAfter(wx.MessageBox, "Transcription extraction completed!", "Success", wx.OK | wx.ICON_INFORMATION)
         except Exception as e:
             wx.CallAfter(wx.MessageBox, f"Error during transcript extraction: {e}", "Error", wx.OK | wx.ICON_ERROR)
@@ -1381,10 +1402,11 @@ class VideoToWavConverter(wx.Frame):
             )
             
             alignment_pairs = []
-            
+            prep_errors = []  # (base_name, reason) for files we couldn't prepare
+
             for i, audio_file in enumerate(audio_files, start=1):
                 base_name = os.path.splitext(os.path.basename(audio_file))[0]
-                
+
                 # 1. Ensure we have word-level transcript (JSON)
                 json_path = os.path.join(self.extracted_transcripts_folder, f"{base_name}_words.json")
                 if not os.path.exists(json_path):
@@ -1394,8 +1416,15 @@ class VideoToWavConverter(wx.Frame):
                         audio_processor.extract_transcript(audio_file, word_timestamps=True)
                     except Exception as e:
                         print(f"Failed to generate transcript for {base_name}: {e}")
+                        prep_errors.append((base_name, f"transcript failed: {e}"))
                         continue
-                
+                    # extract_transcript only warns (doesn't raise) if the JSON can't be
+                    # written, so confirm the sidecar actually exists before pairing it.
+                    if not os.path.exists(json_path):
+                        print(f"Word-level JSON was not produced for {base_name}; skipping.")
+                        prep_errors.append((base_name, "word-level JSON was not produced"))
+                        continue
+
                 # 2. Ensure we have features CSV
                 # Feature files are usually named {base_name}.csv or similar in extracted_audio_folder
                 # The AudioProcessor.extract_audio_features saves them as {base_name}.csv
@@ -1408,28 +1437,41 @@ class VideoToWavConverter(wx.Frame):
                         # Verify the file was created
                         if not os.path.exists(feature_csv):
                             print(f"Feature extraction completed but file not found: {feature_csv}, skipping.")
+                            prep_errors.append((base_name, "feature CSV was not produced"))
                             continue
                     except Exception as e:
                         print(f"Failed to extract features for {base_name}: {e}")
+                        prep_errors.append((base_name, f"feature extraction failed: {e}"))
                         continue
-                        
+
                 # 3. Output path
                 output_csv = os.path.join(self.extracted_audio_folder, f"{base_name}_aligned.csv")
                 alignment_pairs.append((feature_csv, json_path, output_csv))
-                
+
                 self.update_progress(int((i / total_files) * 50)) # First 50% for prep
 
             if not alignment_pairs:
-                wx.CallAfter(wx.MessageBox, "No valid pairs found to align. Ensure you have extracted audio features.", "Warning", wx.OK | wx.ICON_WARNING)
+                detail = "\n".join(f"• {name}: {reason}" for name, reason in prep_errors[:10])
+                if len(prep_errors) > 10:
+                    detail += f"\n…and {len(prep_errors) - 10} more (see console/log)."
+                message = "No valid pairs found to align. Ensure you have extracted audio features."
+                if detail:
+                    message += "\n\nWhat went wrong:\n" + detail
+                wx.CallAfter(wx.MessageBox, message, "Warning", wx.OK | wx.ICON_WARNING)
                 return
 
             # Run alignment
             audio_processor.align_features_batch(
-                alignment_pairs, 
+                alignment_pairs,
                 progress_callback=lambda p: self.update_progress(50 + int(p/2))
             )
-            
-            wx.CallAfter(wx.MessageBox, "Feature alignment completed!", "Success", wx.OK | wx.ICON_INFORMATION)
+
+            success_message = f"Feature alignment completed for {len(alignment_pairs)} file(s)!"
+            if prep_errors:
+                success_message += (
+                    f"\n\n{len(prep_errors)} file(s) were skipped (see console/log for details)."
+                )
+            wx.CallAfter(wx.MessageBox, success_message, "Success", wx.OK | wx.ICON_INFORMATION)
             
         except Exception as e:
             wx.CallAfter(wx.MessageBox, f"Alignment failed: {e}", "Error", wx.OK | wx.ICON_ERROR)
