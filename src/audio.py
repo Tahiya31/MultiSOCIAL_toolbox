@@ -243,17 +243,20 @@ class AudioProcessor:
             print(error_msg)
             raise Exception(error_msg)
 
-    def extract_audio_features_batch(self, audio_files, progress_callback=None):
+    def extract_audio_features_batch(self, audio_files, progress_callback=None, cancel_check=None):
         """
         Batch process multiple audio files to extract features.
         
         Args:
             audio_files (list): List of paths to WAV files
             progress_callback (callable, optional): Callback function for progress updates
+            cancel_check (callable, optional): Return True to stop before the next file
         """
         total_files = len(audio_files)
         
         for i, audio_file in enumerate(audio_files):
+            if cancel_check and cancel_check():
+                break
             self.set_status_message(f"🎧 Extracting audio features from: {os.path.basename(audio_file)}")
             print(f"Extracting features from: {audio_file}")
             
@@ -832,7 +835,7 @@ class AudioProcessor:
             
         return "UNKNOWN"
 
-    def extract_transcripts_batch(self, audio_files, progress_callback=None, word_timestamps=False):
+    def extract_transcripts_batch(self, audio_files, progress_callback=None, word_timestamps=False, cancel_check=None):
         """
         Batch process multiple audio files to generate transcripts.
 
@@ -845,6 +848,7 @@ class AudioProcessor:
             word_timestamps (bool): When True, request word-level timestamps and write a
                 ``{base}_words.json`` sidecar per file so Align Features can reuse it instead
                 of re-transcribing later.
+            cancel_check (callable, optional): Return True to stop before the next file
         """
         if not audio_files:
             return
@@ -889,6 +893,8 @@ class AudioProcessor:
         
         transcription_errors = []
         for i, audio_file in enumerate(audio_files):
+            if cancel_check and cancel_check():
+                return
             self.set_status_message(f"🗣️ Transcribing ({i+1}/{total_files}): {os.path.basename(audio_file)}")
             
             try:
@@ -946,6 +952,8 @@ class AudioProcessor:
                 diarization_range = diarization_end - diarization_start
                 
                 for i, audio_file in enumerate(audio_files):
+                    if cancel_check and cancel_check():
+                        return
                     # Skip files that failed transcription
                     if transcription_results.get(audio_file, (None, None))[0] is None:
                         continue

@@ -122,12 +122,25 @@ if "%NEEDS_INSTALL%"=="1" (
     )
 
     pushd "%SCRIPT_DIR%"
+    python -c "import shutil, site; from pathlib import Path; sp=Path(site.getsitepackages()[0]); removed=[]; \
+[removed.append(p.name) or (shutil.rmtree(p, ignore_errors=True) if p.is_dir() else p.unlink(missing_ok=True)) for pat in ('multisocial_toolbox-*.dist-info','__editable__.multisocial_toolbox-*.pth') for p in sorted(sp.glob(pat))]; \
+print('Cleared stale multisocial-toolbox install metadata:', ', '.join(removed)) if removed else None"
     if /I "%MULTISOCIAL_INSTALL_PROFILE%"=="complete" (
         python -m pip install -e ".[complete]"
     ) else (
         python -m pip install -e .
     )
-    if %errorlevel% neq 0 (
+    if !errorlevel! neq 0 (
+        echo Install failed; clearing stale metadata and retrying with --ignore-installed...
+        python -c "import shutil, site; from pathlib import Path; sp=Path(site.getsitepackages()[0]); \
+[(shutil.rmtree(p, ignore_errors=True) if p.is_dir() else p.unlink(missing_ok=True)) for pat in ('multisocial_toolbox-*.dist-info','__editable__.multisocial_toolbox-*.pth') for p in sorted(sp.glob(pat))]"
+        if /I "%MULTISOCIAL_INSTALL_PROFILE%"=="complete" (
+            python -m pip install --ignore-installed -e ".[complete]"
+        ) else (
+            python -m pip install --ignore-installed -e .
+        )
+    )
+    if !errorlevel! neq 0 (
         echo ERROR: Failed to install toolbox dependencies
         echo Please check your internet connection and try again
         popd

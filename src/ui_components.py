@@ -1,6 +1,15 @@
 import sys
 import wx
-from gui_utils import Theme, _mix_colors
+from gui_utils import Theme, _mix_colors, create_transparent_text, composited_background_colour
+
+
+def _fill_windows_background(window, dc):
+    """On Windows, fill the control's client rect with the colour painted behind
+    it so owner-drawn rounded corners / shadows don't show background artifacts.
+    No-op elsewhere (native BG_STYLE_PAINT transparency already works)."""
+    if sys.platform.startswith("win"):
+        dc.SetBackground(wx.Brush(composited_background_colour(window)))
+        dc.Clear()
 
 class GradientPanel(wx.ScrolledWindow):
     def __init__(self, parent):
@@ -12,16 +21,23 @@ class GradientPanel(wx.ScrolledWindow):
     def OnPaint(self, event):
         dc = wx.AutoBufferedPaintDC(self)
         self.DoPrepareDC(dc)
-        # Use virtual size to fill the entire scrollable area, not just client rect
-        # However, for a simple gradient background that stays fixed or stretches, 
-        # we need to be careful. If we want the gradient to scroll WITH content, we allow it.
-        # If we want fixed background, it's harder with ScrolledWindow.
-        # Let's assume scrolling the gradient is fine or even preferred so it covers everything.
-        
-        # Get the full virtual size to ensure gradient covers all scrolled content
         width, height = self.GetVirtualSize()
         rect = wx.Rect(0, 0, width, height)
         dc.GradientFillLinear(rect, Theme.COLOR_BG_GRADIENT_START, Theme.COLOR_BG_GRADIENT_END, wx.NORTH)
+
+        gc = wx.GraphicsContext.Create(dc)
+        if gc and width > 0 and height > 0:
+            glow = Theme.COLOR_BG_GLOW
+            cx, cy = width / 2.0, height * 0.12
+            radius = max(width, height) * 0.55
+            brush = gc.CreateRadialGradientBrush(
+                cx, cy, cx, cy, radius,
+                wx.Colour(glow[0], glow[1], glow[2], glow[3]),
+                wx.Colour(glow[0], glow[1], glow[2], 0),
+            )
+            gc.SetBrush(brush)
+            gc.SetPen(wx.TRANSPARENT_PEN)
+            gc.DrawRectangle(0, 0, width, height)
 
 
 class GlassPanel(wx.Panel):
@@ -29,11 +45,12 @@ class GlassPanel(wx.Panel):
 
     Children should be added to its internal BoxSizer via SetSizer as usual.
     """
-    def __init__(self, parent, corner_radius=10, fill_rgba=Theme.COLOR_GLASS_FILL):
+    def __init__(self, parent, corner_radius=10, fill_rgba=Theme.COLOR_GLASS_FILL, chrome=True):
         super(GlassPanel, self).__init__(parent, style=wx.BORDER_NONE)
         self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
         self.corner_radius = corner_radius
         self.fill_rgba = fill_rgba
+        self.chrome = chrome
         self.Bind(wx.EVT_PAINT, self.OnPaint)
 
     def _paint_gradient_background_windows(self, dc, rect):
@@ -88,12 +105,13 @@ class GlassPanel(wx.Panel):
         if not gc:
             return
         
-        # Windows-specific: Paint gradient background first to avoid gray showing through
         if sys.platform.startswith("win"):
             self._paint_gradient_background_windows(dc, rect)
-        
-        # Inset so the rounded border isn't clipped
-        inset = 6
+
+        if not self.chrome:
+            return
+
+        inset = self.FromDIP(4)
         x = rect.x + inset
         y = rect.y + inset
         w = max(0, rect.width - inset * 2)
@@ -105,6 +123,17 @@ class GlassPanel(wx.Panel):
         gc.SetBrush(wx.Brush(rcol))
         gc.SetPen(wx.Pen(wx.Colour(*Theme.COLOR_GLASS_BORDER), 1))
         gc.DrawPath(path)
+
+        # Subtle full-height top sheen that fades to nothing (no hard mid-card edge).
+        sheen = gc.CreatePath()
+        sheen.AddRoundedRectangle(x, y, w, h, r)
+        gc.SetBrush(gc.CreateLinearGradientBrush(
+            x, y, x, y + h,
+            wx.Colour(255, 255, 255, 14),
+            wx.Colour(255, 255, 255, 0),
+        ))
+        gc.SetPen(wx.TRANSPARENT_PEN)
+        gc.DrawPath(sheen)
 
 
 class ElevatedLogoPanel(wx.Panel):
@@ -202,20 +231,21 @@ class ElevatedLogoPanel(wx.Panel):
         # Subtle shadow (fake blur via semi-transparent larger ellipse)
         gc = wx.GraphicsContext.Create(dc)
         if gc:
-            shadow_color = wx.Colour(0, 0, 0, 60)  # low alpha for soft shadow
+            shadow_color = wx.Colour(0, 0, 0, 70)
             gc.SetBrush(wx.Brush(shadow_color))
             gc.SetPen(wx.Pen(shadow_color, 1))
-            gc.DrawEllipse(x + 3, y + 4, diameter, diameter)  # slight offset
+            gc.DrawEllipse(x + 2, y + 5, diameter, diameter)
 
-        # Prepare circular bitmap and draw
         circ_bmp = self._create_circular_bitmap(self.logo_bitmap, diameter)
         dc.DrawBitmap(circ_bmp, x, y, True)
 
-        # Black circular border
         if gc:
             gc.SetBrush(wx.TRANSPARENT_BRUSH)
-            gc.SetPen(wx.Pen(wx.Colour(0, 0, 0), 3))
+            ring = Theme.colour(Theme.COLOR_ACCENT_GREEN)
+            gc.SetPen(wx.Pen(ring, 2))
             gc.DrawEllipse(x, y, diameter, diameter)
+            gc.SetPen(wx.Pen(wx.Colour(255, 255, 255, 40), 1))
+            gc.DrawEllipse(x + 2, y + 2, diameter - 4, diameter - 4)
 
     def OnMouseEnter(self, event):
         self.hover = True
@@ -243,10 +273,10 @@ class CustomTooltip(wx.PopupWindow):
         # Create a panel for the tooltip content
         panel = wx.Panel(self)
         panel.SetBackgroundColour(Theme.COLOR_TOOLTIP_BG)
+        self.content_panel = panel
         
-        # Create text control for the tooltip with word wrapping
         self.text_ctrl = wx.StaticText(panel, label=text, style=wx.ALIGN_LEFT)
-        self.text_ctrl.SetFont(Theme.get_font(11, bold=False))
+        self.text_ctrl.SetFont(Theme.get_font(Theme.FONT_CAPTION, bold=False))
         self.text_ctrl.SetForegroundColour(Theme.COLOR_TOOLTIP_FG)
         self.text_ctrl.Wrap(340)
         
@@ -263,94 +293,132 @@ class CustomTooltip(wx.PopupWindow):
 
 class InfoIcon(wx.StaticText):
     def __init__(self, parent, tooltip_text):
-        super(InfoIcon, self).__init__(parent, label="ℹ", style=wx.ALIGN_CENTER)
+        super(InfoIcon, self).__init__(parent, label="?", style=wx.ALIGN_CENTER)
         self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
         self.tooltip_text = tooltip_text
         self.tooltip = None
+        self._hide_timer = None
         self._top_level = self.GetTopLevelParent()
         
-        # Style the info icon
-        self.SetFont(Theme.get_font(12, bold=True))
-        self.SetForegroundColour(Theme.COLOR_TEXT_WHITE)
-        self.SetBackgroundColour(Theme.COLOR_INFO_ICON_BG)
-        self.SetMinSize(self.FromDIP(wx.Size(20, 20)))
+        self.SetFont(Theme.get_font(Theme.FONT_CAPTION, bold=True))
+        self.SetForegroundColour(Theme.colour(Theme.COLOR_TEXT_MUTED))
+        self.SetMinSize(self.FromDIP(wx.Size(24, 24)))
         
-        # Bind mouse events
         self.Bind(wx.EVT_ENTER_WINDOW, self.OnMouseEnter)
         self.Bind(wx.EVT_LEAVE_WINDOW, self.OnMouseLeave)
-        self.Bind(wx.EVT_MOTION, self.OnMouseMove)
         self.Bind(wx.EVT_PAINT, self.OnPaint)
-        # Hide tooltip when the window moves/resizes to avoid misplacement
         if self._top_level:
             self._top_level.Bind(wx.EVT_MOVE, self._on_parent_move_or_resize)
             self._top_level.Bind(wx.EVT_SIZE, self._on_parent_move_or_resize)
-        # Cleanup bindings on destroy
         self.Bind(wx.EVT_WINDOW_DESTROY, self._on_destroy)
     
     def OnPaint(self, event):
         dc = wx.AutoBufferedPaintDC(self)
+        gc = wx.GraphicsContext.Create(dc)
+        if not gc:
+            return
         rect = self.GetClientRect()
-        
-        # Draw circular background
-        dc.SetBrush(wx.Brush(Theme.COLOR_INFO_ICON_BG))
-        dc.SetPen(wx.Pen(Theme.COLOR_INFO_ICON_BG, 1))
-        dc.DrawCircle(rect.width//2, rect.height//2, min(rect.width, rect.height)//2 - 1)
-        
-        # Draw the "i" text
-        dc.SetTextForeground(Theme.COLOR_TEXT_WHITE)
-        dc.SetFont(self.GetFont())
-        text_width, text_height = dc.GetTextExtent("ℹ")
-        dc.DrawText("ℹ", (rect.width - text_width)//2, (rect.height - text_height)//2)
+        cx = rect.width / 2.0
+        cy = rect.height / 2.0
+        radius = min(rect.width, rect.height) / 2.0 - 1
+
+        hovered = getattr(self, "_hover", False)
+        if hovered:
+            fill = Theme.colour(Theme.COLOR_ACCENT_INFO_SOFT)
+            border = Theme.colour(Theme.COLOR_ACCENT_INFO)
+            glyph = Theme.colour(Theme.COLOR_ACCENT_INFO)
+        else:
+            fill = Theme.colour(Theme.COLOR_INFO_ICON_BG)
+            border = Theme.colour(Theme.COLOR_INFO_ICON_BORDER)
+            glyph = Theme.colour(Theme.COLOR_TEXT_MUTED)
+
+        gc.SetBrush(wx.Brush(fill))
+        gc.SetPen(wx.Pen(border, 1))
+        gc.DrawEllipse(cx - radius, cy - radius, radius * 2, radius * 2)
+
+        gc.SetFont(self.GetFont(), glyph)
+        label = "?"
+        tw, th = gc.GetTextExtent(label)
+        gc.DrawText(label, cx - tw / 2.0, cy - th / 2.0)
     
     def OnMouseEnter(self, event):
+        self._hover = True
+        self.Refresh()
+        self._cancel_hide()
         if not self.tooltip:
             self.tooltip = CustomTooltip(self.GetParent(), self.tooltip_text)
-            self.ShowTooltip()
+            self._bind_tooltip_hover()
+        self.ShowTooltip()
         event.Skip()
-    
+
     def OnMouseLeave(self, event):
-        if self.tooltip:
-            self.tooltip.Destroy()
-            self.tooltip = None
+        self._hover = False
+        self.Refresh()
+        self._schedule_hide()
         event.Skip()
     
-    def OnMouseMove(self, event):
-        if self.tooltip:
-            self.ShowTooltip()
+    def _bind_tooltip_hover(self):
+        if not self.tooltip:
+            return
+        for win in (self.tooltip, getattr(self.tooltip, "content_panel", None), getattr(self.tooltip, "text_ctrl", None)):
+            if win:
+                win.Bind(wx.EVT_ENTER_WINDOW, self._on_tooltip_enter)
+                win.Bind(wx.EVT_LEAVE_WINDOW, self._on_tooltip_leave)
+
+    def _on_tooltip_enter(self, event):
+        self._cancel_hide()
         event.Skip()
+
+    def _on_tooltip_leave(self, event):
+        self._schedule_hide()
+        event.Skip()
+
+    def _cancel_hide(self):
+        if self._hide_timer and self._hide_timer.IsRunning():
+            self._hide_timer.Stop()
+
+    def _schedule_hide(self):
+        self._cancel_hide()
+        self._hide_timer = wx.Timer(self)
+        self.Bind(wx.EVT_TIMER, self._on_hide_timer, self._hide_timer)
+        self._hide_timer.Start(150, oneShot=True)
+
+    def _on_hide_timer(self, event):
+        self._destroy_tooltip()
+
+    def _destroy_tooltip(self):
+        if self.tooltip:
+            try:
+                self.tooltip.Destroy()
+            except Exception:
+                pass
+            self.tooltip = None
     
     def ShowTooltip(self):
-        if self.tooltip:
-            # Get the screen position of the icon
-            icon_rect = self.GetRect()
-            parent_pos = self.GetParent().GetScreenPosition()
-            
-            # Calculate tooltip position to the right of the icon
-            tooltip_x = parent_pos.x + icon_rect.x + icon_rect.width + 2
-            tooltip_y = parent_pos.y + icon_rect.y
-            
-            # Clamp within visible display bounds to avoid overflow
-            try:
-                screen_w, screen_h = wx.GetDisplaySize()
-                tip_w, tip_h = self.tooltip.GetSize()
-                tooltip_x = max(0, min(tooltip_x, screen_w - tip_w - 8))
-                tooltip_y = max(0, min(tooltip_y, screen_h - tip_h - 8))
-            except Exception:
-                pass
-            
-            self.tooltip.Position((tooltip_x, tooltip_y), (0, 0))
-            self.tooltip.Show()
+        if not self.tooltip:
+            return
+        icon_rect = self.GetRect()
+        parent_pos = self.GetParent().GetScreenPosition()
+        tooltip_x = parent_pos.x + icon_rect.x
+        tooltip_y = parent_pos.y + icon_rect.y + icon_rect.height + self.FromDIP(6)
+        try:
+            screen_w, screen_h = wx.GetDisplaySize()
+            tip_w, tip_h = self.tooltip.GetSize()
+            tooltip_x = max(0, min(tooltip_x, screen_w - tip_w - 8))
+            tooltip_y = max(0, min(tooltip_y, screen_h - tip_h - 8))
+        except Exception:
+            pass
+        self.tooltip.Position((tooltip_x, tooltip_y), (0, 0))
+        self.tooltip.Show()
+        self.tooltip.Raise()
 
     def _on_parent_move_or_resize(self, event):
-        if self.tooltip:
-            try:
-                self.tooltip.Hide()
-            except Exception:
-                pass
+        self._destroy_tooltip()
         event.Skip()
 
     def _on_destroy(self, event):
-        # Unbind move/size handlers when this icon is destroyed
+        self._destroy_tooltip()
+        self._cancel_hide()
         try:
             if self._top_level:
                 self._top_level.Unbind(wx.EVT_MOVE, handler=self._on_parent_move_or_resize)
@@ -360,50 +428,477 @@ class InfoIcon(wx.StaticText):
         event.Skip()
 
 
-class TooltipButton(wx.Button):
-    def __init__(self, parent, label, tooltip_text):
-        super(TooltipButton, self).__init__(parent, label=label)
-        self.tooltip_text = tooltip_text
-        self.info_icon = None
-        
-    def add_info_icon(self, parent):
-        """Add info icon to the button's parent container"""
-        self.info_icon = InfoIcon(parent, self.tooltip_text)
-        return self.info_icon
-    
+class FlatButton(wx.Window):
+    """Owner-drawn rounded button (primary / secondary / danger)."""
+
+    VARIANT_PRIMARY = "primary"
+    VARIANT_SECONDARY = "secondary"
+    VARIANT_DANGER = "danger"
+
+    _VARIANT_COLORS = {
+        VARIANT_PRIMARY: (
+            Theme.COLOR_PRIMARY,
+            Theme.COLOR_PRIMARY_HOVER,
+            Theme.COLOR_PRIMARY_PRESSED,
+        ),
+        VARIANT_SECONDARY: (
+            Theme.COLOR_SECONDARY,
+            Theme.COLOR_SECONDARY_HOVER,
+            Theme.COLOR_SECONDARY_PRESSED,
+        ),
+        VARIANT_DANGER: (
+            Theme.COLOR_DANGER,
+            Theme.COLOR_DANGER_HOVER,
+            Theme.COLOR_DANGER_PRESSED,
+        ),
+    }
+
+    def __init__(self, parent, label="", variant=VARIANT_PRIMARY, id=wx.ID_ANY, size=(-1, -1)):
+        super(FlatButton, self).__init__(parent, id=id, size=size, style=wx.BORDER_NONE)
+        self._label = label
+        self._variant = variant if variant in self._VARIANT_COLORS else self.VARIANT_PRIMARY
+        self._hover = False
+        self._pressed = False
+        self._font = Theme.get_font(Theme.FONT_BUTTON)
+        self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
+        self.Bind(wx.EVT_PAINT, self._on_paint)
+        self.Bind(wx.EVT_ENTER_WINDOW, self._on_enter)
+        self.Bind(wx.EVT_LEAVE_WINDOW, self._on_leave)
+        self.Bind(wx.EVT_LEFT_DOWN, self._on_down)
+        self.Bind(wx.EVT_LEFT_UP, self._on_up)
+        self.Bind(wx.EVT_MOUSE_CAPTURE_LOST, self._on_capture_lost)
+        self._update_min_size()
+
+    def _update_min_size(self):
+        dc = wx.ClientDC(self)
+        dc.SetFont(self._font)
+        tw, th = dc.GetTextExtent(self._label)
+        pad_x = self.FromDIP(Theme.SPACE_LG * 2)
+        pad_y = self.FromDIP(Theme.SPACE_SM + 4)
+        self.SetMinSize((tw + pad_x, th + pad_y))
+
+    def Enable(self, enable=True):
+        result = super(FlatButton, self).Enable(enable)
+        self.Refresh()
+        return result
+
+    def SetLabel(self, label):
+        self._label = label
+        self._update_min_size()
+        self.Refresh()
+
+    def GetLabel(self):
+        return self._label
+
+    def SetFont(self, font):
+        self._font = font
+        self._update_min_size()
+        self.Refresh()
+
+    def _fill_colour(self):
+        if not self.IsEnabled():
+            return Theme.colour(Theme.COLOR_BTN_DISABLED_FILL)
+        normal, hover, pressed = self._VARIANT_COLORS[self._variant]
+        if self._pressed:
+            return Theme.colour(pressed)
+        if self._hover:
+            return Theme.colour(hover)
+        return Theme.colour(normal)
+
+    def _on_paint(self, event):
+        dc = wx.AutoBufferedPaintDC(self)
+        _fill_windows_background(self, dc)
+        gc = wx.GraphicsContext.Create(dc)
+        if not gc:
+            return
+        rect = self.GetClientRect()
+        radius = self.FromDIP(Theme.RADIUS_BUTTON)
+        is_secondary = self._variant == self.VARIANT_SECONDARY
+        enabled = self.IsEnabled()
+
+        if enabled and not self._pressed:
+            shadow = gc.CreatePath()
+            shadow.AddRoundedRectangle(rect.x, rect.y + 2, rect.width, rect.height, radius)
+            gc.SetBrush(wx.Brush(wx.Colour(0, 0, 0, 55)))
+            gc.SetPen(wx.TRANSPARENT_PEN)
+            gc.DrawPath(shadow)
+
+        path = gc.CreatePath()
+        path.AddRoundedRectangle(rect.x, rect.y, rect.width, rect.height, radius)
+        gc.SetBrush(wx.Brush(self._fill_colour()))
+        if not enabled:
+            gc.SetPen(wx.Pen(Theme.colour(Theme.COLOR_BTN_DISABLED_BORDER), 1))
+        elif is_secondary:
+            gc.SetPen(wx.Pen(Theme.colour(Theme.COLOR_SECONDARY_BORDER), 1))
+        else:
+            gc.SetPen(wx.Pen(wx.Colour(0, 0, 0, 0)))
+        gc.DrawPath(path)
+
+        # No shine on primary: keep it flat so the CTA green reads identical to the
+        # active tab pill (same COLOR_PRIMARY). The drop shadow alone gives depth.
+
+        if not enabled:
+            text_colour = Theme.colour(Theme.COLOR_TEXT_SUBTLE)
+        else:
+            text_colour = Theme.colour(Theme.COLOR_TEXT_ON_DARK)
+        gc.SetFont(self._font, text_colour)
+        tw, th = gc.GetTextExtent(self._label)
+        gc.DrawText(
+            self._label,
+            rect.x + (rect.width - tw) / 2.0,
+            rect.y + (rect.height - th) / 2.0,
+        )
+
+    def _on_enter(self, event):
+        if self.IsEnabled():
+            self._hover = True
+            self.SetCursor(wx.Cursor(wx.CURSOR_HAND))
+            self.Refresh()
+        event.Skip()
+
+    def _on_leave(self, event):
+        # Leave hover state, but keep _pressed/capture intact while the button is
+        # held: _on_up (or capture-lost) is the only place that releases capture,
+        # so clearing _pressed here would leak the mouse capture and freeze input.
+        self._hover = False
+        self.SetCursor(wx.Cursor(wx.CURSOR_ARROW))
+        self.Refresh()
+        event.Skip()
+
+    def _on_down(self, event):
+        if self.IsEnabled():
+            self._pressed = True
+            self.CaptureMouse()
+            self.Refresh()
+        event.Skip()
+
+    def _on_up(self, event):
+        was_pressed = self._pressed
+        self._pressed = False
+        if self.HasCapture():
+            self.ReleaseMouse()
+        self.Refresh()
+        if was_pressed and self.IsEnabled() and self.GetClientRect().Contains(event.GetPosition()):
+            evt = wx.CommandEvent(wx.EVT_BUTTON.typeId, self.GetId())
+            evt.SetEventObject(self)
+            self.GetEventHandler().ProcessEvent(evt)
+        event.Skip()
+
+    def _on_capture_lost(self, event):
+        # Required whenever CaptureMouse() is used: if the capture is stolen
+        # (e.g. a modal dialog opens), reset state instead of asserting.
+        self._pressed = False
+        self.Refresh()
+
+
+class _TabFontProxy:
+    """Allows font-scaling registry to target segmented tab labels."""
+
+    def __init__(self, bar):
+        self._bar = bar
+
+    def SetFont(self, font):
+        self._bar._tab_font = font
+        self._bar.Refresh()
+
+
+class ToggleTabBar(wx.Panel):
+    """Segmented Video / Audio mode control."""
+
+    _SEGMENTS = (("video", "Video"), ("audio", "Audio"))
+
+    def __init__(self, parent):
+        super(ToggleTabBar, self).__init__(parent, style=wx.BORDER_NONE)
+        self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
+        self._selected = "video"
+        self._tabs_enabled = True
+        self._on_change = None
+        self._tab_font = Theme.get_font(Theme.FONT_BODY, bold=True)
+        self._hover_segment = None
+
+        self.video_tab = _TabFontProxy(self)
+        self.audio_tab = _TabFontProxy(self)
+
+        tab_h = self.FromDIP(50)
+        self.SetMinSize((-1, tab_h))
+        self.SetMaxSize((-1, tab_h))
+        self.Bind(wx.EVT_PAINT, self._on_paint)
+        self.Bind(wx.EVT_LEFT_DOWN, self._on_click)
+        self.Bind(wx.EVT_MOTION, self._on_motion)
+        self.Bind(wx.EVT_LEAVE_WINDOW, self._on_leave)
+
+    def set_on_change(self, callback):
+        self._on_change = callback
+
+    def set_selected(self, mode):
+        self._select(mode, fire=False)
+
+    def get_selected(self):
+        return self._selected
+
+    def EnableTabs(self, enable=True):
+        self._tabs_enabled = enable
+        self.Refresh()
+
+    def _segment_at(self, x):
+        rect = self.GetClientRect()
+        pad = self.FromDIP(Theme.SPACE_XS)
+        track_w = max(1, rect.width - pad * 2)
+        local_x = x - pad
+        if local_x < track_w / 2.0:
+            return "video"
+        return "audio"
+
+    def _select(self, mode, fire=False):
+        if not self._tabs_enabled and fire:
+            return
+        if mode not in ("video", "audio"):
+            return
+        self._selected = mode
+        self.Refresh()
+        if fire and self._on_change:
+            self._on_change(mode)
+
+    def _on_click(self, event):
+        if not self._tabs_enabled:
+            return
+        self._select(self._segment_at(event.GetX()), fire=True)
+
+    def _on_motion(self, event):
+        if not self._tabs_enabled:
+            self._hover_segment = None
+            return
+        seg = self._segment_at(event.GetX())
+        if seg != self._hover_segment:
+            self._hover_segment = seg
+            self.SetCursor(wx.Cursor(wx.CURSOR_HAND))
+            self.Refresh()
+
+    def _on_leave(self, event):
+        self._hover_segment = None
+        self.SetCursor(wx.Cursor(wx.CURSOR_ARROW))
+        self.Refresh()
+        event.Skip()
+
+    def _on_paint(self, event):
+        dc = wx.AutoBufferedPaintDC(self)
+        _fill_windows_background(self, dc)
+        gc = wx.GraphicsContext.Create(dc)
+        if not gc:
+            return
+
+        rect = self.GetClientRect()
+        pad = self.FromDIP(Theme.SPACE_XS)
+        track = wx.Rect(pad, pad, rect.width - pad * 2, rect.height - pad * 2)
+        radius = self.FromDIP(Theme.RADIUS_TAB)
+
+        # Opaque track so tabs never disappear under siblings on any platform
+        track_path = gc.CreatePath()
+        track_path.AddRoundedRectangle(track.x, track.y, track.width, track.height, radius)
+        gc.SetBrush(wx.Brush(Theme.colour(Theme.COLOR_TAB_TRACK)))
+        gc.SetPen(wx.Pen(wx.Colour(255, 255, 255, 20), 1))
+        gc.DrawPath(track_path)
+
+        seg_w = track.width / 2.0
+        for idx, (mode, _label) in enumerate(self._SEGMENTS):
+            if mode != self._selected:
+                continue
+            pill_x = track.x + idx * seg_w + self.FromDIP(3)
+            pill_y = track.y + self.FromDIP(3)
+            pill_w = seg_w - self.FromDIP(6)
+            pill_h = track.height - self.FromDIP(6)
+            pill_path = gc.CreatePath()
+            pill_path.AddRoundedRectangle(pill_x, pill_y, pill_w, pill_h, radius - 2)
+            gc.SetBrush(wx.Brush(Theme.colour(Theme.COLOR_TAB_ACTIVE)))
+            gc.SetPen(wx.Pen(Theme.colour(Theme.COLOR_TAB_ACTIVE_BORDER), 1))
+            gc.DrawPath(pill_path)
+
+        font = self._tab_font
+        for idx, (mode, label) in enumerate(self._SEGMENTS):
+            if not self._tabs_enabled:
+                colour = Theme.colour(Theme.COLOR_DISABLED)
+            elif mode == self._selected:
+                colour = Theme.colour(Theme.COLOR_TEXT_BLACK)
+            elif mode == self._hover_segment:
+                colour = Theme.colour(Theme.COLOR_ACCENT_GREEN)
+            else:
+                colour = Theme.colour(Theme.COLOR_TEXT_MUTED)
+            gc.SetFont(font, colour)
+            tw, th = gc.GetTextExtent(label)
+            cx = track.x + seg_w * idx + seg_w / 2.0
+            cy = track.y + track.height / 2.0
+            gc.DrawText(label, cx - tw / 2.0, cy - th / 2.0)
+
+
+class CustomCheckBox(wx.Window):
+    """Owner-drawn checkbox with label."""
+
+    def __init__(self, parent, label="", id=wx.ID_ANY):
+        super(CustomCheckBox, self).__init__(parent, id=id, style=wx.BORDER_NONE)
+        self._label = label
+        self._value = False
+        self._hover = False
+        self._font = Theme.get_font(Theme.FONT_BODY)
+        self._text_colour = Theme.colour(Theme.COLOR_TEXT_WHITE)
+        self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
+        self.Bind(wx.EVT_PAINT, self._on_paint)
+        self.Bind(wx.EVT_LEFT_DOWN, self._on_click)
+        self.Bind(wx.EVT_ENTER_WINDOW, self._on_enter)
+        self.Bind(wx.EVT_LEAVE_WINDOW, self._on_leave)
+        self._update_min_size()
+
+    def _box_size(self):
+        return self.FromDIP(18)
+
+    def _update_min_size(self):
+        dc = wx.ClientDC(self)
+        dc.SetFont(self._font)
+        tw, th = dc.GetTextExtent(self._label)
+        box = self._box_size()
+        gap = self.FromDIP(Theme.SPACE_SM)
+        self.SetMinSize((box + gap + tw, max(box, th) + self.FromDIP(Theme.SPACE_XS)))
+
+    def GetValue(self):
+        return self._value
+
+    def SetValue(self, value):
+        self._value = bool(value)
+        self.Refresh()
+
+    def SetLabel(self, label):
+        self._label = label
+        self._update_min_size()
+        self.Refresh()
+
+    def GetLabel(self):
+        return self._label
+
+    def SetFont(self, font):
+        self._font = font
+        self._update_min_size()
+        self.Refresh()
+
+    def SetForegroundColour(self, colour):
+        self._text_colour = colour
+        self.Refresh()
+
+    def Enable(self, enable=True):
+        result = super(CustomCheckBox, self).Enable(enable)
+        self.Refresh()
+        return result
+
+    def _on_paint(self, event):
+        dc = wx.AutoBufferedPaintDC(self)
+        _fill_windows_background(self, dc)
+        gc = wx.GraphicsContext.Create(dc)
+        if not gc:
+            return
+        rect = self.GetClientRect()
+        box = self._box_size()
+        by = rect.y + (rect.height - box) / 2.0
+        bx = rect.x
+        gap = self.FromDIP(Theme.SPACE_SM)
+
+        if self._hover and self.IsEnabled():
+            row_path = gc.CreatePath()
+            row_path.AddRoundedRectangle(rect.x - 4, rect.y, rect.width + 8, rect.height, self.FromDIP(6))
+            gc.SetBrush(wx.Brush(wx.Colour(255, 255, 255, 12)))
+            gc.SetPen(wx.TRANSPARENT_PEN)
+            gc.DrawPath(row_path)
+
+        enabled = self.IsEnabled()
+        radius = self.FromDIP(5)
+        path = gc.CreatePath()
+        path.AddRoundedRectangle(bx, by, box, box, radius)
+        if self._value and enabled:
+            gc.SetBrush(wx.Brush(Theme.colour(Theme.COLOR_PRIMARY)))
+            gc.SetPen(wx.Pen(Theme.colour(Theme.COLOR_PRIMARY_HOVER), 1))
+        else:
+            gc.SetBrush(wx.Brush(Theme.colour(Theme.COLOR_BTN_DISABLED_FILL if not enabled else Theme.COLOR_INPUT_BG)))
+            gc.SetPen(wx.Pen(Theme.colour(Theme.COLOR_BTN_DISABLED_BORDER if not enabled else Theme.COLOR_SECONDARY_BORDER), 1))
+        gc.DrawPath(path)
+        if self._value and enabled:
+            gc.SetPen(wx.Pen(Theme.colour(Theme.COLOR_TEXT_ON_DARK), 2))
+            cx, cy = bx + box / 2.0, by + box / 2.0
+            gc.StrokeLine(cx - box * 0.2, cy, cx - box * 0.05, cy + box * 0.18)
+            gc.StrokeLine(cx - box * 0.05, cy + box * 0.18, cx + box * 0.22, cy - box * 0.15)
+        label_colour = self._text_colour if enabled else Theme.colour(Theme.COLOR_TEXT_SUBTLE)
+        gc.SetFont(self._font, label_colour)
+        tw, th = gc.GetTextExtent(self._label)
+        gc.DrawText(self._label, bx + box + gap, rect.y + (rect.height - th) / 2.0)
+
+    def _on_click(self, event):
+        if not self.IsEnabled():
+            return
+        self._value = not self._value
+        self.Refresh()
+        evt = wx.CommandEvent(wx.EVT_CHECKBOX.typeId, self.GetId())
+        evt.SetInt(int(self._value))
+        evt.SetEventObject(self)
+        self.GetEventHandler().ProcessEvent(evt)
+
+    def _on_enter(self, event):
+        self._hover = True
+        self.SetCursor(wx.Cursor(wx.CURSOR_HAND))
+        event.Skip()
+
+    def _on_leave(self, event):
+        self._hover = False
+        self.SetCursor(wx.Cursor(wx.CURSOR_ARROW))
+        self.Refresh()
+        event.Skip()
+
+
+class SectionCard(GlassPanel):
+    """Glass card with optional heading and standardized padding."""
+
+    def __init__(self, parent, heading=None, corner_radius=Theme.RADIUS_CARD, fill_rgba=Theme.COLOR_SURFACE_ELEVATED):
+        super(SectionCard, self).__init__(parent, corner_radius=corner_radius, fill_rgba=fill_rgba)
+        outer = wx.BoxSizer(wx.VERTICAL)
+        pad = Theme.SPACE_LG
+        if heading:
+            heading_label = create_transparent_text(self, label=heading.upper(), style=wx.ALIGN_LEFT)
+            heading_label.SetFont(Theme.get_font(Theme.FONT_OVERLINE, bold=True))
+            heading_label.SetForegroundColour(Theme.colour(Theme.COLOR_TEXT_MUTED))
+            outer.Add(heading_label, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=pad)
+            divider = wx.Panel(self, size=(-1, 1))
+            divider.SetBackgroundColour(Theme.colour(Theme.COLOR_GLASS_BORDER))
+            outer.Add(divider, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=Theme.SPACE_SM)
+            self._heading_label = heading_label
+        else:
+            self._heading_label = None
+        self.content_sizer = wx.BoxSizer(wx.VERTICAL)
+        outer.Add(self.content_sizer, proportion=1, flag=wx.EXPAND | wx.ALL, border=pad)
+        self.SetSizer(outer)
+
+
+class TooltipButton:
+    """Factory for FlatButton + InfoIcon action rows."""
+
     @staticmethod
-    def create_with_icon(parent, label, tooltip_text, font=None, handler=None):
-        """Factory method to create a button and its info icon in a horizontal sizer."""
+    def create_with_icon(parent, label, tooltip_text, font=None, handler=None, variant=FlatButton.VARIANT_PRIMARY):
         sizer = wx.BoxSizer(wx.HORIZONTAL)
-        
-        btn = TooltipButton(parent, label, tooltip_text)
+        btn = FlatButton(parent, label=label, variant=variant)
         if font:
             btn.SetFont(font)
         if handler:
             btn.Bind(wx.EVT_BUTTON, handler)
-            
-        sizer.Add(btn, flag=wx.ALIGN_CENTER|wx.ALL, border=12)
-        
-        info_icon = btn.add_info_icon(parent)
-        sizer.Add(info_icon, flag=wx.ALIGN_CENTER|wx.LEFT, border=5)
-        
+        sizer.Add(btn, proportion=1, flag=wx.EXPAND | wx.ALL, border=Theme.SPACE_SM)
+        info_icon = InfoIcon(parent, tooltip_text)
+        sizer.Add(info_icon, flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=Theme.SPACE_SM)
         return btn, sizer
 
 class CustomGauge(wx.Panel):
     """A custom-drawn gauge that respects height on macOS and Windows."""
-    def __init__(self, parent, range=100, size=(-1, 28)):
-        # Add wx.NO_BORDER and wx.NO_FULL_REPAINT_ON_RESIZE to prevent Windows artifacts
+    def __init__(self, parent, range=100, size=(-1, 32)):
         super(CustomGauge, self).__init__(parent, size=size, style=wx.NO_BORDER | wx.NO_FULL_REPAINT_ON_RESIZE)
         self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
         self._range = range
         self._value = 0
-        # Default colors
-        self._bg_color = wx.Colour(40, 40, 40, 100)  # Dark semi-transparent background
-        self._fg_color = wx.Colour(33, 150, 243)  # Blue
-        
-        # Windows-specific: disable focus indicators and set background
+        self._bg_color = Theme.colour(Theme.COLOR_PROGRESS_TRACK)
+        self._fg_color = Theme.colour(Theme.COLOR_PROGRESS_FILL)
+
         if wx.Platform == '__WXMSW__':
-            self.SetBackgroundColour(wx.Colour(30, 60, 40))  # Match gradient
             self.SetDoubleBuffered(True)
         
         self.Bind(wx.EVT_PAINT, self.OnPaint)
@@ -443,64 +938,41 @@ class CustomGauge(wx.Panel):
     def OnPaint(self, event):
         # Use AutoBufferedPaintDC for cross-platform consistency (prevents flicker on Windows)
         dc = wx.AutoBufferedPaintDC(self)
-        
-        # Clear background on Windows to prevent artifacts
-        if wx.Platform == '__WXMSW__':
-            dc.SetBackground(wx.Brush(wx.Colour(30, 60, 40)))  # Match gradient
-            dc.Clear()
-        
-        # Use GraphicsContext for smoother anti-aliased drawing
+        _fill_windows_background(self, dc)
+
         gc = wx.GraphicsContext.Create(dc)
         if not gc:
             return
 
         rect = self.GetClientRect()
-        
-        # 1. Draw Track
-        # We don't clear background, so the parent gradient should show through in empty areas
-        # (assuming the windowing system supports it, which macOS usually does)
-        
-        # Track Color
+        r = min(self.FromDIP(8), rect.height / 2.0, rect.width / 2.0)
+
+        track_path = gc.CreatePath()
+        track_path.AddRoundedRectangle(rect.x, rect.y, rect.width, rect.height, r)
         gc.SetBrush(wx.Brush(self._bg_color))
-        # Transparent pen to avoid border artifacts
-        gc.SetPen(wx.Pen(wx.Colour(0,0,0,0), 1)) 
-        
-        # Draw rounded track
-        corner_radius = 4
-        # Ensure radius isn't too big for the rect
-        r = min(corner_radius, rect.height / 2, rect.width / 2)
-        
-        path = gc.CreatePath()
-        path.AddRoundedRectangle(rect.x, rect.y, rect.width, rect.height, r)
-        gc.DrawPath(path)
-        
-        # 2. Draw Progress
+        gc.SetPen(wx.Pen(wx.Colour(255, 255, 255, 15), 1))
+        gc.DrawPath(track_path)
+
         if self._value > 0 and self._range > 0:
             pct = float(self._value) / float(self._range)
-            w = rect.width * pct
-            
-            # Only draw if width is meaningful
-            if w >= 1:
-                gc.SetBrush(wx.Brush(self._fg_color))
-                gc.SetPen(wx.Pen(wx.Colour(0,0,0,0), 1))
-                
-                path_bar = gc.CreatePath()
-                
-                if w >= rect.width:
-                    # Full width - regular rounded rect
-                    path_bar.AddRoundedRectangle(rect.x, rect.y, rect.width, rect.height, r)
-                else:
-                    # Partially filled - trickier to do "rounded left, square right"
-                    # But for simplicity and aesthetics, a rounded rect clipped or just a rounded rect
-                    # often looks okay if it's just the bar inside the track.
-                    # Let's try to match the track shape.
-                    
-                    # We can intersect the track path with a rectangle of width w
-                    # But clipping in wx.GraphicsContext:
-                    gc.Clip(rect.x, rect.y, w, rect.height)
-                    path_bar.AddRoundedRectangle(rect.x, rect.y, rect.width, rect.height, r)
-                    gc.DrawPath(path_bar)
-                    gc.ResetClip()
-                    return # Done
-                    
-                gc.DrawPath(path_bar)
+            w = max(1.0, rect.width * pct)
+            fill_rect = wx.Rect(rect.x, rect.y, int(w), rect.height)
+            gc.Clip(fill_rect.x, fill_rect.y, fill_rect.width, fill_rect.height)
+
+            glow = Theme.COLOR_PROGRESS_GLOW
+            bar_brush = gc.CreateLinearGradientBrush(
+                rect.x, rect.y, rect.x, rect.y + rect.height,
+                wx.Colour(46, 212, 122),
+                wx.Colour(34, 184, 106),
+            )
+            gc.SetBrush(bar_brush)
+            gc.SetPen(wx.TRANSPARENT_PEN)
+            bar_path = gc.CreatePath()
+            bar_path.AddRoundedRectangle(rect.x, rect.y, rect.width, rect.height, r)
+            gc.DrawPath(bar_path)
+            gc.ResetClip()
+
+            shine = gc.CreatePath()
+            shine.AddRoundedRectangle(rect.x + 1, rect.y + 1, min(w, rect.width) - 2, rect.height * 0.4, r)
+            gc.SetBrush(wx.Brush(wx.Colour(255, 255, 255, 35)))
+            gc.DrawPath(shine)

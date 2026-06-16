@@ -200,3 +200,60 @@ def test_align_features_maps_words_to_feature_means(import_audio, tmp_path):
     assert result.loc[0, "f0"] == 3.0
     # "world" spans [0.5, 1.0] -> frames 5.0, 7.0 -> mean 6.0
     assert result.loc[1, "f0"] == 6.0
+
+
+def test_extract_audio_features_batch_cancel_check(import_audio, tmp_path, monkeypatch):
+    audio = import_audio
+    processor = _make_processor(audio, tmp_path)
+    processed = []
+
+    def fake_extract(path, progress_callback=None):
+        processed.append(path)
+        return str(tmp_path / f"{os.path.basename(path)}.csv")
+
+    monkeypatch.setattr(processor, "extract_audio_features", fake_extract)
+
+    files = []
+    for i in range(3):
+        wav = tmp_path / f"clip{i}.wav"
+        wav.write_bytes(b"RIFF")
+        files.append(str(wav))
+
+    checks = {"n": 0}
+
+    def cancel_check():
+        checks["n"] += 1
+        return checks["n"] > 1
+
+    processor.extract_audio_features_batch(files, cancel_check=cancel_check)
+    assert len(processed) == 1
+
+
+def test_extract_transcripts_batch_cancel_check(monkeypatch, import_audio, tmp_path):
+    audio = import_audio
+    processor = _make_processor(audio, tmp_path)
+    _stub_transcription(processor, audio, monkeypatch, {"text": "hi", "chunks": []})
+
+    files = []
+    for i in range(3):
+        wav = tmp_path / f"clip{i}.wav"
+        wav.write_bytes(b"RIFF")
+        files.append(str(wav))
+
+    transcribed = []
+    original_pipe = processor.whisper_pipe
+
+    def counting_pipe(*args, **kwargs):
+        transcribed.append(args)
+        return original_pipe(*args, **kwargs)
+
+    processor.whisper_pipe = counting_pipe
+
+    checks = {"n": 0}
+
+    def cancel_check():
+        checks["n"] += 1
+        return checks["n"] > 1
+
+    processor.extract_transcripts_batch(files, cancel_check=cancel_check)
+    assert len(transcribed) == 1
