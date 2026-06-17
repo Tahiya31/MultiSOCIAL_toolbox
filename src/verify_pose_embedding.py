@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import cv2
 import numpy as np
@@ -7,6 +8,23 @@ try:
     from skimage.metrics import structural_similarity as ssim
 except Exception:
     ssim = None
+
+
+PALETTE = [
+    (0, 255, 0), (0, 0, 255), (255, 0, 0), (0, 255, 255),
+    (255, 0, 255), (255, 255, 0), (128, 0, 255), (255, 128, 0),
+]
+
+
+def _color_for_id(pid):
+    return PALETTE[int(pid) % len(PALETTE)]
+
+
+def _parse_person_id_from_csv(csv_path):
+    match = re.search(r"_ID_(\d+)\.csv$", os.path.basename(csv_path))
+    if match:
+        return int(match.group(1))
+    return 0
 
 
 def _landmark_columns():
@@ -52,7 +70,8 @@ def _load_csv_group(csv_path):
     lmk_cols = _landmark_columns()
     subset_cols = ['frame', 'person_id'] + lmk_cols
     df = df[subset_cols]
-    return df.groupby('frame'), lmk_cols
+    person_id = _parse_person_id_from_csv(csv_path)
+    return df.groupby('frame'), lmk_cols, person_id
 
 
 def _draw_from_row(img, row, lmk_cols, color=(0, 255, 0)):
@@ -74,50 +93,49 @@ def _is_green_pixel(bgr):
     return (g >= 150) and (r <= 80) and (b <= 80) and (g >= r + 40) and (g >= b + 40)
 
 
-def _landmark_hit(frame_bgr, px, py, window=5):
+def _landmark_hit_colored(frame_bgr, px, py, window, expected_bgr, tol=80):
     h, w = frame_bgr.shape[:2]
     x1 = max(0, px - window)
     y1 = max(0, py - window)
     x2 = min(w - 1, px + window)
     y2 = min(h - 1, py + window)
-    roi = frame_bgr[y1:y2 + 1, x1:x2 + 1]
-    # any pixel sufficiently green?
-    for yy in range(roi.shape[0]):
-        for xx in range(roi.shape[1]):
-            if _is_green_pixel(roi[yy, xx]):
-                return True
+    roi = frame_bgr[y1:y2 + 1, x1:x2 + 1].astype(np.int32)
+    pixels = roi.reshape(-1, 3)
+    if pixels.size == 0:
+        return False
+    pixel_peak = pixels.max(axis=1)
+    target = np.array(expected_bgr, dtype=np.int32)
+    for scale in (1.0, 0.75, 0.5, 0.25):
+        scaled = (target * scale).astype(np.int32)
+        peak = int(scaled.max())
+        if peak < 40:
+            continue
+        visible = pixel_peak >= max(40, int(peak * 0.35))
+        if not np.any(visible):
+            continue
+        dist = np.linalg.norm(pixels[visible] - scaled, axis=1)
+        if np.any(dist <= tol):
+            return True
     return False
 
 
-def _green_overlay_mask(bgr_img):
-    """Extract a tight mask of green overlay pixels from a BGR image.
-    - HSV gate for vivid green (avoid whites/greys)
-    - AND with channel-dominance (G much higher than R/B and absolute G high)
-    - Morphology + area filtering to keep dot-like blobs only
-    Returns uint8 mask in {0,255}.
-    """
-    hsv = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2HSV)
-    # Tighter green; tune if needed for your theme
-    lower = np.array([50, 120, 90], dtype=np.uint8)   # H,S,V
-    upper = np.array([85, 255, 255], dtype=np.uint8)
-    mask_hsv = cv2.inRange(hsv, lower, upper)
+def _landmark_hit(frame_bgr, px, py, window=5):
+    return _landmark_hit_colored(frame_bgr, px, py, window, (0, 255, 0))
 
-    b, g, r = cv2.split(bgr_img)
-    g_i = g.astype(np.int32)
-    r_i = r.astype(np.int32)
-    b_i = b.astype(np.int32)
-    dom = (g_i - np.maximum(r_i, b_i)) >= 50
-    high_g = g_i >= 170
-    mask_dom = (dom & high_g).astype(np.uint8) * 255
 
-    # Conservative intersection to avoid background
-    mask = cv2.bitwise_and(mask_hsv, mask_dom)
-
-    # Morphology to reduce noise
+def _palette_overlay_mask(bgr_img, tol=80):
+    """Extract overlay pixels matching the embed palette (confidence-dimmed colors included)."""
+    img = bgr_img.astype(np.int32)
+    combined = np.zeros(img.shape[:2], dtype=bool)
+    for color in PALETTE:
+        target = np.array(color, dtype=np.int32)
+        for scale in (1.0, 0.75, 0.5, 0.25):
+            scaled = (target * scale).astype(np.int32)
+            dist = np.linalg.norm(img - scaled, axis=2)
+            combined |= dist <= tol
+    mask = combined.astype(np.uint8) * 255
     kernel = np.ones((3, 3), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
-
-    # Area filter: keep small blobs
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), connectivity=8)
     filtered = np.zeros_like(mask)
     min_area = 2
@@ -126,8 +144,11 @@ def _green_overlay_mask(bgr_img):
         area = stats[lbl, cv2.CC_STAT_AREA]
         if min_area <= area <= max_area:
             filtered[labels == lbl] = 255
-
     return filtered
+
+
+def _green_overlay_mask(bgr_img):
+    return _palette_overlay_mask(bgr_img)
 
 
 def verify(video_path, csv_paths, output_size=None, stride=1, hit_threshold=0.8, max_worst=10, worst_dir=None, processed_only=True, window=5, conf_threshold=0.0, metric='hit_rate', ssim_threshold=0.98):
@@ -147,14 +168,15 @@ def verify(video_path, csv_paths, output_size=None, stride=1, hit_threshold=0.8,
         probs = sanity_check_csv(csv)
         if probs:
             csv_problems[os.path.basename(csv)] = probs
-        grp, lmk_cols = _load_csv_group(csv)
-        per_person.append((grp, lmk_cols))
+        grp, lmk_cols, person_id = _load_csv_group(csv)
+        per_person.append((grp, lmk_cols, person_id))
         try:
             processed_indices.update(grp.groups.keys())
         except Exception:
             pass
 
     frame_idx = 0
+    stride = max(1, int(stride))
     hit_rates = []  # per-frame hit rate
     ssim_scores = []  # per-frame ssim when computed
     worst_hit = []  # list of (score, frame_idx, marks_bgr)
@@ -167,9 +189,10 @@ def verify(video_path, csv_paths, output_size=None, stride=1, hit_threshold=0.8,
         if (frame.shape[1], frame.shape[0]) != output_size:
             frame = cv2.resize(frame, output_size, interpolation=cv2.INTER_AREA)
 
+        proc_idx = frame_idx // stride
         gate = True
         if processed_only:
-            gate = frame_idx in processed_indices
+            gate = proc_idx in processed_indices
         else:
             gate = (stride == 1) or (frame_idx % stride == 0)
 
@@ -178,9 +201,10 @@ def verify(video_path, csv_paths, output_size=None, stride=1, hit_threshold=0.8,
                 total = 0
                 hits = 0
                 marks = frame.copy()
-                for grp, lmk_cols in per_person:
-                    if frame_idx in grp.groups:
-                        rows = grp.get_group(frame_idx)
+                for grp, lmk_cols, person_id in per_person:
+                    if proc_idx in grp.groups:
+                        rows = grp.get_group(proc_idx)
+                        expected_color = _color_for_id(person_id)
                         for _, row in rows.iterrows():
                             for i in range(0, len(lmk_cols), 4):
                                 x = row[lmk_cols[i]]
@@ -193,7 +217,7 @@ def verify(video_path, csv_paths, output_size=None, stride=1, hit_threshold=0.8,
                                 px = int(np.clip(x, 0.0, 1.0) * output_size[0])
                                 py = int(np.clip(y, 0.0, 1.0) * output_size[1])
                                 total += 1
-                                if _landmark_hit(frame, px, py, window=window):
+                                if _landmark_hit_colored(frame, px, py, window=window, expected_bgr=expected_color):
                                     hits += 1
                                     cv2.circle(marks, (px, py), 3, (0, 255, 255), -1)
                                 else:
@@ -212,15 +236,15 @@ def verify(video_path, csv_paths, output_size=None, stride=1, hit_threshold=0.8,
             if metric in ('ssim_green', 'both'):
                 if ssim is None:
                     raise RuntimeError("scikit-image is required for SSIM (pip install scikit-image)")
-                # Build synthetic overlay canvas from CSV landmarks
                 canvas = np.zeros_like(frame)
-                for grp, lmk_cols in per_person:
-                    if frame_idx in grp.groups:
-                        rows = grp.get_group(frame_idx)
+                for grp, lmk_cols, person_id in per_person:
+                    if proc_idx in grp.groups:
+                        rows = grp.get_group(proc_idx)
+                        color = _color_for_id(person_id)
                         for _, row in rows.iterrows():
-                            canvas = _draw_from_row(canvas, row, lmk_cols, color=(0, 255, 0))
-                actual_mask = _green_overlay_mask(frame)
-                synth_mask = _green_overlay_mask(canvas)
+                            canvas = _draw_from_row(canvas, row, lmk_cols, color=color)
+                actual_mask = _palette_overlay_mask(frame)
+                synth_mask = _palette_overlay_mask(canvas)
                 # Harmonize stroke thickness/antialias
                 k = np.ones((3, 3), np.uint8)
                 actual_mask = cv2.dilate(actual_mask, k, iterations=1)

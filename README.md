@@ -170,9 +170,10 @@ You should see three folders within the same folder as your input video.
     * z: Represents the landmark depth with the depth at the midpoint of hips being the origin, and the smaller the value the closer the landmark is to the camera. The magnitude of z uses roughly the same scale as x.
     * confidence: A value in [0.0, 1.0] indicating the likelihood of the landmark being visible (present and not occluded) in the image.
 
-**Embed Pose Features** If you are interested in embedding body key-points extracted from Mediapipe on each frames, this step uses [MediaPipe](https://github.com/google-ai-edge/mediapipe/blob/master/docs/solutions/pose.md) to achieve this. 
+**Embed Pose Features** Overlay body key-points from extracted pose CSVs onto each video frame (run **Extract Pose Features** first).
   * Use the ``Browse`` button to locate your input video file.
-  * Then press **Embed Pose Features** button. The toolbox will process each frame and embed body key-points onto the video.
+  * Then press **Embed Pose Features** button. The toolbox reads pose CSVs from `pose_features/` and draws landmarks onto the video. Each tracked person gets a stable color with an on-screen legend, and each landmark is dimmed by its detection confidence.
+  * Embed automatically reuses the frame stride recorded at extraction time, so the overlay stays aligned with the CSV rows regardless of the stride selected when embedding.
   * Once all the frames are processed, an output video will appear in the **embedded_pose** folder where your input video is located.
 
 ### Verify Consistency (Pose QA)

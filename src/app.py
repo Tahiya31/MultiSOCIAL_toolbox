@@ -1281,6 +1281,24 @@ class VideoToWavConverter(wx.Frame):
             )
             return
 
+        from pose import find_pose_csv_paths
+
+        missing_csv_videos = [
+            os.path.basename(video)
+            for video in video_files
+            if not find_pose_csv_paths(self.extracted_pose_folder, video)
+        ]
+        if missing_csv_videos:
+            preview = ", ".join(missing_csv_videos[:3])
+            if len(missing_csv_videos) > 3:
+                preview += f", and {len(missing_csv_videos) - 3} more"
+            wx.MessageBox(
+                f"No pose CSV found for: {preview}.\nRun Extract Pose Features first.",
+                "Error",
+                wx.OK | wx.ICON_ERROR,
+            )
+            return
+
         PoseCls = _get_pose_processor_class()
         if PoseCls is None:
             wx.MessageBox("Pose embedding is unavailable in this launch mode.", "Error", wx.OK | wx.ICON_ERROR)
@@ -1321,6 +1339,7 @@ class VideoToWavConverter(wx.Frame):
 
     def embed_pose_batch(self, video_files, pose_processor):
         cancelled = False
+        failed = False
         try:
             total_files = len(video_files)
 
@@ -1332,14 +1351,28 @@ class VideoToWavConverter(wx.Frame):
                 result = pose_processor.embed_pose_video(
                     video_file,
                     progress_callback=self.make_overall_progress_cb(index, total_files),
-                    cancel_check=self._cancel_event.is_set,
+                    cancel_check=lambda: self._cancel_event.is_set(),
                 )
                 if result is False:
                     cancelled = True
                     break
+                if result is None:
+                    failed = True
+                    self.set_status_message(
+                        f"Skipped embedding for {os.path.basename(video_file)}: no pose CSV found."
+                    )
 
-            if not cancelled:
-                wx.CallAfter(wx.MessageBox, "Pose embedding completed!", "Success", wx.OK | wx.ICON_INFORMATION)
+            if cancelled:
+                return
+            if failed:
+                wx.CallAfter(
+                    wx.MessageBox,
+                    "Pose embedding finished with errors. Some videos were skipped because CSVs were missing.",
+                    "Warning",
+                    wx.OK | wx.ICON_WARNING,
+                )
+                return
+            wx.CallAfter(wx.MessageBox, "Pose embedding completed!", "Success", wx.OK | wx.ICON_INFORMATION)
         finally:
             wx.CallAfter(self._end_process, cancelled)
 
