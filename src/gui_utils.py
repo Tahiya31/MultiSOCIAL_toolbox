@@ -175,46 +175,174 @@ def create_transparent_text(parent, *args, **kwargs):
     else:
         return wx.StaticText(parent, *args, **kwargs)
 
-def style_checkbox_for_glass(checkbox):
-    """
-    Style a checkbox for use inside a GlassPanel on Windows.
-    On macOS, native transparency works fine so no changes needed.
-    On Windows, we set a dark background to approximate the glass panel color.
-    """
-    if sys.platform.startswith("win"):
-        # Use a dark color that approximates the glass panel's appearance
-        # The glass fill is (20, 20, 20, 100) alpha-blended over gradient
-        # A dark gray provides a reasonable approximation
-        dark_bg = wx.Colour(35, 50, 45)  # Dark teal-ish to blend with gradient
-        checkbox.SetBackgroundColour(dark_bg)
-
 class Theme:
-    # Colors
-    COLOR_BG_GRADIENT_START = '#00695C'  # Dark Teal
-    COLOR_BG_GRADIENT_END = '#2E7D32'    # Medium Forest Green
-    COLOR_TEXT_WHITE = '#FFFFFF'
+    # Background — desaturated deep teal → slate-green (recedes behind content)
+    COLOR_BG_GRADIENT_START = '#152826'  # slate-teal (top)
+    COLOR_BG_GRADIENT_END = '#1C2B22'    # slate-green (bottom)
+    COLOR_BG_GLOW = (46, 212, 122, 22)   # faint emerald ambient
+
+    # Surfaces — neutral charcoal with a faint green tint
+    COLOR_SURFACE = (32, 34, 32, 248)
+    COLOR_SURFACE_ELEVATED = (40, 42, 40, 252)
+    COLOR_GLASS_FILL = COLOR_SURFACE
+    COLOR_INPUT_BG = (24, 26, 24)
+    COLOR_GLASS_BORDER = (255, 255, 255, 16)
+    COLOR_SURFACE_BORDER = COLOR_GLASS_BORDER
+    COLOR_BORDER_HIGHLIGHT = (255, 255, 255, 40)
+
+    # Accent — vivid emerald reserved for primary CTA + focus rings
+    COLOR_PRIMARY = '#2ED47A'
+    COLOR_PRIMARY_HOVER = '#5CE09A'
+    COLOR_PRIMARY_PRESSED = '#22B869'
+    COLOR_PRIMARY_GLOW = (46, 212, 122, 90)
+    COLOR_SECONDARY = (255, 255, 255, 10)
+    COLOR_SECONDARY_HOVER = (255, 255, 255, 18)
+    COLOR_SECONDARY_PRESSED = (255, 255, 255, 6)
+    COLOR_SECONDARY_BORDER = (255, 255, 255, 28)
+    COLOR_BTN_DISABLED_FILL = (42, 44, 42)
+    COLOR_BTN_DISABLED_BORDER = (255, 255, 255, 12)
+    COLOR_DANGER = '#EF4444'
+    COLOR_DANGER_HOVER = '#F87171'
+    COLOR_DANGER_PRESSED = '#DC2626'
+
+    # Tabs — neutral track, emerald active pill
+    COLOR_TAB_TRACK = (18, 20, 18, 220)
+    COLOR_TAB_ACTIVE = (46, 212, 122, 255)
+    COLOR_TAB_ACTIVE_BORDER = (46, 212, 122, 140)
+
+    # Text
+    COLOR_TEXT_WHITE = '#F3F4F6'
     COLOR_TEXT_BLACK = '#000000'
-    COLOR_GLASS_FILL = (20, 20, 20, 100)
-    COLOR_GLASS_BORDER = (255, 255, 255, 40)
-    COLOR_ACCENT_GREEN = '#A5D6A7'
-    COLOR_PROGRESS_GREEN = (70, 180, 130)
-    COLOR_TOOLTIP_BG = '#1E1E1E'
-    COLOR_TOOLTIP_FG = '#F5F5F5'
-    COLOR_INFO_ICON_BG = '#666666'
-    
-    # Fonts
+    COLOR_TEXT_ON_DARK = '#FFFFFF'
+    COLOR_TEXT_MUTED = '#9CA3AF'
+    COLOR_TEXT_SUBTLE = '#6B7280'
+    COLOR_DISABLED = (107, 114, 128, 200)
+    COLOR_ACCENT_GREEN = '#2ED47A'
+    COLOR_FOCUS_RING = (46, 212, 122, 180)
+    # Secondary accent — reserved for help/info affordances only (not actions),
+    # so the "?" icons read as a distinct, discoverable category, not a CTA.
+    COLOR_ACCENT_INFO = '#38BDF8'        # sky/cyan
+    COLOR_ACCENT_INFO_SOFT = (56, 189, 248, 40)
+
+    # Progress
+    COLOR_PROGRESS_GREEN = (46, 212, 122)
+    COLOR_PROGRESS_FILL = COLOR_PROGRESS_GREEN
+    COLOR_PROGRESS_TRACK = (0, 0, 0, 70)
+    COLOR_PROGRESS_GLOW = (46, 212, 122, 50)
+
+    # Tooltips / chrome
+    COLOR_TOOLTIP_BG = '#1F2120'
+    COLOR_TOOLTIP_FG = '#E5E7EB'
+    COLOR_INFO_ICON_BG = (255, 255, 255, 14)
+    COLOR_INFO_ICON_BORDER = (255, 255, 255, 30)
+
+    # Spacing (logical px; use FromDIP in widgets)
+    SPACE_XS = 4
+    SPACE_SM = 8
+    SPACE_MD = 12
+    SPACE_LG = 16
+    SPACE_XL = 24
+    SPACE_XXL = 32
+
+    # Corner radii
+    RADIUS_BUTTON = 10
+    RADIUS_CARD = 14
+    RADIUS_TAB = 12
+    RADIUS_TAB_UNDERLINE = 3
+    RADIUS_INPUT = 8
+
+    # Font sizes (pt) — deliberate ramp for a clear, consistent hierarchy
+    FONT_DISPLAY = 32   # app name
+    FONT_TITLE = 17     # section/screen titles
+    FONT_BUTTON = 16    # action buttons
+    FONT_HEADING = 15   # primary settings labels
+    FONT_BODY = 14      # labels, inputs, status
+    FONT_SUBTITLE = 13  # header subtitle
+    FONT_CAPTION = 12   # secondary/status sublabels
+    FONT_OVERLINE = 11  # uppercase card eyebrow headings
+
+    # Legacy font constants
     FONT_FAMILY = wx.FONTFAMILY_SWISS
     FONT_STYLE_NORMAL = wx.FONTSTYLE_NORMAL
     FONT_WEIGHT_NORMAL = wx.FONTWEIGHT_NORMAL
     FONT_WEIGHT_BOLD = wx.FONTWEIGHT_BOLD
-    
+
     @staticmethod
     def get_font(size, bold=False):
         weight = Theme.FONT_WEIGHT_BOLD if bold else Theme.FONT_WEIGHT_NORMAL
         if sys.platform.startswith("win"):
-            # Use Segoe UI for a cleaner, modern Windows look
             return wx.Font(size, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, weight, False, "Segoe UI")
+        if sys.platform == "darwin":
+            return wx.Font(size, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, weight, False, "SF Pro Text")
         return wx.Font(size, Theme.FONT_FAMILY, Theme.FONT_STYLE_NORMAL, weight)
+
+    @staticmethod
+    def colour(hex_or_rgba):
+        """Return wx.Colour from '#RRGGBB' or (r, g, b[, a])."""
+        if isinstance(hex_or_rgba, str):
+            return wx.Colour(hex_or_rgba)
+        if len(hex_or_rgba) == 4:
+            return wx.Colour(hex_or_rgba[0], hex_or_rgba[1], hex_or_rgba[2], hex_or_rgba[3])
+        return wx.Colour(*hex_or_rgba)
+
+
+def style_native_input(ctrl):
+    """Theme native SpinCtrl / DirPicker for dark card surfaces."""
+    try:
+        ctrl.SetBackgroundColour(Theme.colour(Theme.COLOR_INPUT_BG))
+        ctrl.SetForegroundColour(Theme.colour(Theme.COLOR_TEXT_WHITE))
+    except Exception:
+        pass
+
+
+def composited_background_colour(window):
+    """Best-effort opaque colour of whatever is painted *behind* ``window``.
+
+    Owner-drawn controls (FlatButton, CustomCheckBox, ToggleTabBar, CustomGauge)
+    draw rounded shapes with translucent effects. On macOS the uncovered corners
+    show the parent through ``BG_STYLE_PAINT``; on Windows that style gives no real
+    transparency, so the corners/shadow band render against an uninitialised
+    background. Filling the client rect with this colour first removes that
+    divergence. Mirrors the gradient+glass sampling used by ``TransparentStaticText``.
+    """
+    try:
+        glass_fills = []
+        gradient = None
+        win = window.GetParent()
+        while win is not None:
+            # Only count glass panels that actually paint their fill (chrome=True).
+            fill = getattr(win, "fill_rgba", None)
+            if fill is not None and getattr(win, "chrome", True):
+                glass_fills.append(fill)
+            if hasattr(win, "CalcUnscrolledPosition") and hasattr(win, "GetVirtualSize"):
+                gradient = win
+                break
+            win = win.GetParent()
+
+        if gradient is None:
+            return wx.Colour(Theme.COLOR_BG_GRADIENT_START)
+
+        _fw, fh = gradient.GetVirtualSize()
+        fh = max(fh, 1)
+        child_screen = window.GetScreenPosition()
+        grad_screen = gradient.GetScreenPosition()
+        _sx, scroll_y = gradient.CalcUnscrolledPosition(0, 0)
+        rel_y = (child_screen.y - grad_screen.y) + scroll_y + window.GetSize().height / 2.0
+
+        # wx.NORTH gradient: END at top, START at bottom (see TransparentStaticText).
+        c_start = wx.Colour(Theme.COLOR_BG_GRADIENT_START)
+        c_end = wx.Colour(Theme.COLOR_BG_GRADIENT_END)
+        pct = max(0.0, min(1.0, rel_y / float(fh)))
+        base = _mix_colors(c_end, c_start, pct)
+
+        # Composite painting glass layers (farthest first, nearest last).
+        for fill in reversed(glass_fills):
+            rgb = wx.Colour(fill[0], fill[1], fill[2])
+            alpha = (fill[3] if len(fill) == 4 else 255) / 255.0
+            base = _mix_colors(base, rgb, alpha)
+        return base
+    except Exception:
+        return wx.Colour(Theme.COLOR_BG_GRADIENT_START)
 
 # --- Utility Functions ---
 

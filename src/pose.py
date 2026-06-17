@@ -398,8 +398,9 @@ class PoseProcessor:
                     self.status_callback(f"❌ Failed to load YOLOv5: {e}")
                 raise RuntimeError(f"Failed to initialize YOLOv5: {e}")
 
-    def extract_pose_features(self, video_path, progress_callback=None):
+    def extract_pose_features(self, video_path, progress_callback=None, cancel_check=None):
         """Extract pose features from video, saving one CSV per person."""
+        cancelled = False
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             raise RuntimeError(
@@ -430,6 +431,9 @@ class PoseProcessor:
         locked_rois = []  # Each item: {"x1":int,"y1":int,"x2":int,"y2":int,"lost":int, "pose": Pose}
 
         while cap.isOpened():
+            if cancel_check and cancel_check():
+                cancelled = True
+                break
             ret, frame = cap.read()
             if not ret:
                 break
@@ -501,6 +505,9 @@ class PoseProcessor:
 
         # Cleanup ROI Pose instances to free resources (match embedding behavior)
         self._cleanup_locked_rois(locked_rois)
+
+        if cancelled:
+            return False
         
         
         # Define DataFrame column names
@@ -528,10 +535,11 @@ class PoseProcessor:
             csv_path = os.path.join(self.output_csv_folder, filename)
             df.to_csv(csv_path, index=False)
 
-        return
+        return True
 
-    def embed_pose_video(self, video_path, progress_callback=None):
+    def embed_pose_video(self, video_path, progress_callback=None, cancel_check=None):
         """Overlay pose landmarks on the video and save output."""
+        cancelled = False
         if not self.output_video_folder:
             return None
 
@@ -609,6 +617,9 @@ class PoseProcessor:
         last_single_landmarks = None  # mp_landmarks for single-person mode
 
         while cap.isOpened():
+            if cancel_check and cancel_check():
+                cancelled = True
+                break
             ret, frame = cap.read()
             if not ret:
                 break
@@ -742,4 +753,6 @@ class PoseProcessor:
         out.release()
         # Cleanup ROI Pose instances
         self._cleanup_locked_rois(locked_rois)
+        if cancelled:
+            return False
         return out_path

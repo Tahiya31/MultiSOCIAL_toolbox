@@ -9,6 +9,7 @@ This module provides functionality for:
 """
 
 import os
+import json
 import torch
 import opensmile
 import gc
@@ -242,17 +243,20 @@ class AudioProcessor:
             print(error_msg)
             raise Exception(error_msg)
 
-    def extract_audio_features_batch(self, audio_files, progress_callback=None):
+    def extract_audio_features_batch(self, audio_files, progress_callback=None, cancel_check=None):
         """
         Batch process multiple audio files to extract features.
         
         Args:
             audio_files (list): List of paths to WAV files
             progress_callback (callable, optional): Callback function for progress updates
+            cancel_check (callable, optional): Return True to stop before the next file
         """
         total_files = len(audio_files)
         
         for i, audio_file in enumerate(audio_files):
+            if cancel_check and cancel_check():
+                break
             self.set_status_message(f"🎧 Extracting audio features from: {os.path.basename(audio_file)}")
             print(f"Extracting features from: {audio_file}")
             
@@ -339,7 +343,8 @@ class AudioProcessor:
             model=self.whisper_model,
             tokenizer=self.whisper_processor.tokenizer,
             feature_extractor=self.whisper_processor.feature_extractor,
-            max_new_tokens=128,
+            # No max_new_tokens cap: a low cap (was 128) truncates long 30s chunks and
+            # breaks word-level timestamp alignment. Let Whisper use its full target window.
             chunk_length_s=30, # Standard chunk length for robustness
             batch_size=8,
             torch_dtype=self.torch_dtype,
@@ -830,16 +835,20 @@ class AudioProcessor:
             
         return "UNKNOWN"
 
-    def extract_transcripts_batch(self, audio_files, progress_callback=None):
+    def extract_transcripts_batch(self, audio_files, progress_callback=None, word_timestamps=False, cancel_check=None):
         """
         Batch process multiple audio files to generate transcripts.
-        
+
         OPTIMIZED: Loads each model once for all files instead of per-file,
         significantly reducing processing time for batches.
-        
+
         Args:
             audio_files (list): List of paths to WAV files
             progress_callback (callable, optional): Callback function for progress updates
+            word_timestamps (bool): When True, request word-level timestamps and write a
+                ``{base}_words.json`` sidecar per file so Align Features can reuse it instead
+                of re-transcribing later.
+            cancel_check (callable, optional): Return True to stop before the next file
         """
         if not audio_files:
             return
@@ -884,14 +893,17 @@ class AudioProcessor:
         
         transcription_errors = []
         for i, audio_file in enumerate(audio_files):
+            if cancel_check and cancel_check():
+                return
             self.set_status_message(f"🗣️ Transcribing ({i+1}/{total_files}): {os.path.basename(audio_file)}")
             
             try:
                 audio_path = os.path.normpath(os.path.abspath(audio_file))
                 if not os.path.isfile(audio_path):
                     raise FileNotFoundError(f"Audio file not found: {audio_path}")
-                # Transcribe without loading/offloading model
-                ts_mode = True  # Use segment-level timestamps; word-level if needed for alignment
+                # Transcribe without loading/offloading model.
+                # word-level timestamps (for Align Features) when requested, else segment-level.
+                ts_mode = "word" if word_timestamps else True
                 result = self.whisper_pipe(
                     _whisper_pipeline_audio_input(audio_path),
                     return_timestamps=ts_mode,
@@ -940,6 +952,8 @@ class AudioProcessor:
                 diarization_range = diarization_end - diarization_start
                 
                 for i, audio_file in enumerate(audio_files):
+                    if cancel_check and cancel_check():
+                        return
                     # Skip files that failed transcription
                     if transcription_results.get(audio_file, (None, None))[0] is None:
                         continue
@@ -999,6 +1013,17 @@ class AudioProcessor:
                 msg = f"{output_txt}: {e}"
                 print(f"Error saving transcript for {audio_file}: {e}")
                 save_errors.append(msg)
+
+            # When word-level timestamps were requested, write the JSON sidecar that
+            # Align Features consumes (so it won't have to re-transcribe this file).
+            if word_timestamps:
+                output_json = os.path.join(self.output_transcripts_folder, f"{base_name}_words.json")
+                try:
+                    with open(output_json, 'w', encoding='utf-8') as f:
+                        json.dump(whisper_result, f, indent=2, ensure_ascii=False)
+                    print(f"Saved word-level info: {output_json}")
+                except Exception as e:
+                    print(f"Warning: Could not save word-level JSON for {base_name}: {e}")
 
         if save_errors:
             raise RuntimeError(

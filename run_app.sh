@@ -69,6 +69,26 @@ fi
 echo "Activating virtual environment"
 source "$VENV_DIR/bin/activate"
 
+scrub_multisocial_editable_install() {
+    python - <<'PY'
+import shutil
+import site
+from pathlib import Path
+
+sp = Path(site.getsitepackages()[0])
+removed = []
+for pattern in ("multisocial_toolbox-*.dist-info", "__editable__.multisocial_toolbox-*.pth"):
+    for path in sorted(sp.glob(pattern)):
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            path.unlink(missing_ok=True)
+        removed.append(path.name)
+if removed:
+    print("Cleared stale multisocial-toolbox install metadata:", ", ".join(removed))
+PY
+}
+
 CURRENT_STAMP="$(python -c "from pathlib import Path; import hashlib; print('${INSTALL_PROFILE}|${DESIRED_PYTHON}|' + hashlib.sha256(Path(r'''$SCRIPT_DIR/pyproject.toml''').read_bytes()).hexdigest())")"
 NEEDS_INSTALL=1
 if [ -f "$INSTALL_STAMP_FILE" ]; then
@@ -93,16 +113,23 @@ if [ "$NEEDS_INSTALL" -eq 1 ]; then
     fi
 
     pushd "$SCRIPT_DIR" >/dev/null
+    scrub_multisocial_editable_install
     if [ "$INSTALL_PROFILE" = "complete" ]; then
         INSTALL_CMD=(python -m pip install -e ".[complete]")
+        RETRY_CMD=(python -m pip install --ignore-installed -e ".[complete]")
     else
         INSTALL_CMD=(python -m pip install -e .)
+        RETRY_CMD=(python -m pip install --ignore-installed -e .)
     fi
     if ! "${INSTALL_CMD[@]}"; then
-        echo "ERROR: Failed to install toolbox dependencies"
-        echo "Please check your internet connection and try again"
-        popd >/dev/null
-        exit 1
+        echo "Install failed; clearing stale metadata and retrying with --ignore-installed..."
+        scrub_multisocial_editable_install
+        if ! "${RETRY_CMD[@]}"; then
+            echo "ERROR: Failed to install toolbox dependencies"
+            echo "Please check your internet connection and try again"
+            popd >/dev/null
+            exit 1
+        fi
     fi
     popd >/dev/null
     printf '%s\n' "$CURRENT_STAMP" > "$INSTALL_STAMP_FILE"
