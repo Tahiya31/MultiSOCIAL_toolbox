@@ -4,6 +4,7 @@ This is the main script for multisocial app
 '''
 
 # Import necessary system and utility modules
+import glob
 import os
 import threading
 
@@ -339,7 +340,7 @@ class VideoToWavConverter(wx.Frame):
         self.embedFeaturesBtn, hbox_embed_pose = TooltipButton.create_with_icon(
             actions_card,
             'Embed Pose Features',
-            'Creates vector embeddings from extracted pose features for machine learning and analysis purposes.',
+            "Overlays each tracked person's pose skeleton onto the video in its own color, with a legend. Landmark brightness reflects detection confidence (brighter = more confident). Run Extract Pose Features first.",
             font=button_font,
             handler=self.on_embed_poses,
             variant=FlatButton.VARIANT_SECONDARY,
@@ -723,11 +724,14 @@ class VideoToWavConverter(wx.Frame):
         has_folder = bool(folder_path)
         video_files = []
         audio_files = []
+        has_pose_csv = False
         try:
             if has_folder:
                 workspace_root = gui_utils.resolved_dataset_root(folder_path)
                 video_files = gui_utils.get_files_from_folder(workspace_root, self.VIDEO_EXTENSIONS)
                 audio_files = gui_utils.get_audio_files_for_processing(folder_path, self.AUDIO_EXTENSIONS)
+                pose_dir = os.path.join(workspace_root, "pose_features")
+                has_pose_csv = self._has_any_pose_csv(pose_dir, video_files)
         except Exception:
             pass
 
@@ -748,11 +752,20 @@ class VideoToWavConverter(wx.Frame):
         for btn in [
             getattr(self, 'convertBtn', None),
             getattr(self, 'extractFeaturesBtn', None),
-            getattr(self, 'embedFeaturesBtn', None),
             getattr(self, 'verifyBtn', None),
         ]:
             if btn:
                 btn.Enable(enable_video)
+
+        # Embed depends on extraction having run: keep it locked (greyed, with a
+        # hover hint) until pose CSVs exist for the selected videos.
+        embed_btn = getattr(self, 'embedFeaturesBtn', None)
+        if embed_btn:
+            embed_btn.Enable(enable_video)
+            if enable_video and not has_pose_csv:
+                embed_btn.set_locked(True, "Extract pose features first, then embed.")
+            else:
+                embed_btn.set_locked(False)
 
         for btn in [
             getattr(self, 'extractAudioFeaturesBtn', None),
@@ -763,6 +776,22 @@ class VideoToWavConverter(wx.Frame):
                 btn.Enable(enable_audio)
 
         self.refresh_diarization_state()
+
+    def _has_any_pose_csv(self, pose_dir, video_files):
+        """True if at least one selected video has extracted pose CSVs.
+
+        Mirrors the naming used by pose.find_pose_csv_paths without importing
+        the heavy pose module (this runs on every folder/selection change).
+        """
+        if not pose_dir or not os.path.isdir(pose_dir):
+            return False
+        for video in video_files:
+            base = os.path.splitext(os.path.basename(video))[0]
+            if glob.glob(os.path.join(pose_dir, f"{base}_multi_ID_*.csv")) or glob.glob(
+                os.path.join(pose_dir, f"{base}_ID_*.csv")
+            ):
+                return True
+        return False
     def on_resize(self, event):
         if self._baseline_size is None:
             self._baseline_size = self.GetSize()
