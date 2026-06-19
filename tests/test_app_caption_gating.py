@@ -20,6 +20,8 @@ def test_caption_embed_can_target_pose_embedded_video():
     assert "def _embedded_pose_video_path" in app_source
     assert 'f"{base}_pose.mp4"' in app_source
     assert 'f"{base}_multi_pose.mp4"' in app_source
+    assert "max(existing, key=lambda path: os.path.getmtime(path))" in app_source
+    assert "the newest one is used" in app_source
     assert 'output_suffix = "_pose_captioned.mp4"' in app_source
     assert "input_video = self._embedded_pose_video_path(self.embedded_pose_folder, video_file)" in app_source
     assert "captions.burn_subtitles(" in app_source

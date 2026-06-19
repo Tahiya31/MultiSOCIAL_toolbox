@@ -373,13 +373,14 @@ class VideoToWavConverter(wx.Frame):
             "On: burn the transcript onto the pose-embedded video, saved as "
             "*_pose_captioned.mp4.\n"
             "Off: caption the original video (*_captioned.mp4).\n"
-            "Requires Embed Pose Features and Extract Transcripts to have run first."
+            "Requires Embed Pose Features and Extract Transcripts to have run first.\n"
+            "If both single-person and multi-person pose videos exist, the newest one is used."
         )
         self._register_scalable(self.captionPoseVideoCheckbox, Theme.FONT_BODY)
         self.captionPoseVideoCheckbox.Bind(wx.EVT_CHECKBOX, lambda event: self.update_buttons_enabled())
 
         self.captionPoseVideoHint = gui_utils.create_transparent_text(
-            actions_card, label="Needs Embed Pose Features first · outputs *_pose_captioned.mp4"
+            actions_card, label="Uses newest pose video · outputs *_pose_captioned.mp4"
         )
         self.captionPoseVideoHint.SetFont(Theme.get_font(Theme.FONT_CAPTION))
         self.captionPoseVideoHint.SetForegroundColour(Theme.colour(Theme.COLOR_TEXT_MUTED))
@@ -910,7 +911,7 @@ class VideoToWavConverter(wx.Frame):
         return True
 
     def _embedded_pose_video_path(self, embedded_dir, source_video):
-        """Return the embedded-pose video path for a source video, if present."""
+        """Return the newest embedded-pose video path for a source video, if present."""
         if not embedded_dir or not source_video:
             return None
         base = os.path.splitext(os.path.basename(source_video))[0]
@@ -918,10 +919,10 @@ class VideoToWavConverter(wx.Frame):
             os.path.join(embedded_dir, f"{base}_pose.mp4"),
             os.path.join(embedded_dir, f"{base}_multi_pose.mp4"),
         ]
-        for candidate in candidates:
-            if os.path.exists(candidate):
-                return candidate
-        return None
+        existing = [candidate for candidate in candidates if os.path.exists(candidate)]
+        if not existing:
+            return None
+        return max(existing, key=lambda path: os.path.getmtime(path))
 
     def _has_all_embedded_pose_videos(self, embedded_dir, video_files):
         """True if every selected source video has a matching embedded pose video."""
