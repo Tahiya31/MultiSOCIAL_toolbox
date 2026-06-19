@@ -143,16 +143,27 @@ Once launched, MultiSOCIAL Toolbox application looks like this.
 
 The toolbox takes two types of input: audio (`.wav`, `.wave`, `.aiff`, `.aif`, `.aifc`, `.flac`, `.caf`, `.au`, `.snd`) and video (`.mp4`, `.avi`, `.mov`, `.mkv`, `.m4v`).
 
+## How the toolbox keeps your workflow safe
+The toolbox runs one task at a time and guides you through the right order of steps.
+
+* **One task at a time.** While a task is running, every other button and setting is disabled and only **Cancel** stays active. This prevents two tasks from running at once or interfering with each other, and means rapid or accidental clicks can't start a second job.
+* **Steps unlock when their inputs exist.** Buttons that depend on earlier results stay greyed out until the required files are actually present on disk (the toolbox checks the files, not just whether you clicked a button before). Hover over a greyed-out button to see what's missing and what to do next. Specifically:
+  * **Embed Pose Features** unlocks once **Extract Pose Features** has produced pose CSVs in the `pose_features` folder.
+  * **Embed Transcript on Video** unlocks once **Extract Transcripts** has produced matching `.srt` files in the `transcripts` folder for every selected video.
+  * **Verify Consistency** unlocks once **Embed Pose Features** has produced videos in the `embedded_pose` folder.
+* **Clear messages.** If a step can't run, a plain-language message tells you what is missing, what to do next, and which folder the required files belong in.
+
 ## Video file
 **Convert video to audio** If you have a supported video file of human interaction and would like to convert it to an audio file in `.wav` format, this step is for you.
   * Use the ``Browse`` button to locate your input video file.
   * Then press **Convert video to audio** button.
   * Once the .wav file is ready, a dialogue box will let you know the output file is ready.
 
-You should see three folders within the same folder as your input video.
+You should see these folders within the same folder as your input video (each is created only when the matching step runs).
   * `converted_audio`: Contains the WAV files produced by **Convert video to audio**.
   * `pose_features`: Contains the CSV pose feature files produced by **Extract Pose Features**.
   * `embedded_pose`: Contains the rendered pose-overlay videos produced by **Embed Pose Features**.
+  * `captioned_video`: Contains the captioned videos produced by **Embed Transcript on Video**.
 
 
 **Extract Pose Features** If you are interested in extracting pose or body key-points from the video, this step uses [MediaPipe](https://github.com/google-ai-edge/mediapipe/blob/master/docs/solutions/pose.md) to achieve this. This step returns 33 body pose land marks. For more details on MediaPipe, please check out the [official page](https://github.com/google-ai-edge/mediapipe/blob/master/docs/solutions/pose.md). 
@@ -176,13 +187,20 @@ You should see three folders within the same folder as your input video.
   * Embed automatically reuses the frame stride recorded at extraction time, so the overlay stays aligned with the CSV rows regardless of the stride selected when embedding.
   * Once all the frames are processed, an output video will appear in the **embedded_pose** folder where your input video is located.
 
+**Embed Transcript on Video** Burn the turn-by-turn transcript onto the video as captions so you can watch the video and read the transcript in sync — useful for evaluating transcription accuracy. The **Embed Transcript on Video** button stays greyed out until **Extract Transcripts** (on the Audio tab) has produced matching `.srt` files for the selected videos; hover over it for a reminder.
+  * First run **Extract Transcripts** on the Audio tab. This now also saves a `.srt` caption file (one caption per spoken segment, prefixed with the speaker label when diarization is enabled) into the `transcripts` folder, alongside the existing `.txt` transcript.
+  * Use the ``Browse`` button to select the same folder as your input video, then press **Embed Transcript on Video**.
+  * The captioned video is written to the **captioned_video** folder as `<name>_captioned.mp4`. The audio is copied unchanged and the original video is left untouched; only a new captioned copy is created.
+  * If the button stays greyed out, rerun **Extract Transcripts** and make sure each audio file has the same base name as its video (for example, `session01.wav` produces captions for `session01.mp4`).
+  * Optional: check **Add captions to pose-embedded video** to burn captions onto the pose overlay instead of the raw source (`*_pose_captioned.mp4` in `captioned_video/`).
+
 ### Verify Consistency (Pose QA)
 After extracting pose CSVs and generating embedded pose videos, you can run **Verify Consistency** to compare them.
   * Pre-requisites:
     * `pose_features/` must contain CSVs generated from **Extract Pose Features**.
     * `embedded_pose/` must contain pose-overlay videos generated from **Embed Pose Features**.
   * The tool creates a `verification/` folder in your dataset directory with:
-    * per-video JSON + CSV reports (hit rate, SSIM, etc.)
+    * per-video JSON + CSV reports (landmark hit rate against the embedded overlay)
     * `worst_frames/` subfolder containing reference frames for quick inspection
     * `summary.json` aggregating all runs
   * Use this to spot pose drift or embedding issues before downstream analysis.
@@ -202,8 +220,9 @@ After extracting pose CSVs and generating embedded pose videos, you can run **Ve
 **Extract Transcripts** If you are interested in extracting transcript of the conversation, this step now uses [Whisper Large V3 Turbo](https://huggingface.co/openai/whisper-large-v3-turbo) for automatic speech recognition (with GPU/MPS acceleration when available). For more details on Whisper, please check their official documentation page [here](https://github.com/openai/whisper).
   * Use the ``Browse`` button to locate your input audio file.
   * Then press **Extract Transcripts** button.
-  * Once the transcript is extracted, a dialogue box will let you know the output file is ready.
-  * You can find them in **transcripts** folder created before.
+  * Each file is saved to the **transcripts** folder as soon as it finishes (`.txt`, plus `.srt` when segments are available), so you can inspect partial batch results while the rest are still processing.
+  * Once the full batch completes, a dialogue box confirms success.
+  * Alongside each `.txt` transcript, the toolbox also saves a `.srt` caption file in the same `transcripts` folder. This drives the **Embed Transcript on Video** step on the Video tab (see above).
 
 ### Optional: Speaker diarization with PyAnnote
 You can optionally label who is speaking in the transcript (speaker diarization). In the GUI, enable the checkbox for speaker diarization before running **Extract Transcripts**.

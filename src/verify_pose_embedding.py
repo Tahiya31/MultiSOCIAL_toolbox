@@ -151,7 +151,16 @@ def _green_overlay_mask(bgr_img):
     return _palette_overlay_mask(bgr_img)
 
 
-def verify(video_path, csv_paths, output_size=None, stride=1, hit_threshold=0.8, max_worst=10, worst_dir=None, processed_only=True, window=5, conf_threshold=0.0, metric='hit_rate', ssim_threshold=0.98):
+def _sample_evenly(items, max_items):
+    if max_items is None or max_items <= 0 or len(items) <= max_items:
+        return list(items)
+    if max_items == 1:
+        return [items[0]]
+    indices = np.linspace(0, len(items) - 1, int(max_items))
+    return [items[int(round(i))] for i in indices]
+
+
+def verify(video_path, csv_paths, output_size=None, stride=1, hit_threshold=0.8, max_worst=10, worst_dir=None, processed_only=True, window=5, conf_threshold=0.0, metric='hit_rate', ssim_threshold=0.98, max_frames=None, progress_callback=None, cancel_check=None):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise RuntimeError(f"Failed to open video: {video_path}")
@@ -175,93 +184,129 @@ def verify(video_path, csv_paths, output_size=None, stride=1, hit_threshold=0.8,
         except Exception:
             pass
 
-    frame_idx = 0
     stride = max(1, int(stride))
     hit_rates = []  # per-frame hit rate
     ssim_scores = []  # per-frame ssim when computed
     worst_hit = []  # list of (score, frame_idx, marks_bgr)
     worst_ssim = []  # list of (score, frame_idx, masks_img)
+    total_video_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
 
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
+    if processed_only:
+        eligible = []
+        for proc_idx in sorted(processed_indices):
+            raw_idx = int(proc_idx) * stride
+            if total_video_frames <= 0 or raw_idx < total_video_frames:
+                eligible.append((raw_idx, int(proc_idx)))
+    elif total_video_frames > 0:
+        eligible = [(raw_idx, raw_idx // stride) for raw_idx in range(0, total_video_frames, stride)]
+    else:
+        eligible = None
+
+    sampled = False
+    if eligible is not None:
+        eligible_frame_count = len(eligible)
+        frame_plan = _sample_evenly(eligible, max_frames)
+        sampled = len(frame_plan) < eligible_frame_count
+    else:
+        eligible_frame_count = None
+        frame_plan = None
+
+    def compare_frame(frame_idx, proc_idx, frame):
         if (frame.shape[1], frame.shape[0]) != output_size:
             frame = cv2.resize(frame, output_size, interpolation=cv2.INTER_AREA)
 
-        proc_idx = frame_idx // stride
-        gate = True
-        if processed_only:
-            gate = proc_idx in processed_indices
-        else:
-            gate = (stride == 1) or (frame_idx % stride == 0)
+        if metric in ('hit_rate', 'both'):
+            total = 0
+            hits = 0
+            marks = frame.copy()
+            for grp, lmk_cols, person_id in per_person:
+                if proc_idx in grp.groups:
+                    rows = grp.get_group(proc_idx)
+                    expected_color = _color_for_id(person_id)
+                    for _, row in rows.iterrows():
+                        for i in range(0, len(lmk_cols), 4):
+                            x = row[lmk_cols[i]]
+                            y = row[lmk_cols[i + 1]]
+                            conf = row[lmk_cols[i + 3]]
+                            if not np.isfinite(x) or not np.isfinite(y):
+                                continue
+                            if conf_threshold > 0.0 and (not np.isfinite(conf) or conf < conf_threshold):
+                                continue
+                            px = int(np.clip(x, 0.0, 1.0) * output_size[0])
+                            py = int(np.clip(y, 0.0, 1.0) * output_size[1])
+                            total += 1
+                            if _landmark_hit_colored(frame, px, py, window=window, expected_bgr=expected_color):
+                                hits += 1
+                                cv2.circle(marks, (px, py), 3, (0, 255, 255), -1)
+                            else:
+                                cv2.circle(marks, (px, py), 3, (255, 0, 255), -1)
 
-        if gate:
-            if metric in ('hit_rate', 'both'):
-                total = 0
-                hits = 0
-                marks = frame.copy()
-                for grp, lmk_cols, person_id in per_person:
-                    if proc_idx in grp.groups:
-                        rows = grp.get_group(proc_idx)
-                        expected_color = _color_for_id(person_id)
-                        for _, row in rows.iterrows():
-                            for i in range(0, len(lmk_cols), 4):
-                                x = row[lmk_cols[i]]
-                                y = row[lmk_cols[i + 1]]
-                                conf = row[lmk_cols[i + 3]]
-                                if not np.isfinite(x) or not np.isfinite(y):
-                                    continue
-                                if conf_threshold > 0.0 and (not np.isfinite(conf) or conf < conf_threshold):
-                                    continue
-                                px = int(np.clip(x, 0.0, 1.0) * output_size[0])
-                                py = int(np.clip(y, 0.0, 1.0) * output_size[1])
-                                total += 1
-                                if _landmark_hit_colored(frame, px, py, window=window, expected_bgr=expected_color):
-                                    hits += 1
-                                    cv2.circle(marks, (px, py), 3, (0, 255, 255), -1)
-                                else:
-                                    cv2.circle(marks, (px, py), 3, (255, 0, 255), -1)
-
-                rate = float(hits) / float(max(1, total))
-                hit_rates.append(rate)
-                score = rate
-                if len(worst_hit) < max_worst:
-                    worst_hit.append((score, frame_idx, marks))
+            rate = float(hits) / float(max(1, total))
+            hit_rates.append(rate)
+            score = rate
+            if len(worst_hit) < max_worst:
+                worst_hit.append((score, frame_idx, marks))
+                worst_hit.sort(key=lambda x: x[0])
+            else:
+                if score < worst_hit[-1][0]:
+                    worst_hit[-1] = (score, frame_idx, marks)
                     worst_hit.sort(key=lambda x: x[0])
-                else:
-                    if score < worst_hit[-1][0]:
-                        worst_hit[-1] = (score, frame_idx, marks)
-                        worst_hit.sort(key=lambda x: x[0])
-            if metric in ('ssim_green', 'both'):
-                if ssim is None:
-                    raise RuntimeError("scikit-image is required for SSIM (pip install scikit-image)")
-                canvas = np.zeros_like(frame)
-                for grp, lmk_cols, person_id in per_person:
-                    if proc_idx in grp.groups:
-                        rows = grp.get_group(proc_idx)
-                        color = _color_for_id(person_id)
-                        for _, row in rows.iterrows():
-                            canvas = _draw_from_row(canvas, row, lmk_cols, color=color)
-                actual_mask = _palette_overlay_mask(frame)
-                synth_mask = _palette_overlay_mask(canvas)
-                # Harmonize stroke thickness/antialias
-                k = np.ones((3, 3), np.uint8)
-                actual_mask = cv2.dilate(actual_mask, k, iterations=1)
-                synth_mask = cv2.dilate(synth_mask, k, iterations=1)
-                score = float(ssim(actual_mask, synth_mask, data_range=255))
-                ssim_scores.append(score)
-                # For worst images, store both masks stacked horizontally
-                marks = np.concatenate([actual_mask, synth_mask], axis=1)
-                if len(worst_ssim) < max_worst:
-                    worst_ssim.append((score, frame_idx, marks))
+        if metric in ('ssim_green', 'both'):
+            if ssim is None:
+                raise RuntimeError("scikit-image is required for SSIM (pip install scikit-image)")
+            canvas = np.zeros_like(frame)
+            for grp, lmk_cols, person_id in per_person:
+                if proc_idx in grp.groups:
+                    rows = grp.get_group(proc_idx)
+                    color = _color_for_id(person_id)
+                    for _, row in rows.iterrows():
+                        canvas = _draw_from_row(canvas, row, lmk_cols, color=color)
+            actual_mask = _palette_overlay_mask(frame)
+            synth_mask = _palette_overlay_mask(canvas)
+            # Harmonize stroke thickness/antialias
+            k = np.ones((3, 3), np.uint8)
+            actual_mask = cv2.dilate(actual_mask, k, iterations=1)
+            synth_mask = cv2.dilate(synth_mask, k, iterations=1)
+            score = float(ssim(actual_mask, synth_mask, data_range=255))
+            ssim_scores.append(score)
+            # For worst images, store both masks stacked horizontally
+            marks = np.concatenate([actual_mask, synth_mask], axis=1)
+            if len(worst_ssim) < max_worst:
+                worst_ssim.append((score, frame_idx, marks))
+                worst_ssim.sort(key=lambda x: x[0])
+            else:
+                if score < worst_ssim[-1][0]:
+                    worst_ssim[-1] = (score, frame_idx, marks)
                     worst_ssim.sort(key=lambda x: x[0])
-                else:
-                    if score < worst_ssim[-1][0]:
-                        worst_ssim[-1] = (score, frame_idx, marks)
-                        worst_ssim.sort(key=lambda x: x[0])
 
-        frame_idx += 1
+    if frame_plan is not None:
+        for idx, (frame_idx, proc_idx) in enumerate(frame_plan, start=1):
+            if cancel_check and cancel_check():
+                break
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_idx))
+            ret, frame = cap.read()
+            if ret:
+                compare_frame(int(frame_idx), int(proc_idx), frame)
+            if progress_callback:
+                progress_callback(int(idx / max(1, len(frame_plan)) * 100))
+    else:
+        frame_idx = 0
+        compared = 0
+        while cap.isOpened():
+            if cancel_check and cancel_check():
+                break
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if (stride == 1) or (frame_idx % stride == 0):
+                compare_frame(frame_idx, frame_idx // stride, frame)
+                compared += 1
+                if progress_callback and max_frames:
+                    progress_callback(min(100, int(compared / max(1, max_frames) * 100)))
+                if max_frames and compared >= max_frames:
+                    sampled = True
+                    break
+            frame_idx += 1
 
     cap.release()
 
@@ -278,6 +323,9 @@ def verify(video_path, csv_paths, output_size=None, stride=1, hit_threshold=0.8,
             "conf_threshold": float(conf_threshold),
             "csv_problems": csv_problems,
             "metric": "hit_rate",
+            "eligible_frames": eligible_frame_count,
+            "sampled": bool(sampled),
+            "max_frames": int(max_frames) if max_frames else None,
         }
     elif metric == 'ssim_green':
         report = {
@@ -290,6 +338,9 @@ def verify(video_path, csv_paths, output_size=None, stride=1, hit_threshold=0.8,
             "ssim_threshold": float(ssim_threshold),
             "csv_problems": csv_problems,
             "metric": "ssim_green",
+            "eligible_frames": eligible_frame_count,
+            "sampled": bool(sampled),
+            "max_frames": int(max_frames) if max_frames else None,
         }
     else:
         report = {
@@ -308,6 +359,9 @@ def verify(video_path, csv_paths, output_size=None, stride=1, hit_threshold=0.8,
             "conf_threshold": float(conf_threshold),
             "csv_problems": csv_problems,
             "metric": "both",
+            "eligible_frames": eligible_frame_count,
+            "sampled": bool(sampled),
+            "max_frames": int(max_frames) if max_frames else None,
         }
 
     worst_frames_hit = []
@@ -381,5 +435,3 @@ def save_report(report, out_json_path, out_csv_path=None):
                     row["ssim"] = wf.get("ssim")
                 rows.append(row)
             pd.DataFrame(rows).to_csv(out_csv_path, index=False)
-
-

@@ -52,7 +52,7 @@ def _install_fake_pose_deps():
             if prop == cv2.CAP_PROP_FRAME_HEIGHT:
                 return 48
             if prop == cv2.CAP_PROP_FPS:
-                return 25
+                return 29.97
             return 0
 
         def set(self, *args, **kwargs):
@@ -62,8 +62,12 @@ def _install_fake_pose_deps():
             pass
 
     class FakeVideoWriter:
+        instances = []
+
         def __init__(self, *args, **kwargs):
             self.opened = True
+            self.args = args
+            FakeVideoWriter.instances.append(self)
 
         def isOpened(self):
             return self.opened
@@ -199,6 +203,23 @@ def test_embed_pose_video_cancel_check_stops_early(import_pose, tmp_path, monkey
     result = processor.embed_pose_video(str(video), cancel_check=cancel_check)
     assert result is False
 
+def test_embed_pose_video_preserves_fractional_fps(import_pose, tmp_path, monkeypatch):
+    pose = import_pose
+    monkeypatch.setattr(pose, "ensure_yolov5_weights", lambda: None)
+    csv_dir = tmp_path / "csv"
+    csv_dir.mkdir()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    _write_min_pose_csv(csv_dir / "clip_ID_0.csv")
+    processor = pose.PoseProcessor(str(csv_dir), output_video_folder=str(out_dir))
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake")
+
+    result = processor.embed_pose_video(str(video))
+
+    assert result == str(out_dir / "clip_pose.mp4")
+    assert pose.cv2.VideoWriter.instances[0].args[2] == 29.97
+
 
 def test_embed_pose_video_returns_none_without_csv(import_pose, tmp_path, monkeypatch):
     pose = import_pose
@@ -315,3 +336,53 @@ def test_extraction_stride_reads_sidecar(import_pose, tmp_path):
     assert processor._extraction_stride(str(tmp_path / "clip.mp4"), is_multi=False) == 3
     # missing sidecar falls back to the embed-time stride
     assert processor._extraction_stride(str(tmp_path / "other.mp4"), is_multi=False) == 1
+
+
+def test_mux_audio_replaces_file_with_correct_command(import_pose, monkeypatch):
+    pose = import_pose
+    monkeypatch.setenv("MULTISOCIAL_FFMPEG_EXE", "/fake/ffmpeg")
+    monkeypatch.setattr(pose.os.path, "exists", lambda p: True)
+
+    captured = {}
+
+    class FakeProc:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    def fake_replace(src, dst):
+        captured["replace"] = (src, dst)
+
+    monkeypatch.setattr(pose.subprocess, "run", fake_run)
+    monkeypatch.setattr(pose.os, "replace", fake_replace)
+
+    pose._mux_audio_into_video("/out/clip_pose.mp4", "/in/clip.mp4")
+
+    cmd = captured["cmd"]
+    assert cmd[0] == "/fake/ffmpeg"
+    # video copied (no re-encode), audio from the second input, source optional
+    assert "-c:v" in cmd and cmd[cmd.index("-c:v") + 1] == "copy"
+    assert "1:a:0?" in cmd
+    assert "-shortest" not in cmd  # keep every rendered pose frame
+    assert captured["replace"] == ("/out/clip_pose.mp4.muxtmp.mp4", "/out/clip_pose.mp4")
+
+
+def test_mux_audio_noop_without_ffmpeg(import_pose, monkeypatch):
+    pose = import_pose
+    monkeypatch.delenv("MULTISOCIAL_FFMPEG_EXE", raising=False)
+    monkeypatch.setattr(pose.shutil, "which", lambda name: None)
+
+    called = {"run": False}
+
+    def fake_run(*a, **k):
+        called["run"] = True
+
+    monkeypatch.setattr(pose.subprocess, "run", fake_run)
+
+    messages = []
+    pose._mux_audio_into_video("/out/clip_pose.mp4", "/in/clip.mp4", messages.append)
+
+    assert called["run"] is False
+    assert messages and "without audio" in messages[0]

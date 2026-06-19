@@ -1,11 +1,12 @@
 import os
+import re
 import shutil
 import unicodedata
 import wx
-import ffmpeg
 
 # --- Constants & Theme ---
 import sys
+import subprocess
 import ctypes
 import wx.lib.stattext as stattext
 
@@ -346,35 +347,6 @@ def composited_background_colour(window):
 
 # --- Utility Functions ---
 
-def ensure_video_playable(input_path, output_path=None):
-    """Re-encode to H.264/yuv420p for broad compatibility (optional helper).
-
-    If output_path is None, creates a sibling file with suffix "_fixed.mp4".
-    Returns output path on success, else None.
-    """
-    try:
-        ffmpeg_cmd = get_ffmpeg_executable() or "ffmpeg"
-        if output_path is None:
-            base, _ = os.path.splitext(input_path)
-            output_path = base + "_fixed.mp4"
-        (
-            ffmpeg
-            .input(input_path)
-            .output(
-                output_path,
-                vcodec='libx264',
-                pix_fmt='yuv420p',
-                movflags='+faststart',
-                acodec='copy'
-            )
-            .overwrite_output()
-            .run(cmd=ffmpeg_cmd)
-        )
-        return output_path
-    except Exception:
-        return None
-
-
 def _mark_executable(path):
     try:
         mode = os.stat(path).st_mode
@@ -438,16 +410,127 @@ def get_ffmpeg_executable():
 
 
 def ensure_ffmpeg_available():
-    """Ensure an ffmpeg executable is available for ffmpeg-python.
+    """Ensure an ffmpeg executable is available for CLI-based video/audio work.
 
     Tries system PATH first, then imageio-ffmpeg fallback. If found via imageio,
-    prepend its directory to PATH for this process so ffmpeg-python can launch it.
+    prepend its directory to PATH for this process so subprocess-based ffmpeg
+    calls and native libraries can find it.
     Returns True if available, else False.
     """
     if get_ffmpeg_executable():
         return True
     os.environ["MULTISOCIAL_FFMPEG_SOURCE"] = "missing"
     return False
+
+
+def _ffmpeg_has_subtitles_filter(exe):
+    """True if the given ffmpeg supports the libass-based ``subtitles`` filter."""
+    try:
+        out = subprocess.run(
+            [exe, "-hide_banner", "-filters"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            universal_newlines=True, timeout=20,
+        ).stdout or ""
+    except Exception:
+        return False
+    return any(line.split()[1:2] == ["subtitles"] for line in out.splitlines() if line.strip())
+
+
+def get_subtitle_capable_ffmpeg():
+    """Return an ffmpeg executable that supports subtitle burn-in (libass), or None.
+
+    ``get_ffmpeg_executable`` prefers system ffmpeg, which on some machines lacks
+    the ``subtitles`` filter. Fall back to the bundled imageio-ffmpeg build, which
+    ships with libass.
+    """
+    cached = os.environ.get("MULTISOCIAL_FFMPEG_SUBS_EXE")
+    if cached and os.path.exists(cached):
+        return cached
+
+    primary = get_ffmpeg_executable()
+    if primary and _ffmpeg_has_subtitles_filter(primary):
+        os.environ["MULTISOCIAL_FFMPEG_SUBS_EXE"] = primary
+        return primary
+
+    try:
+        import imageio_ffmpeg  # type: ignore
+
+        bundled = imageio_ffmpeg.get_ffmpeg_exe()
+        if bundled and os.path.exists(bundled) and _ffmpeg_has_subtitles_filter(bundled):
+            _mark_executable(bundled)
+            os.environ["MULTISOCIAL_FFMPEG_SUBS_EXE"] = bundled
+            return bundled
+    except Exception:
+        pass
+
+    return None
+
+
+_FFMPEG_DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
+_FFMPEG_TIME_RE = re.compile(r"time=\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
+
+
+def _hms_to_seconds(h, m, s):
+    return int(h) * 3600 + int(m) * 60 + float(s)
+
+
+def run_ffmpeg_with_progress(cmd, progress_callback=None, cancel_check=None, cwd=None):
+    """Run an ffmpeg command, reporting real progress parsed from its stderr.
+
+    ffmpeg prints the input ``Duration`` once and a running ``time=`` per update;
+    the ratio gives true progress (no ffprobe needed). Shared by any ffmpeg step
+    that wants a live bar.
+
+    Returns:
+        True on success, False if cancelled via ``cancel_check``.
+    Raises:
+        RuntimeError: if ffmpeg exits non-zero.
+    """
+    proc = subprocess.Popen(
+        cmd, cwd=cwd,
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        universal_newlines=True, bufsize=1,
+    )
+    total_seconds = None
+    stderr_tail = []
+    last_pct = -1
+    try:
+        for line in proc.stderr:
+            stderr_tail.append(line)
+            if len(stderr_tail) > 40:
+                stderr_tail.pop(0)
+
+            if cancel_check and cancel_check():
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                return False
+
+            if total_seconds is None:
+                m = _FFMPEG_DURATION_RE.search(line)
+                if m:
+                    total_seconds = _hms_to_seconds(*m.groups())
+
+            if progress_callback and total_seconds:
+                t = _FFMPEG_TIME_RE.search(line)
+                if t:
+                    elapsed = _hms_to_seconds(*t.groups())
+                    pct = max(0, min(99, int((elapsed / total_seconds) * 100)))
+                    if pct != last_pct:
+                        progress_callback(pct)
+                        last_pct = pct
+    finally:
+        proc.wait()
+
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"ffmpeg failed (exit {proc.returncode}).\n" + "".join(stderr_tail).strip()
+        )
+    if progress_callback:
+        progress_callback(100)
+    return True
 
 
 def normalize_path(path):

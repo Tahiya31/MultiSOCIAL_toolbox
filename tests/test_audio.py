@@ -123,6 +123,16 @@ def _make_processor(audio, tmp_path):
     )
 
 
+def test_audio_processor_defaults_diarization_off(import_audio, tmp_path):
+    audio = import_audio
+    processor = audio.AudioProcessor(
+        output_audio_features_folder=str(tmp_path),
+        output_transcripts_folder=str(tmp_path),
+    )
+
+    assert processor.enable_speaker_diarization is False
+
+
 def test_extract_transcripts_batch_saves_word_json_when_requested(monkeypatch, import_audio, tmp_path):
     audio = import_audio
     processor = _make_processor(audio, tmp_path)
@@ -149,6 +159,8 @@ def test_extract_transcripts_batch_saves_word_json_when_requested(monkeypatch, i
     assert data["chunks"][0]["text"] == "hello"
     # ...and the plain .txt transcript is still produced.
     assert (tmp_path / "clip.txt").exists()
+    srt_text = (tmp_path / "clip.srt").read_text(encoding="utf-8")
+    assert "hello world" in srt_text
 
 
 def test_extract_transcripts_batch_segment_mode_writes_no_word_json(monkeypatch, import_audio, tmp_path):
@@ -166,6 +178,206 @@ def test_extract_transcripts_batch_segment_mode_writes_no_word_json(monkeypatch,
     assert captured["return_timestamps"] is True
     assert not (tmp_path / "clip_words.json").exists()
     assert (tmp_path / "clip.txt").exists()
+    assert (tmp_path / "clip.srt").exists()
+
+
+def test_clear_whisper_model_releases_large_objects(import_audio, tmp_path):
+    audio = import_audio
+    processor = _make_processor(audio, tmp_path)
+    processor.whisper_pipe = object()
+    processor.whisper_processor = object()
+    processor.whisper_model = object()
+    processor.whisper_result = {"chunks": [{"text": "large"}]}
+
+    processor._clear_whisper_model()
+
+    assert processor.whisper_pipe is None
+    assert processor.whisper_processor is None
+    assert processor.whisper_model is None
+    assert processor.whisper_result is None
+
+
+def test_preload_speaker_diarizer_validates_then_releases_model(import_audio, tmp_path):
+    audio = import_audio
+    processor = audio.AudioProcessor(
+        output_audio_features_folder=str(tmp_path),
+        output_transcripts_folder=str(tmp_path),
+        enable_speaker_diarization=True,
+        auth_token="token",
+    )
+
+    class FakeDiarizer:
+        def __init__(self):
+            self.loaded = False
+
+        def _load_diarization_model(self):
+            self.loaded = True
+
+        def offload_model(self):
+            pass
+
+    fake = FakeDiarizer()
+    processor.speaker_diarizer = fake
+
+    processor.preload_speaker_diarizer()
+
+    assert fake.loaded is True
+    assert processor.speaker_diarizer is None
+
+
+def test_speaker_diarization_uses_cpu_on_mps(import_audio, tmp_path):
+    audio = import_audio
+    processor = audio.AudioProcessor(
+        output_audio_features_folder=str(tmp_path),
+        output_transcripts_folder=str(tmp_path),
+        enable_speaker_diarization=True,
+    )
+    processor.device = "mps"
+
+    assert processor._speaker_diarization_device() == "cpu"
+
+
+def test_whisper_batch_size_is_one_when_diarization_enabled(monkeypatch, import_audio, tmp_path):
+    audio = import_audio
+    processor = audio.AudioProcessor(
+        output_audio_features_folder=str(tmp_path),
+        output_transcripts_folder=str(tmp_path),
+        enable_speaker_diarization=True,
+    )
+    processor.device = "cpu"
+    processor.torch_dtype = "float32"
+
+    class FakeModel:
+        device = type("Device", (), {"type": "cpu"})()
+
+        def to(self, device):
+            return self
+
+    fake_processor = type(
+        "FakeProcessor",
+        (),
+        {
+            "tokenizer": object(),
+            "feature_extractor": object(),
+        },
+    )()
+    captured = {}
+
+    monkeypatch.setattr(audio.AutoModelForSpeechSeq2Seq, "from_pretrained", lambda *a, **k: FakeModel())
+    monkeypatch.setattr(audio.AutoProcessor, "from_pretrained", lambda *a, **k: fake_processor)
+    monkeypatch.setattr(audio, "pipeline", lambda *a, **k: captured.update(k) or object())
+
+    processor._load_whisper_model()
+
+    assert captured["batch_size"] == 1
+
+
+def test_extract_transcripts_batch_diarization_saves_each_file_and_clears_whisper(monkeypatch, import_audio, tmp_path):
+    audio = import_audio
+    processor = audio.AudioProcessor(
+        output_audio_features_folder=str(tmp_path),
+        output_transcripts_folder=str(tmp_path),
+        status_callback=None,
+        enable_speaker_diarization=True,
+        auth_token="token",
+    )
+    monkeypatch.setattr(
+        audio,
+        "_whisper_pipeline_audio_input",
+        lambda path: {"array": np.zeros(4, dtype=np.float32), "sampling_rate": 16000},
+    )
+
+    pipe_calls = []
+    previous_file_saved = []
+
+    def fake_load_whisper():
+        idx = len(pipe_calls)
+
+        def fake_pipe(*args, **kwargs):
+            pipe_calls.append(idx)
+            return {
+                "text": f"hello file {idx}",
+                "chunks": [{"text": f"hello file {idx}", "timestamp": (0.0, 1.0)}],
+            }
+
+        processor.whisper_model = object()
+        processor.whisper_processor = object()
+        processor.whisper_pipe = fake_pipe
+
+    class FakeDiarizer:
+        def diarize_speakers(self, path):
+            index = len(previous_file_saved)
+            if index > 0:
+                previous_file_saved.append((tmp_path / f"clip{index - 1}.txt").exists())
+            else:
+                previous_file_saved.append(False)
+            assert processor.whisper_pipe is None
+            assert processor.whisper_model is None
+            return [{"start": 0.0, "end": 1.0, "speaker": "SPEAKER_00"}]
+
+        def offload_model(self):
+            pass
+
+    monkeypatch.setattr(processor, "_load_whisper_model", fake_load_whisper)
+    monkeypatch.setattr(processor, "_load_speaker_diarizer", lambda *a, **k: setattr(processor, "speaker_diarizer", FakeDiarizer()))
+
+    files = []
+    for i in range(2):
+        wav = tmp_path / f"clip{i}.wav"
+        wav.write_bytes(b"RIFF")
+        files.append(str(wav))
+
+    processor.extract_transcripts_batch(files)
+
+    assert pipe_calls == [0, 1]
+    assert previous_file_saved == [False, True]
+    assert processor.whisper_pipe is None
+    assert processor.whisper_model is None
+    assert "SPEAKER_00:" in (tmp_path / "clip0.txt").read_text(encoding="utf-8")
+    assert "SPEAKER_00:" in (tmp_path / "clip0.srt").read_text(encoding="utf-8")
+    assert (tmp_path / "clip1.txt").exists()
+
+
+def test_extract_transcripts_batch_diarization_failure_writes_plain_outputs(monkeypatch, import_audio, tmp_path):
+    audio = import_audio
+    processor = audio.AudioProcessor(
+        output_audio_features_folder=str(tmp_path),
+        output_transcripts_folder=str(tmp_path),
+        status_callback=None,
+        enable_speaker_diarization=True,
+        auth_token="token",
+    )
+    monkeypatch.setattr(
+        audio,
+        "_whisper_pipeline_audio_input",
+        lambda path: {"array": np.zeros(4, dtype=np.float32), "sampling_rate": 16000},
+    )
+
+    def fake_load_whisper():
+        processor.whisper_model = object()
+        processor.whisper_processor = object()
+        processor.whisper_pipe = lambda *a, **k: {
+            "text": "plain words",
+            "chunks": [{"text": "plain words", "timestamp": (0.0, 1.0)}],
+        }
+
+    class FailingDiarizer:
+        def diarize_speakers(self, path):
+            raise RuntimeError("diarization boom")
+
+        def offload_model(self):
+            pass
+
+    monkeypatch.setattr(processor, "_load_whisper_model", fake_load_whisper)
+    monkeypatch.setattr(processor, "_load_speaker_diarizer", lambda *a, **k: setattr(processor, "speaker_diarizer", FailingDiarizer()))
+
+    clip = tmp_path / "clip.wav"
+    clip.write_bytes(b"RIFF")
+
+    processor.extract_transcripts_batch([str(clip)])
+
+    assert (tmp_path / "clip.txt").read_text(encoding="utf-8") == "plain words"
+    assert "plain words" in (tmp_path / "clip.srt").read_text(encoding="utf-8")
 
 
 def test_align_features_maps_words_to_feature_means(import_audio, tmp_path):

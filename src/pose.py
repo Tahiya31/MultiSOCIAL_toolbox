@@ -9,6 +9,8 @@ import json
 import os
 import re
 import shutil
+import subprocess
+import time
 import cv2
 import mediapipe as mp
 import pandas as pd
@@ -44,6 +46,65 @@ def get_yolov5_weights_path():
 
     os.makedirs(runtime_assets_dir, exist_ok=True)
     return runtime_path
+
+def _resolve_ffmpeg_exe():
+    """Locate ffmpeg without importing the GUI layer.
+
+    Prefers the executable the app already resolved (cached in the
+    MULTISOCIAL_FFMPEG_EXE env var by gui_utils), then PATH.
+    """
+    cached = os.environ.get("MULTISOCIAL_FFMPEG_EXE")
+    if cached and os.path.exists(cached):
+        return cached
+    return shutil.which("ffmpeg")
+
+
+def _mux_audio_into_video(pose_video, source_video, status_callback=None):
+    """Copy the source video's audio onto the (silent) pose video in place.
+
+    OpenCV's VideoWriter produces video-only files, so the embedded pose
+    output has no sound. Re-mux: keep the rendered video stream as-is, pull
+    audio from the original. Non-fatal: if ffmpeg is missing, the source has
+    no audio, or the call fails, the silent pose video is left untouched.
+    """
+    ffmpeg_exe = _resolve_ffmpeg_exe()
+    if not ffmpeg_exe:
+        if status_callback:
+            status_callback("ffmpeg not found; pose video saved without audio.")
+        return
+
+    tmp_path = pose_video + ".muxtmp.mp4"
+    cmd = [
+        ffmpeg_exe, "-y",
+        "-i", pose_video,
+        "-i", source_video,
+        "-map", "0:v:0",
+        "-map", "1:a:0?",   # optional: source may have no audio track
+        "-c:v", "copy",
+        "-c:a", "aac",
+        tmp_path,
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+        )
+    except Exception as exc:
+        if status_callback:
+            status_callback(f"Could not add audio to pose video: {exc}")
+        return
+
+    if proc.returncode != 0 or not os.path.exists(tmp_path):
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        if status_callback:
+            status_callback("Pose video saved without audio (ffmpeg mux failed).")
+        return
+
+    os.replace(tmp_path, pose_video)
+
 
 def _sanitize_frame_for_video(frame, expected_size=None):
     """Ensure a frame is BGR, uint8, 3-channels and matches expected size for VideoWriter."""
@@ -99,6 +160,16 @@ def find_pose_csv_paths(output_csv_folder, video_path):
         return paths
     single_pattern = os.path.join(output_csv_folder, f"{base}_ID_*.csv")
     return sorted(glob.glob(single_pattern))
+
+
+def _should_emit_frame_update(frame_idx, total_frames, last_percent=None, every_frames=10):
+    """Throttle UI updates so long videos do not flood wx.CallAfter."""
+    if total_frames <= 0:
+        return (frame_idx % every_frames) == 0
+    percent = int((frame_idx / max(1, total_frames)) * 100)
+    if last_percent is not None and percent != last_percent:
+        return True
+    return (frame_idx % every_frames) == 0 or frame_idx >= total_frames
 
 
 # Core pose processor class
@@ -263,12 +334,16 @@ class PoseProcessor:
                 # Hungarian assignment ensures one-to-one mapping
                 row_ind, col_ind = linear_sum_assignment(cost)
 
-                # Optional gating: ignore matches beyond a distance threshold (8% of image diagonal)
-                max_dist = 0.08 * diag
+                # Optional gating: ignore matches beyond 8% of the image diagonal.
+                max_dist_norm = 0.08
 
                 for r_i, c_j in zip(row_ind, col_ind):
                     if r_i < len(rois_needing_reseed) and c_j < len(person_boxes):
-                        if cost[r_i, c_j] <= max_dist:
+                        match_dist_norm = (
+                            np.linalg.norm(np.array(roi_centers[r_i]) - np.array(det_centers[c_j]))
+                            / max(1e-6, diag)
+                        )
+                        if match_dist_norm <= max_dist_norm:
                             roi_index = rois_needing_reseed[r_i]
                             rx1, ry1, rx2, ry2 = person_boxes[c_j]
                             nx1, ny1, nx2, ny2 = self._expand_and_clip_bbox(rx1, ry1, rx2, ry2, image_width, image_height, margin_ratio=0.25)
@@ -571,6 +646,8 @@ class PoseProcessor:
         # Each ROI holds its own MediaPipe Pose instance with persistent id
         locked_rois = []  # Each item: {"id":int,"x1":int,"y1":int,"x2":int,"y2":int,"lost":int, "pose": Pose}
         self._next_pid = 0
+        last_progress_percent = -1
+        last_status_t = 0.0  # wall-clock gate so status text never floods the UI thread
 
         while cap.isOpened():
             if cancel_check and cancel_check():
@@ -597,8 +674,10 @@ class PoseProcessor:
             w = proc_frame.shape[1]
             h = proc_frame.shape[0]
 
-            if self.status_callback:
+            now = time.monotonic()
+            if self.status_callback and (now - last_status_t >= 0.5 or frame_idx + 1 >= total_frames):
                 self.status_callback(f"📸 Extracting pose from: {os.path.basename(video_path)} (Frame {frame_idx + 1}/{total_frames})")
+                last_status_t = now
 
             image_rgb = cv2.cvtColor(proc_frame, cv2.COLOR_BGR2RGB)
 
@@ -616,7 +695,9 @@ class PoseProcessor:
                     frame_idx += 1
                     if progress_callback and total_frames > 0:
                         progress_percent = int((frame_idx / total_frames) * 100)
-                        progress_callback(progress_percent)
+                        if progress_percent != last_progress_percent or _should_emit_frame_update(frame_idx, total_frames):
+                            progress_callback(progress_percent)
+                            last_progress_percent = progress_percent
                     continue
 
                 # Process using shared multiperson step
@@ -644,7 +725,9 @@ class PoseProcessor:
             # Update progress if callback provided
             if progress_callback and total_frames > 0:
                 progress_percent = int((frame_idx / total_frames) * 100)
-                progress_callback(progress_percent)
+                if progress_percent != last_progress_percent or _should_emit_frame_update(frame_idx, total_frames):
+                    progress_callback(progress_percent)
+                    last_progress_percent = progress_percent
 
         cap.release()
 
@@ -711,7 +794,7 @@ class PoseProcessor:
                 f"Could not open video for pose embedding: {video_path}. "
                 "This container or codec may not be supported by the current OpenCV backend on this machine."
             )
-        fps = int(cap.get(cv2.CAP_PROP_FPS))
+        fps = float(cap.get(cv2.CAP_PROP_FPS))
         orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
@@ -765,6 +848,7 @@ class PoseProcessor:
 
         raw_frame_idx = 0
         cached_draws = []
+        last_progress_percent = -1
 
         while cap.isOpened():
             if cancel_check and cancel_check():
@@ -792,10 +876,14 @@ class PoseProcessor:
             raw_frame_idx += 1
             if progress_callback and total_frames > 0:
                 progress_percent = int((raw_frame_idx / total_frames) * 100)
-                progress_callback(progress_percent)
+                if progress_percent != last_progress_percent or _should_emit_frame_update(raw_frame_idx, total_frames):
+                    progress_callback(progress_percent)
+                    last_progress_percent = progress_percent
 
         cap.release()
         out.release()
         if cancelled:
             return False
+        # OpenCV writes video only; bring the original audio over.
+        _mux_audio_into_video(out_path, video_path, self.status_callback)
         return out_path

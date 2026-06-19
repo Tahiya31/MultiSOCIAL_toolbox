@@ -96,7 +96,7 @@ def _whisper_pipeline_audio_input(filepath):
 
 
 class AudioProcessor:
-    def __init__(self, output_audio_features_folder, output_transcripts_folder, status_callback=None, enable_speaker_diarization=True, auth_token=None):
+    def __init__(self, output_audio_features_folder, output_transcripts_folder, status_callback=None, enable_speaker_diarization=False, auth_token=None):
         """
         Initialize the AudioProcessor.
         
@@ -299,26 +299,36 @@ class AudioProcessor:
         if progress_callback:
             progress_callback(10)
 
+        def load_whisper_from_pretrained(local_files_only):
+            kwargs = {
+                "torch_dtype": self.torch_dtype,
+                "use_safetensors": True,
+                "local_files_only": local_files_only,
+            }
+            try:
+                return AutoModelForSpeechSeq2Seq.from_pretrained(
+                    model_id,
+                    low_cpu_mem_usage=True,
+                    **kwargs,
+                )
+            except ImportError as e:
+                if "low_cpu_mem_usage=True" not in str(e):
+                    raise
+                print("Accelerate is not installed; loading Whisper without low_cpu_mem_usage.")
+                return AutoModelForSpeechSeq2Seq.from_pretrained(
+                    model_id,
+                    low_cpu_mem_usage=False,
+                    **kwargs,
+                )
+
         # Load model
         try:
             print("Attempting to load Whisper model from local cache...")
-            self.whisper_model = AutoModelForSpeechSeq2Seq.from_pretrained(
-                model_id, 
-                torch_dtype=self.torch_dtype, 
-                low_cpu_mem_usage=False,
-                use_safetensors=True,
-                local_files_only=True
-            )
+            self.whisper_model = load_whisper_from_pretrained(local_files_only=True)
             print("✓ Loaded Whisper model from cache.")
         except Exception as e:
             print(f"Whisper model not found in cache or error loading: {e}. Downloading...")
-            self.whisper_model = AutoModelForSpeechSeq2Seq.from_pretrained(
-                model_id, 
-                torch_dtype=self.torch_dtype, 
-                low_cpu_mem_usage=False,
-                use_safetensors=True,
-                local_files_only=False
-            )
+            self.whisper_model = load_whisper_from_pretrained(local_files_only=False)
         
         if progress_callback:
             progress_callback(25)
@@ -338,6 +348,9 @@ class AudioProcessor:
             progress_callback(55)
 
         # Create pipeline with explicit configuration to avoid warnings
+        # Diarization mode favors peak-memory safety over throughput. A high ASR
+        # batch size can spike RAM on long files before pyannote even starts.
+        whisper_batch_size = 1 if self.enable_speaker_diarization else 8
         self.whisper_pipe = pipeline(
             "automatic-speech-recognition",
             model=self.whisper_model,
@@ -346,7 +359,7 @@ class AudioProcessor:
             # No max_new_tokens cap: a low cap (was 128) truncates long 30s chunks and
             # breaks word-level timestamp alignment. Let Whisper use its full target window.
             chunk_length_s=30, # Standard chunk length for robustness
-            batch_size=8,
+            batch_size=whisper_batch_size,
             torch_dtype=self.torch_dtype,
             device=self.device,
             # Add return_timestamps for better processing
@@ -361,17 +374,82 @@ class AudioProcessor:
         if self.whisper_model is not None and self.device != "cpu":
             print("Offloading Whisper model to CPU to free VRAM...")
             self.whisper_model.to("cpu")
-            
-            # Explicitly clear cache based on device
-            if self.device == "mps":
-                try:
-                    torch.mps.empty_cache()
-                except AttributeError:
-                    pass
-            elif self.device.startswith("cuda"):
-                torch.cuda.empty_cache()
-                
-            gc.collect()
+            self._clear_torch_cache()
+
+    def _clear_torch_cache(self):
+        """Release Python and torch allocator caches after large model/audio work."""
+        if self.device == "mps":
+            try:
+                torch.mps.empty_cache()
+            except AttributeError:
+                pass
+        elif self.device.startswith("cuda"):
+            torch.cuda.empty_cache()
+        gc.collect()
+
+    def _clear_whisper_model(self):
+        """Fully release Whisper objects so pyannote can run with lower peak RAM."""
+        self.whisper_pipe = None
+        self.whisper_processor = None
+        self.whisper_model = None
+        self.whisper_result = None
+        self._clear_torch_cache()
+
+    def _clear_speaker_diarizer(self):
+        """Fully release pyannote objects after a diarized file finishes."""
+        if self.speaker_diarizer is not None:
+            try:
+                self.speaker_diarizer.offload_model()
+            finally:
+                self.speaker_diarizer = None
+        self._clear_torch_cache()
+
+    def _speaker_diarization_device(self):
+        """Prefer CPU for pyannote on Apple Silicon to avoid unified-memory spikes."""
+        if self.device == "mps":
+            return "cpu"
+        return self.device
+
+    def _compact_whisper_result(self, whisper_result, transcript):
+        """Keep only text and timestamped chunks needed for transcript/SRT formatting."""
+        compact = {"text": transcript, "chunks": []}
+        self.whisper_result = whisper_result
+        for seg in self._extract_whisper_segments(transcript):
+            compact["chunks"].append({
+                "text": str(seg.get("text") or ""),
+                "timestamp": (float(seg.get("start", 0.0)), float(seg.get("end", 0.0))),
+            })
+        return compact
+
+    def _write_word_json_sidecar(self, audio_file, whisper_result):
+        """Write raw word-level Whisper output for Align Features."""
+        base_name = os.path.splitext(os.path.basename(audio_file))[0]
+        output_json = os.path.join(self.output_transcripts_folder, f"{base_name}_words.json")
+        try:
+            with open(output_json, 'w', encoding='utf-8') as f:
+                json.dump(whisper_result, f, indent=2, ensure_ascii=False)
+            print(f"Saved word-level info: {output_json}")
+        except Exception as e:
+            print(f"Warning: Could not save word-level JSON for {base_name}: {e}")
+
+    def _write_srt_sidecar(self, filepath, transcript, whisper_result, speaker_segments=None):
+        """Write a readable SRT sidecar next to the transcript text file."""
+        try:
+            from captions import write_srt
+
+            self.whisper_result = whisper_result
+            srt_segments = self._extract_whisper_segments(transcript)
+            output_srt = os.path.join(
+                self.output_transcripts_folder,
+                os.path.splitext(os.path.basename(filepath))[0] + ".srt",
+            )
+            label_fn = None
+            if speaker_segments:
+                label_fn = lambda s, e: self._find_speaker_for_time(s, e, speaker_segments)
+            return write_srt(srt_segments, output_srt, speaker_label_fn=label_fn)
+        except Exception as e:
+            print(f"Warning: Could not write SRT sidecar for {os.path.basename(filepath)}: {e}")
+            return None
 
     def _load_speaker_diarizer(self, progress_callback=None):
         """Load the PyAnnote speaker diarization model (lazy loading)"""
@@ -386,7 +464,11 @@ class AudioProcessor:
                 
             print("Loading PyAnnote speaker diarization model...")
             # Use PyAnnote diarization
-            self.speaker_diarizer = PyAnnoteSpeakerDiarizer(progress_callback, self.auth_token, device=self.device)
+            self.speaker_diarizer = PyAnnoteSpeakerDiarizer(
+                progress_callback,
+                self.auth_token,
+                device=self._speaker_diarization_device(),
+            )
             # Force an actual model load so "preload" validates availability.
             self.speaker_diarizer._load_diarization_model()
             
@@ -397,10 +479,13 @@ class AudioProcessor:
             raise Exception(f"Failed to load PyAnnote speaker diarization model: {str(e)}")
     
     def preload_speaker_diarizer(self):
-        """Pre-load the speaker diarization model to avoid delays during first use"""
+        """Validate diarization setup without keeping pyannote resident in memory."""
         print("Pre-loading PyAnnote speaker diarization model...")
-        self._load_speaker_diarizer()
-        print("✓ PyAnnote model pre-loaded successfully")
+        try:
+            self._load_speaker_diarizer()
+            print("✓ PyAnnote model pre-loaded successfully")
+        finally:
+            self._clear_speaker_diarizer()
 
     def extract_transcript(self, filepath, progress_callback=None, word_timestamps=False):
         """
@@ -445,19 +530,21 @@ class AudioProcessor:
                 generate_kwargs={"task": "transcribe"}
             )
             transcript = result['text']
-            
-            # Store the full result for timestamped segments
-            self.whisper_result = result
+
+            compact_result = self._compact_whisper_result(result, transcript)
 
             if progress_callback:
                 progress_callback(50)
+
+            if self.enable_speaker_diarization and word_timestamps:
+                self._write_word_json_sidecar(filepath, result)
 
             # Perform speaker diarization if enabled
             speaker_segments = None
             if self.enable_speaker_diarization:
                 try:
-                    # Offload Whisper to free up memory for Diarization
-                    self._offload_whisper_model()
+                    del result
+                    self._clear_whisper_model()
 
                     print(f"Performing speaker diarization for {filepath}...")
                     
@@ -468,7 +555,7 @@ class AudioProcessor:
                     speaker_segments = self.speaker_diarizer.diarize_speakers(filepath, progress_callback=scoped_diarization_callback)
                     
                     # Offload diarizer to free memory for next Whisper run or general system use
-                    self.speaker_diarizer.offload_model()
+                    self._clear_speaker_diarizer()
                     
                     print(f"Found {len(speaker_segments)} speaker segments")
                 except Exception as e:
@@ -480,43 +567,23 @@ class AudioProcessor:
                 if progress_callback:
                     progress_callback(90)
 
-            # Format transcript with speaker labels if available
-            if speaker_segments and len(speaker_segments) > 0:
-                formatted_transcript = self._format_transcript_with_speakers(transcript, speaker_segments)
-            else:
-                formatted_transcript = self._format_plain_transcript(transcript)
-
-            # Save transcript to text file (always done)
-            output_txt = os.path.join(
-                self.output_transcripts_folder, 
-                os.path.splitext(os.path.basename(filepath))[0] + ".txt"
+            ok, err = self._save_transcript_outputs(
+                filepath,
+                transcript,
+                compact_result if self.enable_speaker_diarization else result,
+                speaker_segments,
+                False if self.enable_speaker_diarization else word_timestamps,
             )
-
-            with open(output_txt, 'w', encoding='utf-8', newline='\n') as f:
-                f.write(formatted_transcript)
-            
-            # If word timestamps were requested, save the detailed JSON sidecar
-            if word_timestamps:
-                import json
-                output_json = os.path.join(
-                    self.output_transcripts_folder, 
-                    os.path.splitext(os.path.basename(filepath))[0] + "_words.json"
-                )
-                # We save the raw result chunks which contain word timings when return_timestamps="word"
-                # result['chunks'] is usually a list of {'text': ..., 'timestamp': (start, end)}
-                # or similar structure depending on the pipeline version.
-                # We'll save the whole result structure to be safe.
-                # Note: result might contain non-serializable objects (like tensors), but pipeline usually returns python types.
-                try:
-                    with open(output_json, 'w', encoding='utf-8') as f:
-                        json.dump(result, f, indent=2, ensure_ascii=False)
-                    print(f"Saved word-level info: {output_json}")
-                except Exception as e:
-                    print(f"Warning: Could not save word-level JSON: {e}")
+            if not ok:
+                raise OSError(err)
 
             if progress_callback:
                 progress_callback(100)
 
+            output_txt = os.path.join(
+                self.output_transcripts_folder,
+                os.path.splitext(os.path.basename(filepath))[0] + ".txt"
+            )
             print(f"Saved transcript: {output_txt}")
             return output_txt
 
@@ -835,6 +902,133 @@ class AudioProcessor:
             
         return "UNKNOWN"
 
+    def _save_transcript_outputs(self, audio_file, transcript, whisper_result, speaker_segments, word_timestamps):
+        """Write the .txt transcript (+ .srt sidecar, + _words.json when requested) for one file.
+
+        Shared by the diarization-on (deferred) and diarization-off (streamed) save paths
+        so both produce identical output. Returns (saved_bool, error_msg_or_None).
+        """
+        base_name = os.path.splitext(os.path.basename(audio_file))[0]
+        output_txt = os.path.join(self.output_transcripts_folder, f"{base_name}.txt")
+
+        # _extract_whisper_segments (used by both formatters and the SRT writer) reads
+        # self.whisper_result, so set it for this file before formatting.
+        self.whisper_result = whisper_result
+        if speaker_segments and len(speaker_segments) > 0:
+            formatted_transcript = self._format_transcript_with_speakers(transcript, speaker_segments)
+        else:
+            formatted_transcript = self._format_plain_transcript(transcript)
+
+        try:
+            with open(output_txt, 'w', encoding='utf-8', newline='\n') as f:
+                f.write(formatted_transcript)
+            print(f"Saved transcript: {output_txt}")
+            self._write_srt_sidecar(audio_file, transcript, whisper_result, speaker_segments)
+        except OSError as e:
+            print(f"Error saving transcript for {audio_file}: {e}")
+            return False, f"{output_txt}: {e}"
+
+        # When word-level timestamps were requested, write the JSON sidecar that
+        # Align Features consumes (so it won't have to re-transcribe this file).
+        if word_timestamps:
+            self._write_word_json_sidecar(audio_file, whisper_result)
+
+        return True, None
+
+    def _extract_transcripts_batch_with_diarization(self, audio_files, progress_callback=None, word_timestamps=False, cancel_check=None):
+        """Memory-bounded diarized batch path: transcribe, clear Whisper, diarize, save per file."""
+        total_files = len(audio_files)
+        os.makedirs(self.output_transcripts_folder, exist_ok=True)
+        save_errors = []
+        transcription_errors = []
+        saved_count = 0
+
+        for i, audio_file in enumerate(audio_files):
+            if cancel_check and cancel_check():
+                return
+
+            file_start = (i / total_files) * 100
+            file_span = 100 / total_files
+
+            def file_progress(local_progress):
+                if progress_callback:
+                    progress_callback(int(file_start + (local_progress / 100.0 * file_span)))
+
+            transcript = None
+            compact_result = None
+            audio_path = os.path.normpath(os.path.abspath(audio_file))
+
+            try:
+                self.set_status_message(f"🗣️ Transcribing ({i+1}/{total_files}): {os.path.basename(audio_file)}")
+                file_progress(0)
+                self._load_whisper_model()
+                file_progress(10)
+
+                if not os.path.isfile(audio_path):
+                    raise FileNotFoundError(f"Audio file not found: {audio_path}")
+
+                ts_mode = "word" if word_timestamps else True
+                result = self.whisper_pipe(
+                    _whisper_pipeline_audio_input(audio_path),
+                    return_timestamps=ts_mode,
+                    generate_kwargs={"task": "transcribe"}
+                )
+                transcript = result['text']
+                compact_result = self._compact_whisper_result(result, transcript)
+                if word_timestamps:
+                    self._write_word_json_sidecar(audio_file, result)
+
+                del result
+                self._clear_whisper_model()
+                file_progress(50)
+
+                self.set_status_message(f"🎭 Diarizing ({i+1}/{total_files}): {os.path.basename(audio_file)}")
+                speaker_segments = None
+                try:
+                    self._load_speaker_diarizer()
+                    speaker_segments = self.speaker_diarizer.diarize_speakers(audio_path)
+                except Exception as e:
+                    print(f"Error diarizing {audio_file}: {e}")
+                finally:
+                    self._clear_speaker_diarizer()
+                file_progress(90)
+
+                ok, err = self._save_transcript_outputs(
+                    audio_file, transcript, compact_result, speaker_segments, False
+                )
+                if ok:
+                    saved_count += 1
+                elif err:
+                    save_errors.append(err)
+                file_progress(100)
+
+            except Exception as e:
+                print(f"Error transcribing {audio_file}: {e}")
+                transcription_errors.append((audio_file, str(e)))
+            finally:
+                transcript = None
+                compact_result = None
+                self._clear_whisper_model()
+                self._clear_torch_cache()
+
+        if saved_count == 0:
+            detail_bits = [
+                f"{os.path.basename(path)}: {err}"
+                for path, err in transcription_errors[:8]
+            ]
+            detail = "\n".join(detail_bits) if detail_bits else "(see console / log for details)"
+            raise RuntimeError(
+                "Speech recognition failed for every file; no transcripts were produced.\n\n" + detail
+            )
+
+        if save_errors:
+            raise RuntimeError(
+                "Could not write one or more transcript files:\n\n" + "\n".join(save_errors)
+            )
+
+        if progress_callback:
+            progress_callback(100)
+
     def extract_transcripts_batch(self, audio_files, progress_callback=None, word_timestamps=False, cancel_check=None):
         """
         Batch process multiple audio files to generate transcripts.
@@ -859,19 +1053,17 @@ class AudioProcessor:
                 "The transcript output folder is not configured (<dataset>/transcripts). Select your dataset folder again."
             )
 
+        if self.enable_speaker_diarization:
+            return self._extract_transcripts_batch_with_diarization(
+                audio_files, progress_callback, word_timestamps, cancel_check
+            )
+
         total_files = len(audio_files)
         
-        # Calculate progress allocation:
-        # - If diarization enabled: 10% model load, 40% transcription, 40% diarization, 10% cleanup
-        # - If diarization disabled: 10% model load, 85% transcription, 5% cleanup
-        if self.enable_speaker_diarization:
-            transcription_start = 10
-            transcription_end = 50
-            diarization_start = 50
-            diarization_end = 95
-        else:
-            transcription_start = 10
-            transcription_end = 95
+        # Diarization-off path keeps Whisper loaded once for speed and saves each
+        # file immediately so batch memory stays flat.
+        transcription_start = 10
+        transcription_end = 95
         
         # ===== PHASE 1: Load Whisper model ONCE =====
         self.set_status_message("🔄 Loading speech recognition model...")
@@ -887,16 +1079,21 @@ class AudioProcessor:
         if progress_callback:
             progress_callback(transcription_start)
         
-        # ===== PHASE 2: Transcribe ALL files =====
-        transcription_results = {}  # filepath -> (transcript_text, whisper_result)
+        # ===== PHASE 2: Transcribe files and save immediately =====
         transcription_range = transcription_end - transcription_start
-        
+
+        os.makedirs(self.output_transcripts_folder, exist_ok=True)
+        save_errors = []
+        saved_count = 0
+        transcribed_ok = 0
+
         transcription_errors = []
         for i, audio_file in enumerate(audio_files):
             if cancel_check and cancel_check():
                 return
             self.set_status_message(f"🗣️ Transcribing ({i+1}/{total_files}): {os.path.basename(audio_file)}")
-            
+
+            transcript, result = None, None
             try:
                 audio_path = os.path.normpath(os.path.abspath(audio_file))
                 if not os.path.isfile(audio_path):
@@ -910,19 +1107,26 @@ class AudioProcessor:
                     generate_kwargs={"task": "transcribe"}
                 )
                 transcript = result['text']
-                transcription_results[audio_file] = (transcript, result)
-                
             except Exception as e:
                 print(f"Error transcribing {audio_file}: {e}")
                 transcription_errors.append((audio_file, str(e)))
-                transcription_results[audio_file] = (None, None)
-            
+
+            if transcript is not None:
+                transcribed_ok += 1
+                ok, err = self._save_transcript_outputs(
+                    audio_file, transcript, result, None, word_timestamps
+                )
+                if ok:
+                    saved_count += 1
+                elif err:
+                    save_errors.append(err)
+
             # Update progress
             if progress_callback:
                 file_progress = ((i + 1) / total_files) * transcription_range
                 progress_callback(int(transcription_start + file_progress))
 
-        if not any(transcription_results.get(af, (None, None))[0] is not None for af in audio_files):
+        if transcribed_ok == 0:
             detail_bits = [
                 f"{os.path.basename(path)}: {err}"
                 for path, err in transcription_errors[:8]
@@ -932,108 +1136,12 @@ class AudioProcessor:
                 "Speech recognition failed for every file; no transcripts were produced.\n\n" + detail
             )
 
-        # ===== PHASE 3: Diarization (if enabled) =====
-        diarization_results = {}  # filepath -> speaker_segments
-        
-        if self.enable_speaker_diarization:
-            # Offload Whisper to free VRAM for diarization
-            self._offload_whisper_model()
-            
-            # Load diarization model ONCE
-            self.set_status_message("🔄 Loading speaker diarization model...")
-            try:
-                self._load_speaker_diarizer()
-            except Exception as e:
-                print(f"Speaker diarization failed to load: {e}")
-                print("Continuing with transcripts only...")
-                self.enable_speaker_diarization = False
-            
-            if self.enable_speaker_diarization:
-                diarization_range = diarization_end - diarization_start
-                
-                for i, audio_file in enumerate(audio_files):
-                    if cancel_check and cancel_check():
-                        return
-                    # Skip files that failed transcription
-                    if transcription_results.get(audio_file, (None, None))[0] is None:
-                        continue
-                        
-                    self.set_status_message(f"🎭 Diarizing ({i+1}/{total_files}): {os.path.basename(audio_file)}")
-                    
-                    try:
-                        audio_path = os.path.normpath(os.path.abspath(audio_file))
-                        speaker_segments = self.speaker_diarizer.diarize_speakers(audio_path)
-                        diarization_results[audio_file] = speaker_segments
-                    except Exception as e:
-                        print(f"Error diarizing {audio_file}: {e}")
-                        diarization_results[audio_file] = None
-                    
-                    # Update progress
-                    if progress_callback:
-                        file_progress = ((i + 1) / total_files) * diarization_range
-                        progress_callback(int(diarization_start + file_progress))
-                
-                # Offload diarizer
-                if self.speaker_diarizer:
-                    self.speaker_diarizer.offload_model()
-        
-        # ===== PHASE 4: Save all results =====
-        self.set_status_message("💾 Saving transcripts...")
-        os.makedirs(self.output_transcripts_folder, exist_ok=True)
-
-        save_errors = []
-        saved_count = 0
-
-        for audio_file in audio_files:
-            transcript, whisper_result = transcription_results.get(audio_file, (None, None))
-            if transcript is None:
-                continue
-            
-            speaker_segments = diarization_results.get(audio_file)
-            
-            # Format transcript with speaker labels if available
-            if speaker_segments and len(speaker_segments) > 0:
-                # Store whisper_result for _extract_whisper_segments
-                self.whisper_result = whisper_result
-                formatted_transcript = self._format_transcript_with_speakers(transcript, speaker_segments)
-            else:
-                self.whisper_result = whisper_result
-                formatted_transcript = self._format_plain_transcript(transcript)
-            
-            # Save transcript to file
-            base_name = os.path.splitext(os.path.basename(audio_file))[0]
-            output_txt = os.path.join(self.output_transcripts_folder, f"{base_name}.txt")
-            
-            try:
-                with open(output_txt, 'w', encoding='utf-8', newline='\n') as f:
-                    f.write(formatted_transcript)
-                saved_count += 1
-                print(f"Saved transcript: {output_txt}")
-            except OSError as e:
-                msg = f"{output_txt}: {e}"
-                print(f"Error saving transcript for {audio_file}: {e}")
-                save_errors.append(msg)
-
-            # When word-level timestamps were requested, write the JSON sidecar that
-            # Align Features consumes (so it won't have to re-transcribe this file).
-            if word_timestamps:
-                output_json = os.path.join(self.output_transcripts_folder, f"{base_name}_words.json")
-                try:
-                    with open(output_json, 'w', encoding='utf-8') as f:
-                        json.dump(whisper_result, f, indent=2, ensure_ascii=False)
-                    print(f"Saved word-level info: {output_json}")
-                except Exception as e:
-                    print(f"Warning: Could not save word-level JSON for {base_name}: {e}")
-
         if save_errors:
             raise RuntimeError(
                 "Could not write one or more transcript files:\n\n" + "\n".join(save_errors)
             )
 
-        expected_saves = sum(
-            1 for af in audio_files if transcription_results.get(af, (None, None))[0] is not None
-        )
-        if expected_saves > 0 and saved_count == 0:
+        if transcribed_ok > 0 and saved_count == 0:
             raise RuntimeError(
                 "Transcription succeeded but no .txt files were saved (unexpected). "
                 f"Output folder: {self.output_transcripts_folder}"
@@ -1041,69 +1149,6 @@ class AudioProcessor:
 
         if progress_callback:
             progress_callback(100)
-
-    def process_audio_file(self, filepath, extract_features=True, extract_transcript=True, progress_callback=None):
-        """
-        Process a single audio file for both features and transcript.
-        
-        Args:
-            filepath (str): Path to the WAV file
-            extract_features (bool): Whether to extract audio features
-            extract_transcript (bool): Whether to extract transcript
-            progress_callback (callable, optional): Callback function for progress updates
-            
-        Returns:
-            dict: Dictionary with paths to saved files
-        """
-        results = {}
-        
-        if extract_features and extract_transcript:
-            # Split progress: 50% for features, 50% for transcript
-            if progress_callback:
-                progress_callback(0)
-            
-            features_callback = self._create_scoped_progress_callback(progress_callback, 0, 50)
-            results['features'] = self.extract_audio_features(filepath, features_callback)
-            
-            transcript_callback = self._create_scoped_progress_callback(progress_callback, 50, 100)
-            results['transcript'] = self.extract_transcript(filepath, transcript_callback)
-            
-        elif extract_features:
-            if progress_callback:
-                progress_callback(0)
-            results['features'] = self.extract_audio_features(filepath, progress_callback)
-            
-        elif extract_transcript:
-            if progress_callback:
-                progress_callback(0)
-            results['transcript'] = self.extract_transcript(filepath, progress_callback)
-        
-        return results
-
-    def process_audio_batch(self, audio_files, extract_features=True, extract_transcript=True, progress_callback=None):
-        """
-        Batch process multiple audio files for both features and transcripts.
-        
-        Args:
-            audio_files (list): List of paths to WAV files
-            extract_features (bool): Whether to extract audio features
-            extract_transcript (bool): Whether to extract transcript
-            progress_callback (callable, optional): Callback function for progress updates
-        """
-        if extract_features and extract_transcript:
-            # Split progress: 50% for features, 50% for transcript
-            features_callback = self._create_scoped_progress_callback(progress_callback, 0, 50)
-            self.extract_audio_features_batch(audio_files, features_callback)
-            
-            transcript_callback = self._create_scoped_progress_callback(progress_callback, 50, 100)
-            self.extract_transcripts_batch(audio_files, transcript_callback)
-            
-        elif extract_features:
-            self.extract_audio_features_batch(audio_files, progress_callback)
-        
-        elif extract_transcript:
-            self.extract_transcripts_batch(audio_files, progress_callback)
-
 
     def align_features(self, features_csv, transcript_json, output_csv):
         """
@@ -1388,24 +1433,3 @@ class PyAnnoteSpeakerDiarizer:
             
         except Exception as e:
             raise Exception(f"PyAnnote speaker diarization failed: {str(e)}")
-    
-    def format_speaker_segments(self, speaker_segments):
-        """
-        Format speaker segments into a readable string.
-        
-        Args:
-            speaker_segments (list): List of speaker segments
-            
-        Returns:
-            str: Formatted speaker segments
-        """
-        if not speaker_segments:
-            return "No speakers detected"
-            
-        formatted_segments = []
-        for segment in speaker_segments:
-            start_time = f"{int(segment['start']//60):02d}:{segment['start']%60:06.3f}"
-            end_time = f"{int(segment['end']//60):02d}:{segment['end']%60:06.3f}"
-            formatted_segments.append(f"{segment['speaker']}: {start_time} --> {end_time}")
-            
-        return "\n".join(formatted_segments)

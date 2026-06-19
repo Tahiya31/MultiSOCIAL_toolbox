@@ -75,23 +75,6 @@ def _install_fake_wx() -> None:
     sys.modules["wx.lib.stattext"] = wx_stattext
 
 
-def _install_fake_ffmpeg() -> None:
-    ffmpeg = types.ModuleType("ffmpeg")
-
-    class _Node:
-        def output(self, *args, **kwargs):
-            return self
-
-        def overwrite_output(self):
-            return self
-
-        def run(self, *args, **kwargs):
-            return None
-
-    ffmpeg.input = lambda *args, **kwargs: _Node()
-    sys.modules["ffmpeg"] = ffmpeg
-
-
 def _install_fake_audio_deps() -> None:
     torch = types.ModuleType("torch")
     torch.float16 = "float16"
@@ -150,9 +133,8 @@ def import_runtime_services():
 
 @pytest.fixture
 def import_gui_utils():
-    _purge_modules("gui_utils", "wx", "wx.lib", "wx.lib.stattext", "ffmpeg")
+    _purge_modules("gui_utils", "wx", "wx.lib", "wx.lib.stattext")
     _install_fake_wx()
-    _install_fake_ffmpeg()
     return importlib.import_module("gui_utils")
 
 
