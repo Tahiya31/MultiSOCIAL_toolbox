@@ -181,6 +181,49 @@ def test_extract_pose_features_cancel_check_stops_early(import_pose, tmp_path, m
     assert result is False
     assert checks["n"] <= 4
 
+def test_extract_pose_features_stride_progress_reaches_100(import_pose, tmp_path, monkeypatch):
+    pose = import_pose
+    monkeypatch.setattr(pose, "ensure_yolov5_weights", lambda: None)
+    processor = pose.PoseProcessor(str(tmp_path), frame_stride=5)
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake")
+    progress = []
+
+    result = processor.extract_pose_features(str(video), progress_callback=progress.append)
+
+    assert result is True
+    assert progress[-1] == 100
+    assert max(progress) == 100
+
+def test_extract_multiperson_no_roi_stride_progress_reaches_100(import_pose, tmp_path, monkeypatch):
+    pose = import_pose
+    monkeypatch.setattr(pose, "ensure_yolov5_weights", lambda: None)
+    processor = pose.PoseProcessor(str(tmp_path), frame_stride=4)
+    processor.set_multi_person_mode(True)
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake")
+    progress = []
+
+    result = processor.extract_pose_features(str(video), progress_callback=progress.append)
+
+    assert result is True
+    assert progress[-1] == 100
+    assert max(progress) == 100
+
+
+def test_find_pose_csv_paths_filters_by_mode(import_pose, tmp_path):
+    pose = import_pose
+    _write_min_pose_csv(tmp_path / "clip_ID_0.csv")
+    _write_min_pose_csv(tmp_path / "clip_multi_ID_0.csv")
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake")
+
+    single = pose.find_pose_csv_paths(str(tmp_path), str(video), multi_person=False)
+    multi = pose.find_pose_csv_paths(str(tmp_path), str(video), multi_person=True)
+
+    assert single == [str(tmp_path / "clip_ID_0.csv")]
+    assert multi == [str(tmp_path / "clip_multi_ID_0.csv")]
+
 
 def test_embed_pose_video_cancel_check_stops_early(import_pose, tmp_path, monkeypatch):
     pose = import_pose
@@ -219,6 +262,40 @@ def test_embed_pose_video_preserves_fractional_fps(import_pose, tmp_path, monkey
 
     assert result == str(out_dir / "clip_pose.mp4")
     assert pose.cv2.VideoWriter.instances[0].args[2] == 29.97
+
+
+def test_embed_pose_video_respects_selected_mode(import_pose, tmp_path, monkeypatch):
+    pose = import_pose
+    monkeypatch.setattr(pose, "ensure_yolov5_weights", lambda: None)
+    csv_dir = tmp_path / "csv"
+    csv_dir.mkdir()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    _write_min_pose_csv(csv_dir / "clip_ID_0.csv")
+    _write_min_pose_csv(csv_dir / "clip_multi_ID_0.csv")
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake")
+
+    processor = pose.PoseProcessor(str(csv_dir), output_video_folder=str(out_dir))
+    assert processor.embed_pose_video(str(video)) == str(out_dir / "clip_pose.mp4")
+
+    processor.set_multi_person_mode(True)
+    assert processor.embed_pose_video(str(video)) == str(out_dir / "clip_multi_pose.mp4")
+
+
+def test_embed_pose_video_returns_none_when_selected_mode_csv_missing(import_pose, tmp_path, monkeypatch):
+    pose = import_pose
+    monkeypatch.setattr(pose, "ensure_yolov5_weights", lambda: None)
+    csv_dir = tmp_path / "csv"
+    csv_dir.mkdir()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    _write_min_pose_csv(csv_dir / "clip_multi_ID_0.csv")
+    processor = pose.PoseProcessor(str(csv_dir), output_video_folder=str(out_dir))
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake")
+
+    assert processor.embed_pose_video(str(video)) is None
 
 
 def test_embed_pose_video_returns_none_without_csv(import_pose, tmp_path, monkeypatch):

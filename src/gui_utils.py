@@ -573,15 +573,19 @@ def transcripts_output_folder(folder_path):
 
 
 def get_audio_files_for_processing(folder_path, extensions):
-    """WAV files at the dataset root and under ``converted_audio`` (non-recursive each)."""
+    """Audio files from dataset root and ``converted_audio``.
+
+    If both locations contain the same basename, prefer the converted copy so
+    generated outputs named by basename cannot overwrite/cross-pair.
+    """
     dr = resolved_dataset_root(folder_path)
     cad = resolved_converted_audio_folder(folder_path)
-    seen = {}
+    by_name = {}
     for root in (dr, cad):
         if root and os.path.isdir(root):
             for fpath in get_files_from_folder(root, extensions):
-                seen[fpath] = True
-    return sorted(seen.keys())
+                by_name[os.path.basename(fpath).lower()] = fpath
+    return sorted(by_name.values())
 
 
 def get_files_from_folder(folder_path, extensions):

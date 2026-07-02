@@ -155,7 +155,7 @@ The toolbox runs one task at a time and guides you through the right order of st
 
 * **One task at a time.** While a task is running, every other button and setting is disabled and only **Cancel** stays active. This prevents two tasks from running at once or interfering with each other, and means rapid or accidental clicks can't start a second job.
 * **Steps unlock when their inputs exist.** Buttons that depend on earlier results stay greyed out until the required files are actually present on disk (the toolbox checks the files, not just whether you clicked a button before). Hover over a greyed-out button to see what's missing and what to do next. Specifically:
-  * **Embed Pose Features** unlocks once **Extract Pose Features** has produced pose CSVs in the `pose_features` folder.
+  * **Embed Pose Features** unlocks once **Extract Pose Features** has produced pose CSVs in the `pose_features` folder for the selected mode (single-person `*_ID_*.csv` or multi-person `*_multi_ID_*.csv`, depending on **Enable Multi-person Pose**).
   * **Embed Transcript on Video** unlocks once **Extract Transcripts** has produced matching `.srt` files in the `transcripts` folder for every selected video.
   * If **Add captions to pose-embedded video** is checked, **Embed Transcript on Video** also waits for matching videos in `embedded_pose`.
   * **Verify Pose Match** unlocks once **Embed Pose Features** has produced videos in the `embedded_pose` folder.
@@ -221,9 +221,9 @@ If **Enable Multi-person Pose** is used, pose CSVs and embedded pose videos incl
 **Extract Pose Features** If you are interested in extracting pose or body key-points from the video, this step uses [MediaPipe](https://github.com/google-ai-edge/mediapipe/blob/master/docs/solutions/pose.md). This step returns 33 body pose landmarks. For more details on MediaPipe, please check out the [official page](https://github.com/google-ai-edge/mediapipe/blob/master/docs/solutions/pose.md). 
   * Use the ``Browse`` button to locate your input video file.
   * Then press **Extract Pose Features** button. This step may take some time.
-  * Note: If your video has multiple people, you must select **Enable Multi-person Pose** for getting pose information of each person.
+  * Note: If your video has multiple people, you must select **Enable Multi-person Pose** for getting pose information of each person. Keep this checkbox in the same state for **Extract Pose Features**, **Embed Pose Features**, and **Verify Pose Match** so the toolbox uses the matching CSV set.
   * **Performance Options:**
-    * **Process every k-th frame**: Skip frames to speed up processing (e.g., k=2 processes every other frame).
+    * **Process every k-th frame**: Skip frames to speed up processing (e.g., k=2 processes every other frame). The progress bar follows source video frames, so it still reaches 100% when stride is greater than 1.
     * **Downscale to 720p**: Reduce video resolution during processing for faster extraction.
     * **Frame Threshold for Bounding Box Recalibration**: Controls how often person bounding boxes are re-detected in multi-person mode.
   * Once the pose features are extracted, you can find them in **pose_features** folder created before.
@@ -233,10 +233,11 @@ If **Enable Multi-person Pose** is used, pose CSVs and embedded pose videos incl
     * z: Represents the landmark depth with the depth at the midpoint of hips being the origin, and the smaller the value the closer the landmark is to the camera. The magnitude of z uses roughly the same scale as x.
     * confidence: A value in [0.0, 1.0] indicating the likelihood of the landmark being visible (present and not occluded) in the image.
 
-**Embed Pose Features** Overlay body key-points from extracted pose CSVs onto each video frame (run **Extract Pose Features** first). The **Embed Pose Features** button stays greyed out until extraction has produced pose CSVs for every selected video; hover over it for a reminder.
+**Embed Pose Features** Overlay body key-points from extracted pose CSVs onto each video frame (run **Extract Pose Features** first). The **Embed Pose Features** button stays greyed out until extraction has produced pose CSVs for every selected video in the mode indicated by **Enable Multi-person Pose**; hover over it for a reminder.
   * Use the ``Browse`` button to locate your input video file.
   * Then press **Embed Pose Features** button. The toolbox reads pose CSVs from `pose_features/` and draws landmarks onto the video. Each tracked person gets a stable color with an on-screen legend, and each landmark's brightness reflects its detection confidence: brighter means more confident, dimmer means less confident.
   * Embed automatically reuses the frame stride recorded at extraction time, so the overlay stays aligned with the CSV rows regardless of the stride selected when embedding.
+  * Output naming follows the mode: `*_pose.mp4` for single-person CSVs, `*_multi_pose.mp4` for multi-person CSVs.
   * Once all the frames are processed, an output video will appear in the **embedded_pose** folder where your input video is located.
 
 **Embed Transcript on Video** Burn the turn-by-turn transcript onto the video as captions so you can watch the video and read the transcript in sync — useful for evaluating transcription accuracy. The **Embed Transcript on Video** button stays greyed out until **Extract Transcripts** (on the Audio tab) has produced matching `.srt` files for the selected videos; hover over it for a reminder.
@@ -249,8 +250,9 @@ If **Enable Multi-person Pose** is used, pose CSVs and embedded pose videos incl
 ### Verify Pose Match (Pose QA)
 After extracting pose CSVs and generating embedded pose videos, you can run **Verify Pose Match** to compare them.
   * Pre-requisites:
-    * `pose_features/` must contain CSVs generated from **Extract Pose Features**.
+    * `pose_features/` must contain CSVs generated from **Extract Pose Features** for the same mode as the embedded video (`*_ID_*.csv` or `*_multi_ID_*.csv`).
     * `embedded_pose/` must contain pose-overlay videos generated from **Embed Pose Features**.
+  * Verification matches each embedded video to the correct CSV set and reads the extraction `frame_stride` from the `{base}_meta.json` or `{base}_multi_meta.json` sidecar.
   * The tool creates a `verification/` folder in your dataset directory with:
     * per-video JSON + CSV reports (landmark hit rate against the embedded overlay)
     * `worst_frames/` subfolder containing reference frames for quick inspection
@@ -345,10 +347,14 @@ This feature aligns your extracted audio features (from OpenSMILE) with word-lev
 
 Greyed-out buttons usually mean a required file is missing. Hover over the button for the exact next step.
 
-- **Embed Pose Features** needs matching pose CSVs in `pose_features/`.
+- **Embed Pose Features** needs matching pose CSVs in `pose_features/` for the current **Enable Multi-person Pose** setting.
 - **Embed Transcript on Video** needs matching `.srt` files in `transcripts/`.
 - If **Add captions to pose-embedded video** is checked, **Embed Transcript on Video** also needs matching videos in `embedded_pose/`.
-- **Verify Pose Match** needs pose-overlay videos in `embedded_pose/`.
+- **Verify Pose Match** needs pose-overlay videos in `embedded_pose/` plus CSVs that match each video's mode (`*_pose.mp4` ↔ `*_ID_*.csv`, `*_multi_pose.mp4` ↔ `*_multi_ID_*.csv`).
+
+### Multi-person pose looks wrong or buttons stay locked
+
+Make sure **Enable Multi-person Pose** matches how you extracted pose data. Single-person CSVs (`session_ID_0.csv`) and multi-person CSVs (`session_multi_ID_0.csv`) are treated separately — toggling the checkbox after extraction will not unlock **Embed Pose Features** until the matching files exist.
 
 ### Captions are missing or the caption button stays locked
 

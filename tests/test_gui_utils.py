@@ -33,14 +33,37 @@ def test_get_files_from_folder_filters_dotfiles_and_sorts(import_gui_utils, tmp_
     assert files == [str(tmp_path / "a.wav"), str(tmp_path / "b.wav")]
 
 
-def test_get_audio_files_for_processing_deduplicates_root_and_converted(import_gui_utils, tmp_path):
+def test_get_audio_files_for_processing_includes_root_audio_without_converted_duplicate(import_gui_utils, tmp_path):
+    gui_utils = import_gui_utils
+    dataset = tmp_path / "dataset"
+    dataset.mkdir()
+    (dataset / "session.wav").write_text("", encoding="utf-8")
+
+    files = gui_utils.get_audio_files_for_processing(str(dataset), (".wav",))
+
+    assert files == [str(dataset / "session.wav")]
+
+
+def test_get_audio_files_for_processing_includes_converted_audio_without_root_duplicate(import_gui_utils, tmp_path):
+    gui_utils = import_gui_utils
+    dataset = tmp_path / "dataset"
+    converted = dataset / "converted_audio"
+    converted.mkdir(parents=True)
+    (converted / "session.wav").write_text("", encoding="utf-8")
+
+    files = gui_utils.get_audio_files_for_processing(str(dataset), (".wav",))
+
+    assert files == [str(converted / "session.wav")]
+
+
+def test_get_audio_files_for_processing_prefers_converted_duplicate_basename(import_gui_utils, tmp_path):
     gui_utils = import_gui_utils
     dataset = tmp_path / "dataset"
     converted = dataset / "converted_audio"
     dataset.mkdir()
     converted.mkdir()
-    (dataset / "root.wav").write_text("", encoding="utf-8")
-    (converted / "root.wav").write_text("", encoding="utf-8")
+    (dataset / "session.wav").write_text("", encoding="utf-8")
+    (converted / "session.wav").write_text("", encoding="utf-8")
     (converted / "extra.flac").write_text("", encoding="utf-8")
 
     files = gui_utils.get_audio_files_for_processing(str(dataset), (".wav", ".flac"))
@@ -48,10 +71,23 @@ def test_get_audio_files_for_processing_deduplicates_root_and_converted(import_g
     assert files == sorted(
         [
             str(converted / "extra.flac"),
-            str(converted / "root.wav"),
-            str(dataset / "root.wav"),
+            str(converted / "session.wav"),
         ]
     )
+
+
+def test_get_audio_files_for_processing_keeps_different_basenames(import_gui_utils, tmp_path):
+    gui_utils = import_gui_utils
+    dataset = tmp_path / "dataset"
+    converted = dataset / "converted_audio"
+    dataset.mkdir()
+    converted.mkdir()
+    (dataset / "root.wav").write_text("", encoding="utf-8")
+    (converted / "converted.wav").write_text("", encoding="utf-8")
+
+    files = gui_utils.get_audio_files_for_processing(str(dataset), (".wav",))
+
+    assert files == sorted([str(converted / "converted.wav"), str(dataset / "root.wav")])
 
 
 def test_get_ffmpeg_executable_prefers_cached_value(monkeypatch, import_gui_utils, tmp_path):

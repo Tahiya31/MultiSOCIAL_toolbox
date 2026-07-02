@@ -5,6 +5,7 @@ This is the main script for multisocial app
 
 # Import necessary system and utility modules
 import glob
+import json
 import os
 import threading
 
@@ -286,6 +287,7 @@ class VideoToWavConverter(wx.Frame):
         self.multiPersonCheckbox.SetFont(Theme.get_font(Theme.FONT_HEADING))
         self.multiPersonCheckbox.SetForegroundColour(Theme.colour(Theme.COLOR_TEXT_WHITE))
         self._register_scalable(self.multiPersonCheckbox, Theme.FONT_HEADING)
+        self.multiPersonCheckbox.Bind(wx.EVT_CHECKBOX, lambda event: self.update_buttons_enabled())
         settings.Add(self.multiPersonCheckbox, flag=wx.EXPAND | wx.BOTTOM, border=Theme.SPACE_SM)
 
         self.downscaleCheckbox = CustomCheckBox(settings_card, label="Downscale to 720p for processing")
@@ -794,7 +796,11 @@ class VideoToWavConverter(wx.Frame):
                 video_files = gui_utils.get_files_from_folder(workspace_root, self.VIDEO_EXTENSIONS)
                 audio_files = gui_utils.get_audio_files_for_processing(folder_path, self.AUDIO_EXTENSIONS)
                 pose_dir = os.path.join(workspace_root, "pose_features")
-                has_pose_csv = self._has_all_pose_csvs(pose_dir, video_files)
+                pose_multi_person = bool(
+                    getattr(self, 'multiPersonCheckbox', None)
+                    and self.multiPersonCheckbox.GetValue()
+                )
+                has_pose_csv = self._has_all_pose_csvs(pose_dir, video_files, pose_multi_person)
                 transcripts_dir = gui_utils.transcripts_output_folder(folder_path)
                 has_transcript_srt = self._has_all_transcript_srts(transcripts_dir, video_files)
                 embedded_dir = os.path.join(workspace_root, "embedded_pose")
@@ -884,19 +890,18 @@ class VideoToWavConverter(wx.Frame):
 
         self.refresh_diarization_state()
 
-    def _has_all_pose_csvs(self, pose_dir, video_files):
+    def _has_all_pose_csvs(self, pose_dir, video_files, multi_person=False):
         """True if every selected video has extracted pose CSVs.
 
-        Mirrors the naming used by pose.find_pose_csv_paths without importing
-        the heavy pose module (this runs on every folder/selection change).
+        Mirrors the mode-specific naming used by pose.find_pose_csv_paths
+        without importing the heavy pose module on every folder change.
         """
         if not video_files or not pose_dir or not os.path.isdir(pose_dir):
             return False
         for video in video_files:
             base = os.path.splitext(os.path.basename(video))[0]
-            if not glob.glob(os.path.join(pose_dir, f"{base}_multi_ID_*.csv")) and not glob.glob(
-                os.path.join(pose_dir, f"{base}_ID_*.csv")
-            ):
+            pattern = f"{base}_multi_ID_*.csv" if multi_person else f"{base}_ID_*.csv"
+            if not glob.glob(os.path.join(pose_dir, pattern)):
                 return False
         return True
 
@@ -923,6 +928,39 @@ class VideoToWavConverter(wx.Frame):
         if not existing:
             return None
         return max(existing, key=lambda path: os.path.getmtime(path))
+
+    @staticmethod
+    def _pose_source_base_from_embedded_video(video_path):
+        """Return the original source basename for an embedded pose video."""
+        base = os.path.splitext(os.path.basename(video_path))[0]
+        for suffix in ("_multi_pose", "_pose"):
+            if base.endswith(suffix):
+                return base[: -len(suffix)]
+        return base
+
+    @staticmethod
+    def _embedded_pose_video_is_multi(video_path):
+        """True when an embedded pose video was produced from multi-person CSVs."""
+        base = os.path.splitext(os.path.basename(video_path))[0]
+        return base.endswith("_multi_pose")
+
+    def _pose_csv_paths_for_embedded_video(self, video_path):
+        """Return CSV paths matching the embedded video's pose mode."""
+        csv_base = self._pose_source_base_from_embedded_video(video_path)
+        is_multi = self._embedded_pose_video_is_multi(video_path)
+        pattern = f"{csv_base}_multi_ID_*.csv" if is_multi else f"{csv_base}_ID_*.csv"
+        return sorted(glob.glob(os.path.join(self.extracted_pose_folder, pattern)))
+
+    def _pose_stride_for_embedded_video(self, video_path):
+        """Return extraction stride for an embedded pose video, defaulting older outputs to 1."""
+        csv_base = self._pose_source_base_from_embedded_video(video_path)
+        suffix = "_multi" if self._embedded_pose_video_is_multi(video_path) else ""
+        meta_path = os.path.join(self.extracted_pose_folder, f"{csv_base}{suffix}_meta.json")
+        try:
+            with open(meta_path, "r", encoding="utf-8") as handle:
+                return max(1, int(json.load(handle).get("frame_stride", 1)))
+        except Exception:
+            return 1
 
     def _has_all_embedded_pose_videos(self, embedded_dir, video_files):
         """True if every selected source video has a matching embedded pose video."""
@@ -1290,15 +1328,7 @@ class VideoToWavConverter(wx.Frame):
                     cancelled = True
                     break
                 base = os.path.splitext(os.path.basename(video))[0]
-                # Remove trailing "_pose" if present to get CSV base
-                csv_base = base.replace("_pose", "")
-                csv_pattern = os.path.join(self.extracted_pose_folder, f"{csv_base}*_ID_*.csv")
-                csv_paths = sorted(glob.glob(csv_pattern))
-                if not csv_paths:
-                    # Try single-person default
-                    single_csv = os.path.join(self.extracted_pose_folder, f"{csv_base}_ID_0.csv")
-                    if os.path.exists(single_csv):
-                        csv_paths = [single_csv]
+                csv_paths = self._pose_csv_paths_for_embedded_video(video)
 
                 if not csv_paths:
                     self.set_status_message(f"⚠️ No CSVs found for {base}; skipping")
@@ -1314,7 +1344,7 @@ class VideoToWavConverter(wx.Frame):
                     report = verify(
                         video_path=video,
                         csv_paths=csv_paths,
-                        stride=max(1, int(self.frameStrideInput.GetValue())),
+                        stride=self._pose_stride_for_embedded_video(video),
                         max_worst=10,
                         worst_dir=worst_dir,
                         processed_only=True,
@@ -1517,10 +1547,14 @@ class VideoToWavConverter(wx.Frame):
 
         from pose import find_pose_csv_paths
 
+        multi_person = bool(
+            hasattr(self, "multiPersonCheckbox") and self.multiPersonCheckbox.GetValue()
+        )
+
         missing_csv_videos = [
             os.path.basename(video)
             for video in video_files
-            if not find_pose_csv_paths(self.extracted_pose_folder, video)
+            if not find_pose_csv_paths(self.extracted_pose_folder, video, multi_person=multi_person)
         ]
         if missing_csv_videos:
             preview = ", ".join(missing_csv_videos[:3])

@@ -151,14 +151,23 @@ def ensure_yolov5_weights():
             raise RuntimeError(f"Failed to download YOLOv5 weights: {e}")
 
 
-def find_pose_csv_paths(output_csv_folder, video_path):
-    """Return sorted CSV paths for a video, preferring multi-person files."""
+def find_pose_csv_paths(output_csv_folder, video_path, multi_person=None):
+    """Return sorted CSV paths for a video.
+
+    When ``multi_person`` is provided, only return CSVs for that mode. The
+    default keeps the older behavior for callers that intentionally want the
+    newest multi-person-compatible lookup.
+    """
     base = os.path.splitext(os.path.basename(video_path))[0]
     multi_pattern = os.path.join(output_csv_folder, f"{base}_multi_ID_*.csv")
+    single_pattern = os.path.join(output_csv_folder, f"{base}_ID_*.csv")
+    if multi_person is True:
+        return sorted(glob.glob(multi_pattern))
+    if multi_person is False:
+        return sorted(glob.glob(single_pattern))
     paths = sorted(glob.glob(multi_pattern))
     if paths:
         return paths
-    single_pattern = os.path.join(output_csv_folder, f"{base}_ID_*.csv")
     return sorted(glob.glob(single_pattern))
 
 
@@ -170,6 +179,17 @@ def _should_emit_frame_update(frame_idx, total_frames, last_percent=None, every_
     if last_percent is not None and percent != last_percent:
         return True
     return (frame_idx % every_frames) == 0 or frame_idx >= total_frames
+
+def _emit_video_progress(progress_callback, current_frame, total_frames, last_percent):
+    """Emit progress based on raw video frames read, not processed frames."""
+    if not progress_callback or total_frames <= 0:
+        return last_percent
+    progress_percent = int((current_frame / total_frames) * 100)
+    progress_percent = min(100, max(0, progress_percent))
+    if progress_percent != last_percent or _should_emit_frame_update(current_frame, total_frames, last_percent):
+        progress_callback(progress_percent)
+        return progress_percent
+    return last_percent
 
 
 # Core pose processor class
@@ -563,7 +583,9 @@ class PoseProcessor:
         return None
 
     def _find_pose_csvs(self, video_path):
-        paths = find_pose_csv_paths(self.output_csv_folder, video_path)
+        paths = find_pose_csv_paths(
+            self.output_csv_folder, video_path, multi_person=self.enable_multi_person_pose
+        )
         is_multi = bool(paths) and "_multi_ID_" in os.path.basename(paths[0])
         return paths, is_multi
 
@@ -659,6 +681,9 @@ class PoseProcessor:
             # Frame downsampling (process every k-th frame)
             if self.frame_stride > 1 and (raw_frame_idx % self.frame_stride) != 0:
                 raw_frame_idx += 1
+                last_progress_percent = _emit_video_progress(
+                    progress_callback, raw_frame_idx, total_frames, last_progress_percent
+                )
                 continue
 
             # Resolution downscaling (process at reduced size)
@@ -675,8 +700,11 @@ class PoseProcessor:
             h = proc_frame.shape[0]
 
             now = time.monotonic()
-            if self.status_callback and (now - last_status_t >= 0.5 or frame_idx + 1 >= total_frames):
-                self.status_callback(f"📸 Extracting pose from: {os.path.basename(video_path)} (Frame {frame_idx + 1}/{total_frames})")
+            if self.status_callback and (now - last_status_t >= 0.5 or raw_frame_idx + 1 >= total_frames):
+                self.status_callback(
+                    f"📸 Extracting pose from: {os.path.basename(video_path)} "
+                    f"(Source frame {raw_frame_idx + 1}/{total_frames})"
+                )
                 last_status_t = now
 
             image_rgb = cv2.cvtColor(proc_frame, cv2.COLOR_BGR2RGB)
@@ -693,11 +721,9 @@ class PoseProcessor:
                 if not locked_rois:
                     raw_frame_idx += 1
                     frame_idx += 1
-                    if progress_callback and total_frames > 0:
-                        progress_percent = int((frame_idx / total_frames) * 100)
-                        if progress_percent != last_progress_percent or _should_emit_frame_update(frame_idx, total_frames):
-                            progress_callback(progress_percent)
-                            last_progress_percent = progress_percent
+                    last_progress_percent = _emit_video_progress(
+                        progress_callback, raw_frame_idx, total_frames, last_progress_percent
+                    )
                     continue
 
                 # Process using shared multiperson step
@@ -723,11 +749,9 @@ class PoseProcessor:
             frame_idx += 1
             
             # Update progress if callback provided
-            if progress_callback and total_frames > 0:
-                progress_percent = int((frame_idx / total_frames) * 100)
-                if progress_percent != last_progress_percent or _should_emit_frame_update(frame_idx, total_frames):
-                    progress_callback(progress_percent)
-                    last_progress_percent = progress_percent
+            last_progress_percent = _emit_video_progress(
+                progress_callback, raw_frame_idx, total_frames, last_progress_percent
+            )
 
         cap.release()
 
