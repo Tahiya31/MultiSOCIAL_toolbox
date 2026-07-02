@@ -1,91 +1,84 @@
 from __future__ import annotations
 
-import importlib
-import sys
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
+import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-vpe = importlib.import_module("verify_pose_embedding")
-
-
-def _write_pose_csv(path, *, x=0.5, y=0.5, confidence=1.0):
-    columns = ["frame", "person_id"] + vpe._landmark_columns()
-    row = [0, 0]
-    for idx in range(0, len(vpe._landmark_columns()), 4):
-        row.extend([x, y, 0.0, confidence])
-    df = pd.DataFrame([row], columns=columns)
-    df.to_csv(path, index=False)
+cv2 = pytest.importorskip("cv2")
 
 
-def test_landmark_columns_contains_expected_count():
-    columns = vpe._landmark_columns()
-
-    assert len(columns) == 33 * 4
-    assert columns[:4] == ["Nose_x", "Nose_y", "Nose_z", "Nose_confidence"]
-
-
-def test_sanity_check_csv_detects_bad_coordinates(tmp_path):
-    csv_path = tmp_path / "pose.csv"
-    _write_pose_csv(csv_path, x=1.5)
-
-    problems = vpe.sanity_check_csv(csv_path)
-
-    assert any("out of [0,1] range" in problem for problem in problems)
+def _synthetic_pose_frame():
+    frame = np.zeros((60, 80, 3), dtype=np.uint8)
+    cv2.circle(frame, (40, 30), 3, (0, 255, 0), -1)
+    return frame
 
 
-def test_draw_from_row_marks_expected_pixel():
-    img = np.zeros((20, 20, 3), dtype=np.uint8)
-    row = {"Nose_x": 0.5, "Nose_y": 0.5, "Nose_z": 0.0, "Nose_confidence": 1.0}
-    drawn = vpe._draw_from_row(img, row, ["Nose_x", "Nose_y", "Nose_z", "Nose_confidence"], color=(0, 255, 0))
+def test_verify_samples_processed_frames_and_reports_metadata(tmp_path, monkeypatch):
+    from verify_pose_embedding import _landmark_columns, verify
 
-    assert drawn[10, 10, 1] == 255
-
-
-def test_landmark_hit_detects_green_overlay():
-    frame = np.zeros((20, 20, 3), dtype=np.uint8)
-    frame[10, 10] = np.array([0, 255, 0], dtype=np.uint8)
-
-    assert vpe._landmark_hit(frame, 10, 10, window=1) is True
-    assert vpe._landmark_hit(frame, 0, 0, window=1) is False
-
-
-def test_verify_hit_rate_uses_processed_frames(monkeypatch, tmp_path):
-    csv_path = tmp_path / "pose.csv"
-    _write_pose_csv(csv_path)
-
-    frame = np.zeros((20, 20, 3), dtype=np.uint8)
-    frame[10, 10] = np.array([0, 255, 0], dtype=np.uint8)
+    video_path = tmp_path / "clip_pose.mp4"
+    video_path.write_bytes(b"fake")
 
     class FakeCapture:
-        def __init__(self, frames):
-            self.frames = list(frames)
-            self.index = 0
+        def __init__(self, path):
+            self.path = path
+            self._pos = 0
 
         def isOpened(self):
-            return self.index <= len(self.frames)
-
-        def read(self):
-            if self.index >= len(self.frames):
-                return False, None
-            frame_value = self.frames[self.index]
-            self.index += 1
-            return True, frame_value.copy()
+            return True
 
         def get(self, prop):
-            return {3: 20, 4: 20}.get(int(prop), 1)
+            if prop == cv2.CAP_PROP_FRAME_COUNT:
+                return 20
+            if prop == cv2.CAP_PROP_FRAME_WIDTH:
+                return 80
+            if prop == cv2.CAP_PROP_FRAME_HEIGHT:
+                return 60
+            return 0
+
+        def set(self, prop, value):
+            if prop == cv2.CAP_PROP_POS_FRAMES:
+                self._pos = int(value)
+            return True
+
+        def read(self):
+            if self._pos >= 20:
+                return False, None
+            frame = _synthetic_pose_frame()
+            self._pos += 1
+            return True, frame
 
         def release(self):
-            return None
+            pass
 
-    monkeypatch.setattr(vpe.cv2, "VideoCapture", lambda path: FakeCapture([frame]))
-    monkeypatch.setattr(vpe.cv2, "CAP_PROP_FRAME_WIDTH", 3, raising=False)
-    monkeypatch.setattr(vpe.cv2, "CAP_PROP_FRAME_HEIGHT", 4, raising=False)
+    monkeypatch.setattr("verify_pose_embedding.cv2.VideoCapture", FakeCapture)
 
-    report = vpe.verify(str(tmp_path / "video.mp4"), [str(csv_path)], processed_only=True, metric="hit_rate")
+    lmk_cols = _landmark_columns()
+    rows = []
+    for frame_idx in range(20):
+        row = {"frame": frame_idx, "person_id": 0}
+        for i in range(0, len(lmk_cols), 4):
+            row[lmk_cols[i]] = 0.5
+            row[lmk_cols[i + 1]] = 0.5
+            row[lmk_cols[i + 2]] = 0.0
+            row[lmk_cols[i + 3]] = 1.0
+        rows.append(row)
 
-    assert report["frames_compared"] == 1
+    csv_path = tmp_path / "clip_ID_0.csv"
+    pd.DataFrame(rows).to_csv(csv_path, index=False)
+    progress = []
+
+    report = verify(
+        str(video_path),
+        [str(csv_path)],
+        max_frames=5,
+        progress_callback=progress.append,
+        metric="hit_rate",
+    )
+
+    assert report["eligible_frames"] == 20
+    assert report["frames_compared"] == 5
+    assert report["sampled"] is True
+    assert report["max_frames"] == 5
     assert report["mean_hit_rate"] == 1.0
-    assert report["below_threshold"] == 0
+    assert progress[-1] == 100

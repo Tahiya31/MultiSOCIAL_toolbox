@@ -10,7 +10,14 @@ Current release/runtime baseline:
 
 The toolbox allows you to process audio and video files of conversation.
 
-# Installation
+Quick links:
+- [Installation](#installation)
+- [Usage](#usage)
+- [Video files](#video-files)
+- [Audio files](#audio-files)
+- [Troubleshooting](#troubleshooting)
+
+## Installation
 
 There are two ways to use MultiSOCIAL Toolbox:
 
@@ -136,26 +143,82 @@ The script will:
 If you are unsure, start with `Standard`.
 
 
-# Usage
-Once launched, MultiSOCIAL Toolbox application looks like this.
+## Usage
+Once launched, the MultiSOCIAL Toolbox application looks like this.
 
 <img src="./assets/ApplicationUI.png" width="350">
 
 The toolbox takes two types of input: audio (`.wav`, `.wave`, `.aiff`, `.aif`, `.aifc`, `.flac`, `.caf`, `.au`, `.snd`) and video (`.mp4`, `.avi`, `.mov`, `.mkv`, `.m4v`).
 
-## Video file
+## How the toolbox keeps your workflow safe
+The toolbox runs one task at a time and guides you through the right order of steps.
+
+* **One task at a time.** While a task is running, every other button and setting is disabled and only **Cancel** stays active. This prevents two tasks from running at once or interfering with each other, and means rapid or accidental clicks can't start a second job.
+* **Steps unlock when their inputs exist.** Buttons that depend on earlier results stay greyed out until the required files are actually present on disk (the toolbox checks the files, not just whether you clicked a button before). Hover over a greyed-out button to see what's missing and what to do next. Specifically:
+  * **Embed Pose Features** unlocks once **Extract Pose Features** has produced pose CSVs in the `pose_features` folder.
+  * **Embed Transcript on Video** unlocks once **Extract Transcripts** has produced matching `.srt` files in the `transcripts` folder for every selected video.
+  * If **Add captions to pose-embedded video** is checked, **Embed Transcript on Video** also waits for matching videos in `embedded_pose`.
+  * **Verify Pose Match** unlocks once **Embed Pose Features** has produced videos in the `embedded_pose` folder.
+* **Clear messages.** If a step can't run, a plain-language message tells you what is missing, what to do next, and which folder the required files belong in.
+
+## Video files
 **Convert video to audio** If you have a supported video file of human interaction and would like to convert it to an audio file in `.wav` format, this step is for you.
   * Use the ``Browse`` button to locate your input video file.
   * Then press **Convert video to audio** button.
   * Once the .wav file is ready, a dialogue box will let you know the output file is ready.
 
-You should see three folders within the same folder as your input video.
+### Typical video outputs
+You should see these folders within the same folder as your input video. Each folder is created only when the matching step runs.
   * `converted_audio`: Contains the WAV files produced by **Convert video to audio**.
   * `pose_features`: Contains the CSV pose feature files produced by **Extract Pose Features**.
   * `embedded_pose`: Contains the rendered pose-overlay videos produced by **Embed Pose Features**.
+  * `captioned_video`: Contains the captioned videos produced by **Embed Transcript on Video**.
+
+For a folder with several videos, the typical output looks like this:
+
+```
+YourVideoFolder/
+  session01.mp4
+  session02.mp4
+  converted_audio/
+    session01.wav
+    session02.wav
+  pose_features/
+    session01_ID_0.csv
+    session01_meta.json
+    session02_ID_0.csv
+    session02_meta.json
+  embedded_pose/
+    session01_pose.mp4
+    session02_pose.mp4
+  transcripts/
+    session01.txt
+    session01.srt
+    session01_words.json
+    session02.txt
+    session02.srt
+    session02_words.json
+  audio_features/
+    session01.csv
+    session01_aligned.csv
+    session02.csv
+    session02_aligned.csv
+  captioned_video/
+    session01_captioned.mp4
+    session01_pose_captioned.mp4
+    session02_captioned.mp4
+    session02_pose_captioned.mp4
+  verification/
+    summary.json
+    session01_pose_report.json
+    session01_pose_worst.csv
+    worst_frames/
+```
+
+If **Enable Multi-person Pose** is used, pose CSVs and embedded pose videos include `_multi`, for example `session01_multi_ID_0.csv` and `session01_multi_pose.mp4`. If both single-person and multi-person pose videos exist, **Add captions to pose-embedded video** uses the newest embedded pose video.
 
 
-**Extract Pose Features** If you are interested in extracting pose or body key-points from the video, this step uses [MediaPipe](https://github.com/google-ai-edge/mediapipe/blob/master/docs/solutions/pose.md) to achieve this. This step returns 33 body pose land marks. For more details on MediaPipe, please check out the [official page](https://github.com/google-ai-edge/mediapipe/blob/master/docs/solutions/pose.md). 
+**Extract Pose Features** If you are interested in extracting pose or body key-points from the video, this step uses [MediaPipe](https://github.com/google-ai-edge/mediapipe/blob/master/docs/solutions/pose.md). This step returns 33 body pose landmarks. For more details on MediaPipe, please check out the [official page](https://github.com/google-ai-edge/mediapipe/blob/master/docs/solutions/pose.md). 
   * Use the ``Browse`` button to locate your input video file.
   * Then press **Extract Pose Features** button. This step may take some time.
   * Note: If your video has multiple people, you must select **Enable Multi-person Pose** for getting pose information of each person.
@@ -165,44 +228,77 @@ You should see three folders within the same folder as your input video.
     * **Frame Threshold for Bounding Box Recalibration**: Controls how often person bounding boxes are re-detected in multi-person mode.
   * Once the pose features are extracted, you can find them in **pose_features** folder created before.
   * **For multi-person mode**: Each output csv file will represent a single person's information (files will be named as {name of original video file}_multi_ID_0, {name of original video file}_multi_ID_1, etc.).
-  * **CSV format** Each row represents a frame, each column represents features. For each of the 33 body land marks, you should see 4 columns:
+  * **CSV format** Each row represents a frame, each column represents features. For each of the 33 body landmarks, you should see 4 columns:
     * x and y: Landmark coordinates normalized to [0.0, 1.0] by the image width and height respectively.
     * z: Represents the landmark depth with the depth at the midpoint of hips being the origin, and the smaller the value the closer the landmark is to the camera. The magnitude of z uses roughly the same scale as x.
     * confidence: A value in [0.0, 1.0] indicating the likelihood of the landmark being visible (present and not occluded) in the image.
 
-**Embed Pose Features** If you are interested in embedding body key-points extracted from Mediapipe on each frames, this step uses [MediaPipe](https://github.com/google-ai-edge/mediapipe/blob/master/docs/solutions/pose.md) to achieve this. 
+**Embed Pose Features** Overlay body key-points from extracted pose CSVs onto each video frame (run **Extract Pose Features** first). The **Embed Pose Features** button stays greyed out until extraction has produced pose CSVs for every selected video; hover over it for a reminder.
   * Use the ``Browse`` button to locate your input video file.
-  * Then press **Embed Pose Features** button. The toolbox will process each frame and embed body key-points onto the video.
+  * Then press **Embed Pose Features** button. The toolbox reads pose CSVs from `pose_features/` and draws landmarks onto the video. Each tracked person gets a stable color with an on-screen legend, and each landmark's brightness reflects its detection confidence: brighter means more confident, dimmer means less confident.
+  * Embed automatically reuses the frame stride recorded at extraction time, so the overlay stays aligned with the CSV rows regardless of the stride selected when embedding.
   * Once all the frames are processed, an output video will appear in the **embedded_pose** folder where your input video is located.
 
-### Verify Consistency (Pose QA)
-After extracting pose CSVs and generating embedded pose videos, you can run **Verify Consistency** to compare them.
+**Embed Transcript on Video** Burn the turn-by-turn transcript onto the video as captions so you can watch the video and read the transcript in sync — useful for evaluating transcription accuracy. The **Embed Transcript on Video** button stays greyed out until **Extract Transcripts** (on the Audio tab) has produced matching `.srt` files for the selected videos; hover over it for a reminder.
+  * First run **Extract Transcripts** on the Audio tab. This now also saves a `.srt` caption file (one caption per spoken segment, prefixed with the speaker label when diarization is enabled) into the `transcripts` folder, alongside the existing `.txt` transcript.
+  * Use the ``Browse`` button to select the same folder as your input video, then press **Embed Transcript on Video**.
+  * The captioned video is written to the **captioned_video** folder as `<name>_captioned.mp4`. The audio is copied unchanged and the original video is left untouched; only a new captioned copy is created.
+  * If the button stays greyed out, rerun **Extract Transcripts** and make sure each audio file has the same base name as its video (for example, `session01.wav` produces captions for `session01.mp4`).
+  * Optional: check **Add captions to pose-embedded video** to burn captions onto the pose overlay instead of the raw source (`*_pose_captioned.mp4` in `captioned_video/`). If both single-person and multi-person pose-overlay videos exist, the newest one is used.
+
+### Verify Pose Match (Pose QA)
+After extracting pose CSVs and generating embedded pose videos, you can run **Verify Pose Match** to compare them.
   * Pre-requisites:
     * `pose_features/` must contain CSVs generated from **Extract Pose Features**.
     * `embedded_pose/` must contain pose-overlay videos generated from **Embed Pose Features**.
   * The tool creates a `verification/` folder in your dataset directory with:
-    * per-video JSON + CSV reports (hit rate, SSIM, etc.)
+    * per-video JSON + CSV reports (landmark hit rate against the embedded overlay)
     * `worst_frames/` subfolder containing reference frames for quick inspection
     * `summary.json` aggregating all runs
   * Use this to spot pose drift or embedding issues before downstream analysis.
 
-## Audio file
+## Audio files
 **Extract Audio Features** If you are interested in extracting speech features from human speech during interaction, this step uses [OpenSMILE](https://audeering.github.io/opensmile-python/) to achieve this. This step currently uses predetermined feature sets (ComParE 2016) from OpenSMILE. For more details on OpenSMILE, please check their official [documentation page](https://audeering.github.io/opensmile-python/).
   * Use the ``Browse`` button to locate your supported input audio file. You can select audio located in **converted_audio** as well.
   * Then press **Extract Audio Features** button.
   * Once the audio features are extracted, a dialogue box will let you know the output file is ready.
 
-  You should see two folders within your input folder (containing audio) now.
-  * audio_features: This will contain all the csv files containing audio features from the **Extract Audio Features** option.
-  * transcripts: This will contain all the .txt files containing transcriptions of the audio from the **Extract Transcripts** option
+### Typical audio outputs
+You should see two folders within your input folder (containing audio) now.
+
+  * `audio_features`: Contains the CSV files produced by **Extract Audio Features** and **Align Features**.
+  * `transcripts`: Contains the `.txt`, `.srt`, and `_words.json` files produced by **Extract Transcripts**.
+
+For a folder with several audio files, the typical output looks like this:
+
+```
+YourAudioFolder/
+  session01.wav
+  session02.wav
+  audio_features/
+    session01.csv
+    session01_aligned.csv
+    session02.csv
+    session02_aligned.csv
+  transcripts/
+    session01.txt
+    session01.srt
+    session01_words.json
+    session02.txt
+    session02.srt
+    session02_words.json
+```
+
+The `_words.json` files are created when word timestamps are requested or when **Align Features** needs them. Single-file runs use the same names, just for one file.
     
-  *  **CSV format for Audio feature** Each file includes three timestamp columns (`Timestamp_Seconds`, `Timestamp_Milliseconds`, `Timestamp_Formatted`) followed by the 65 ComParE 2016 feature columns. Each row represents a frame/sample.
+**CSV format for audio features** Each file includes three timestamp columns (`Timestamp_Seconds`, `Timestamp_Milliseconds`, `Timestamp_Formatted`) followed by the 65 ComParE 2016 feature columns. Each row represents a frame/sample.
 
 **Extract Transcripts** If you are interested in extracting transcript of the conversation, this step now uses [Whisper Large V3 Turbo](https://huggingface.co/openai/whisper-large-v3-turbo) for automatic speech recognition (with GPU/MPS acceleration when available). For more details on Whisper, please check their official documentation page [here](https://github.com/openai/whisper).
   * Use the ``Browse`` button to locate your input audio file.
   * Then press **Extract Transcripts** button.
-  * Once the transcript is extracted, a dialogue box will let you know the output file is ready.
-  * You can find them in **transcripts** folder created before.
+  * Each file is saved to the **transcripts** folder as soon as it finishes (`.txt`, plus `.srt` when segments are available), so you can inspect partial batch results while the rest are still processing.
+  * Once the full batch completes, a dialogue box confirms success.
+  * Alongside each `.txt` transcript, the toolbox also saves a `.srt` caption file in the same `transcripts` folder. This drives the **Embed Transcript on Video** step on the Video tab (see above).
 
 ### Optional: Speaker diarization with PyAnnote
 You can optionally label who is speaking in the transcript (speaker diarization). In the GUI, enable the checkbox for speaker diarization before running **Extract Transcripts**.
@@ -243,21 +339,58 @@ This feature aligns your extracted audio features (from OpenSMILE) with word-lev
     *   The result is saved as `_aligned.csv` in the `audio_features` folder.
     *   **Note**: Features are averaged over the duration of each word.
 
-# Troubleshooting
+## Troubleshooting
 
-* I am running into error in the **Convert video to audio** step that says ``An error occured [WinError 2]: The system cannot find the file specified.``
+### A button is greyed out
 
-  Or
+Greyed-out buttons usually mean a required file is missing. Hover over the button for the exact next step.
 
-  in **Extract Transcript** step that says ``An error occured during transcript extraction: ffmpeg was not found but required to load audio file form filename``
+- **Embed Pose Features** needs matching pose CSVs in `pose_features/`.
+- **Embed Transcript on Video** needs matching `.srt` files in `transcripts/`.
+- If **Add captions to pose-embedded video** is checked, **Embed Transcript on Video** also needs matching videos in `embedded_pose/`.
+- **Verify Pose Match** needs pose-overlay videos in `embedded_pose/`.
 
-  * The packaged app and current source setup try a bundled `ffmpeg` fallback automatically, so most users should not need to install `ffmpeg` manually.
-  * If you still see this error, first relaunch the app once so it can re-check the bundled binary.
-  * Only if the bundled fallback is unavailable on your machine should you install `ffmpeg` yourself and add it to `PATH`. For Windows you can start from [ffmpeg.org](https://ffmpeg.org/download.html) and these [PATH setup steps](https://phoenixnap.com/kb/ffmpeg-windows).
- 
-* I am seeing warnings suggesting to set the path to certain package directories installed by this toolbox.
-  * For packaged releases, you should usually ignore these warnings unless a feature is failing at runtime.
-  * For source installs, if a tool is truly missing, add it to `PATH` or rerun `run_app.sh` / `run_app.bat` so the environment is recreated cleanly.
+### Captions are missing or the caption button stays locked
+
+Run **Extract Transcripts** for audio files with the same base name as the videos. For example:
+
+```
+session01.mp4
+converted_audio/session01.wav
+transcripts/session01.srt
+```
+
+If the `.srt` file is missing, rerun **Extract Transcripts**. If you want captions on the pose-overlay video, run **Embed Pose Features** first.
+
+### Speaker diarization is slow or uses a lot of memory
+
+Speaker diarization is optional and can be slower than plain transcription, especially on long files.
+
+- Turn off **Enable speaker diarization** if you only need captions or a plain transcript.
+- Diarization is only needed when you want speaker labels such as `SPEAKER_00` and `SPEAKER_01`.
+- Word timestamps are not required for captions; they are mainly used by **Align Features**.
+- On macOS, the app runs diarization on CPU to avoid large memory spikes.
+
+### FFmpeg or video engine errors
+
+The packaged app and current source setup try a bundled FFmpeg fallback automatically, so most users should not need to install FFmpeg manually.
+
+- If **Convert video to audio**, **Embed Transcript on Video**, or caption burning reports a video-engine error, relaunch the app once so it can re-check the bundled FFmpeg.
+- If the bundled fallback is unavailable on your machine, install FFmpeg and add it to `PATH`.
+- On Windows, you can start from [ffmpeg.org](https://ffmpeg.org/download.html) and these [PATH setup steps](https://phoenixnap.com/kb/ffmpeg-windows).
+
+### Warnings in the terminal
+
+Some libraries print warnings about model loading, package paths, or cache folders. These warnings are usually safe to ignore if the requested output files are created.
+
+- For packaged releases, only investigate warnings if a feature fails.
+- For source installs, rerun `run_app.sh` or `run_app.bat` if a tool appears to be missing.
+
+### Pose output looks wrong
+
+Run **Verify Pose Match** after **Embed Pose Features**. It creates a `verification/` folder with a report and worst-frame thumbnails so you can quickly inspect whether the CSV and embedded video match.
+
+If a multi-person video looks like it used the wrong overlay, remember that **Add captions to pose-embedded video** uses the newest pose-overlay video when both single-person and multi-person versions exist.
  
 ## Acknowledgement
 

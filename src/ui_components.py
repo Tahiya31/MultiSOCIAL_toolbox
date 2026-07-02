@@ -459,6 +459,9 @@ class FlatButton(wx.Window):
         self._variant = variant if variant in self._VARIANT_COLORS else self.VARIANT_PRIMARY
         self._hover = False
         self._pressed = False
+        # "Locked" is a soft-disabled state: the button greys out and ignores
+        # clicks (like disabled) but stays wx-enabled so hover/tooltip still work.
+        self._locked = False
         self._font = Theme.get_font(Theme.FONT_BUTTON)
         self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
         self.Bind(wx.EVT_PAINT, self._on_paint)
@@ -482,6 +485,20 @@ class FlatButton(wx.Window):
         self.Refresh()
         return result
 
+    def set_locked(self, locked, reason=""):
+        """Soft-disable: grey out and block clicks while keeping the window
+        wx-enabled so the hover tooltip still appears. `reason` becomes the
+        tooltip shown on hover while locked."""
+        self._locked = bool(locked)
+        if self._locked and reason:
+            self.SetToolTip(reason)
+        else:
+            self.UnsetToolTip()
+        self.Refresh()
+
+    def _is_interactive(self):
+        return self.IsEnabled() and not self._locked
+
     def SetLabel(self, label):
         self._label = label
         self._update_min_size()
@@ -496,7 +513,7 @@ class FlatButton(wx.Window):
         self.Refresh()
 
     def _fill_colour(self):
-        if not self.IsEnabled():
+        if not self._is_interactive():
             return Theme.colour(Theme.COLOR_BTN_DISABLED_FILL)
         normal, hover, pressed = self._VARIANT_COLORS[self._variant]
         if self._pressed:
@@ -514,7 +531,7 @@ class FlatButton(wx.Window):
         rect = self.GetClientRect()
         radius = self.FromDIP(Theme.RADIUS_BUTTON)
         is_secondary = self._variant == self.VARIANT_SECONDARY
-        enabled = self.IsEnabled()
+        enabled = self._is_interactive()
 
         if enabled and not self._pressed:
             shadow = gc.CreatePath()
@@ -550,7 +567,7 @@ class FlatButton(wx.Window):
         )
 
     def _on_enter(self, event):
-        if self.IsEnabled():
+        if self._is_interactive():
             self._hover = True
             self.SetCursor(wx.Cursor(wx.CURSOR_HAND))
             self.Refresh()
@@ -566,7 +583,7 @@ class FlatButton(wx.Window):
         event.Skip()
 
     def _on_down(self, event):
-        if self.IsEnabled():
+        if self._is_interactive():
             self._pressed = True
             self.CaptureMouse()
             self.Refresh()
@@ -578,7 +595,7 @@ class FlatButton(wx.Window):
         if self.HasCapture():
             self.ReleaseMouse()
         self.Refresh()
-        if was_pressed and self.IsEnabled() and self.GetClientRect().Contains(event.GetPosition()):
+        if was_pressed and self._is_interactive() and self.GetClientRect().Contains(event.GetPosition()):
             evt = wx.CommandEvent(wx.EVT_BUTTON.typeId, self.GetId())
             evt.SetEventObject(self)
             self.GetEventHandler().ProcessEvent(evt)

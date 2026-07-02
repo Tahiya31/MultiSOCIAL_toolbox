@@ -216,6 +216,7 @@ venv/
 
 # Agent cofig
 .cursor/
+.serena/
 CONTEXT.md
 
 # Testing Workflows

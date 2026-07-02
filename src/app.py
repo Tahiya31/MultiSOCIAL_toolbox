@@ -4,6 +4,7 @@ This is the main script for multisocial app
 '''
 
 # Import necessary system and utility modules
+import glob
 import os
 import threading
 
@@ -14,7 +15,6 @@ os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 
 # Third-party libraries (assumed pre-installed via the project package metadata)
-import ffmpeg
 import wx
 import unicodedata
 from dotenv import load_dotenv
@@ -131,17 +131,33 @@ class VideoToWavConverter(wx.Frame):
         if hasattr(self, "folderPicker") and self.folderPicker:
             self.folderPicker.Enable(enabled)
         if not enabled:
+            # While a task runs, only Cancel stays live. Every action button and
+            # every settings control is disabled so nothing else can be started
+            # or changed mid-run. Re-enabling is handled by update_buttons_enabled
+            # (called from _end_process), which restores the correct per-file gating.
             for btn in [
                 getattr(self, "convertBtn", None),
                 getattr(self, "extractFeaturesBtn", None),
                 getattr(self, "embedFeaturesBtn", None),
+                getattr(self, "embedTranscriptBtn", None),
                 getattr(self, "verifyBtn", None),
                 getattr(self, "extractAudioFeaturesBtn", None),
                 getattr(self, "extractTranscriptsBtn", None),
                 getattr(self, "alignFeaturesBtn", None),
+                getattr(self, "installDiarizationBtn", None),
             ]:
                 if btn:
                     btn.Enable(False)
+            for ctrl in [
+                getattr(self, "multiPersonCheckbox", None),
+                getattr(self, "downscaleCheckbox", None),
+                getattr(self, "frameStrideInput", None),
+                getattr(self, "frameThresholdInput", None),
+                getattr(self, "diarizationCheckbox", None),
+                getattr(self, "wordTimestampsCheckbox", None),
+            ]:
+                if ctrl is not None:
+                    ctrl.Enable(False)
 
     def on_cancel(self, event):
         if not self._process_running:
@@ -339,7 +355,7 @@ class VideoToWavConverter(wx.Frame):
         self.embedFeaturesBtn, hbox_embed_pose = TooltipButton.create_with_icon(
             actions_card,
             'Embed Pose Features',
-            'Creates vector embeddings from extracted pose features for machine learning and analysis purposes.',
+            "Overlays each tracked person's pose skeleton onto the video in its own color, with a legend. Landmark brightness reflects detection confidence (brighter = more confident). Run Extract Pose Features first.",
             font=button_font,
             handler=self.on_embed_poses,
             variant=FlatButton.VARIANT_SECONDARY,
@@ -347,10 +363,55 @@ class VideoToWavConverter(wx.Frame):
         self._register_scalable(self.embedFeaturesBtn, Theme.FONT_BUTTON)
         actions.Add(hbox_embed_pose, flag=wx.EXPAND | wx.BOTTOM, border=Theme.SPACE_SM)
 
+        # Sub-option of "Embed Transcript on Video": burn captions onto the
+        # pose-embedded video instead of the raw source. Indented + hinted so it
+        # reads as a modifier of the action button below it.
+        self.captionPoseVideoCheckbox = CustomCheckBox(actions_card, label="Add captions to pose-embedded video")
+        self.captionPoseVideoCheckbox.SetFont(Theme.get_font(Theme.FONT_BODY))
+        self.captionPoseVideoCheckbox.SetForegroundColour(Theme.colour(Theme.COLOR_TEXT_WHITE))
+        self.captionPoseVideoCheckbox.SetToolTip(
+            "On: burn the transcript onto the pose-embedded video, saved as "
+            "*_pose_captioned.mp4.\n"
+            "Off: caption the original video (*_captioned.mp4).\n"
+            "Requires Embed Pose Features and Extract Transcripts to have run first.\n"
+            "If both single-person and multi-person pose videos exist, the newest one is used."
+        )
+        self._register_scalable(self.captionPoseVideoCheckbox, Theme.FONT_BODY)
+        self.captionPoseVideoCheckbox.Bind(wx.EVT_CHECKBOX, lambda event: self.update_buttons_enabled())
+
+        self.captionPoseVideoHint = gui_utils.create_transparent_text(
+            actions_card, label="Uses newest pose video · outputs *_pose_captioned.mp4"
+        )
+        self.captionPoseVideoHint.SetFont(Theme.get_font(Theme.FONT_CAPTION))
+        self.captionPoseVideoHint.SetForegroundColour(Theme.colour(Theme.COLOR_TEXT_MUTED))
+        self._register_scalable(self.captionPoseVideoHint, Theme.FONT_CAPTION)
+
+        caption_pose_opt = wx.BoxSizer(wx.VERTICAL)
+        caption_pose_opt.Add(self.captionPoseVideoCheckbox, flag=wx.EXPAND)
+        caption_pose_opt.Add(
+            self.captionPoseVideoHint, flag=wx.TOP, border=Theme.SPACE_XS
+        )
+        actions.Add(
+            caption_pose_opt,
+            flag=wx.EXPAND | wx.LEFT | wx.BOTTOM,
+            border=Theme.SPACE_MD,
+        )
+
+        self.embedTranscriptBtn, hbox_embed_transcript = TooltipButton.create_with_icon(
+            actions_card,
+            'Embed Transcript on Video',
+            "Burns the turn-by-turn transcript (with speaker labels when diarization was used) onto the video as captions, for reviewing transcription accuracy. Run Extract Transcripts first.",
+            font=button_font,
+            handler=self.on_embed_transcript,
+            variant=FlatButton.VARIANT_SECONDARY,
+        )
+        self._register_scalable(self.embedTranscriptBtn, Theme.FONT_BUTTON)
+        actions.Add(hbox_embed_transcript, flag=wx.EXPAND | wx.BOTTOM, border=Theme.SPACE_SM)
+
         self.verifyBtn, hbox_verify = TooltipButton.create_with_icon(
             actions_card,
-            'Verify Consistency',
-            'Verifies that embedded videos match extracted pose CSVs and saves a report with worst-frame thumbnails.',
+            'Verify Pose Match',
+            'Checks that pose CSVs match the embedded pose videos and saves a sampled QA report with worst-frame thumbnails.',
             font=button_font,
             handler=self.on_verify_consistency,
             variant=FlatButton.VARIANT_SECONDARY,
@@ -723,22 +784,38 @@ class VideoToWavConverter(wx.Frame):
         has_folder = bool(folder_path)
         video_files = []
         audio_files = []
+        has_pose_csv = False
+        has_transcript_srt = False
+        has_embedded_video = False
+        has_all_embedded_pose = False
         try:
             if has_folder:
                 workspace_root = gui_utils.resolved_dataset_root(folder_path)
                 video_files = gui_utils.get_files_from_folder(workspace_root, self.VIDEO_EXTENSIONS)
                 audio_files = gui_utils.get_audio_files_for_processing(folder_path, self.AUDIO_EXTENSIONS)
+                pose_dir = os.path.join(workspace_root, "pose_features")
+                has_pose_csv = self._has_all_pose_csvs(pose_dir, video_files)
+                transcripts_dir = gui_utils.transcripts_output_folder(folder_path)
+                has_transcript_srt = self._has_all_transcript_srts(transcripts_dir, video_files)
+                embedded_dir = os.path.join(workspace_root, "embedded_pose")
+                has_embedded_video = self._has_any_embedded_video(embedded_dir)
+                has_all_embedded_pose = self._has_all_embedded_pose_videos(embedded_dir, video_files)
         except Exception:
             pass
 
         enable_video = has_folder and len(video_files) > 0
         enable_audio = has_folder and len(audio_files) > 0
+        caption_pose_requested = bool(
+            getattr(self, 'captionPoseVideoCheckbox', None)
+            and self.captionPoseVideoCheckbox.GetValue()
+        )
 
         for ctrl in [
             getattr(self, 'multiPersonCheckbox', None),
             getattr(self, 'downscaleCheckbox', None),
             getattr(self, 'frameStrideInput', None),
             getattr(self, 'frameThresholdInput', None),
+            getattr(self, 'captionPoseVideoCheckbox', None),
             getattr(self, 'diarizationCheckbox', None),
             getattr(self, 'wordTimestampsCheckbox', None),
         ]:
@@ -748,11 +825,54 @@ class VideoToWavConverter(wx.Frame):
         for btn in [
             getattr(self, 'convertBtn', None),
             getattr(self, 'extractFeaturesBtn', None),
-            getattr(self, 'embedFeaturesBtn', None),
-            getattr(self, 'verifyBtn', None),
         ]:
             if btn:
                 btn.Enable(enable_video)
+
+        # Embed depends on extraction having run: keep it locked (greyed, with a
+        # hover hint) until pose CSVs exist for the selected videos.
+        embed_btn = getattr(self, 'embedFeaturesBtn', None)
+        if embed_btn:
+            embed_btn.Enable(enable_video)
+            if enable_video and not has_pose_csv:
+                embed_btn.set_locked(
+                    True,
+                    "Run 'Extract Pose Features' first. Pose data is saved in the "
+                    "'pose_features' folder.",
+                )
+            else:
+                embed_btn.set_locked(False)
+
+        # Transcript embed depends on transcription having produced an .srt sidecar.
+        embed_transcript_btn = getattr(self, 'embedTranscriptBtn', None)
+        if embed_transcript_btn:
+            embed_transcript_btn.Enable(enable_video)
+            if enable_video and not has_transcript_srt:
+                embed_transcript_btn.set_locked(
+                    True,
+                    "Run 'Extract Transcripts' (Audio tab) first. Transcripts are saved "
+                    "as '.srt' files in the 'transcripts' folder.",
+                )
+            elif enable_video and caption_pose_requested and not has_all_embedded_pose:
+                embed_transcript_btn.set_locked(
+                    True,
+                    "Run 'Embed Pose Features' first. Captions will be added to videos in the 'embedded_pose' folder.",
+                )
+            else:
+                embed_transcript_btn.set_locked(False)
+
+        # Verify needs pose-embedded videos to compare against their CSVs.
+        verify_btn = getattr(self, 'verifyBtn', None)
+        if verify_btn:
+            verify_btn.Enable(enable_video)
+            if enable_video and not has_embedded_video:
+                verify_btn.set_locked(
+                    True,
+                    "Run 'Embed Pose on Video' first. Results are saved in the "
+                    "'embedded_pose' folder.",
+                )
+            else:
+                verify_btn.set_locked(False)
 
         for btn in [
             getattr(self, 'extractAudioFeaturesBtn', None),
@@ -763,6 +883,59 @@ class VideoToWavConverter(wx.Frame):
                 btn.Enable(enable_audio)
 
         self.refresh_diarization_state()
+
+    def _has_all_pose_csvs(self, pose_dir, video_files):
+        """True if every selected video has extracted pose CSVs.
+
+        Mirrors the naming used by pose.find_pose_csv_paths without importing
+        the heavy pose module (this runs on every folder/selection change).
+        """
+        if not video_files or not pose_dir or not os.path.isdir(pose_dir):
+            return False
+        for video in video_files:
+            base = os.path.splitext(os.path.basename(video))[0]
+            if not glob.glob(os.path.join(pose_dir, f"{base}_multi_ID_*.csv")) and not glob.glob(
+                os.path.join(pose_dir, f"{base}_ID_*.csv")
+            ):
+                return False
+        return True
+
+    def _has_all_transcript_srts(self, transcripts_dir, video_files):
+        """True if every selected video has a matching transcript .srt sidecar."""
+        if not video_files or not transcripts_dir or not os.path.isdir(transcripts_dir):
+            return False
+        for video in video_files:
+            base = os.path.splitext(os.path.basename(video))[0]
+            if not os.path.exists(os.path.join(transcripts_dir, f"{base}.srt")):
+                return False
+        return True
+
+    def _embedded_pose_video_path(self, embedded_dir, source_video):
+        """Return the newest embedded-pose video path for a source video, if present."""
+        if not embedded_dir or not source_video:
+            return None
+        base = os.path.splitext(os.path.basename(source_video))[0]
+        candidates = [
+            os.path.join(embedded_dir, f"{base}_pose.mp4"),
+            os.path.join(embedded_dir, f"{base}_multi_pose.mp4"),
+        ]
+        existing = [candidate for candidate in candidates if os.path.exists(candidate)]
+        if not existing:
+            return None
+        return max(existing, key=lambda path: os.path.getmtime(path))
+
+    def _has_all_embedded_pose_videos(self, embedded_dir, video_files):
+        """True if every selected source video has a matching embedded pose video."""
+        if not video_files or not embedded_dir or not os.path.isdir(embedded_dir):
+            return False
+        return all(self._embedded_pose_video_path(embedded_dir, video) for video in video_files)
+
+    def _has_any_embedded_video(self, embedded_dir):
+        """True if the embedded_pose folder holds at least one video to verify."""
+        if not embedded_dir or not os.path.isdir(embedded_dir):
+            return False
+        return bool(gui_utils.get_files_from_folder(embedded_dir, self.VIDEO_EXTENSIONS))
+
     def on_resize(self, event):
         if self._baseline_size is None:
             self._baseline_size = self.GetSize()
@@ -871,6 +1044,8 @@ class VideoToWavConverter(wx.Frame):
             wx.CallAfter(self.progress.SetValue, value)
 
     def on_install_diarization(self, event):
+        if self._process_running:
+            return
         state = runtime_services.get_diarization_feature_state()
         if state["installed"]:
             wx.MessageBox(
@@ -953,14 +1128,16 @@ class VideoToWavConverter(wx.Frame):
             self.embedded_pose_folder = None
             self.extracted_audio_folder = None
             self.extracted_transcripts_folder = None
+            self.captioned_video_folder = None
             return
-    
+
         workspace_root = gui_utils.resolved_dataset_root(folder_path)
         converted_audio_dir = os.path.join(workspace_root, "converted_audio")
 
         # Canonical paths (actually created only when the folder has matching media).
         self.extracted_pose_folder = os.path.join(workspace_root, "pose_features")
         self.embedded_pose_folder = os.path.join(workspace_root, "embedded_pose")
+        self.captioned_video_folder = os.path.join(workspace_root, "captioned_video")
         self.extracted_audio_folder = os.path.join(workspace_root, "audio_features")
         self.extracted_transcripts_folder = gui_utils.transcripts_output_folder(folder_path)
 
@@ -971,15 +1148,18 @@ class VideoToWavConverter(wx.Frame):
                 os.makedirs(converted_audio_dir, exist_ok=True)
                 os.makedirs(self.extracted_pose_folder, exist_ok=True)
                 os.makedirs(self.embedded_pose_folder, exist_ok=True)
+                os.makedirs(self.captioned_video_folder, exist_ok=True)
             except (OSError, PermissionError) as e:
                 self.converted_audio_folder = None
                 self.extracted_pose_folder = None
                 self.embedded_pose_folder = None
+                self.captioned_video_folder = None
                 wx.CallAfter(wx.MessageBox, f"Cannot create output folders: {e}", "Warning", wx.OK | wx.ICON_WARNING)
         else:
             self.converted_audio_folder = None
             self.extracted_pose_folder = None
             self.embedded_pose_folder = None
+            self.captioned_video_folder = None
 
         audio_files = gui_utils.get_audio_files_for_processing(folder_path, self.AUDIO_EXTENSIONS)
         if audio_files:
@@ -998,6 +1178,8 @@ class VideoToWavConverter(wx.Frame):
       
     def on_convert(self, event):
         """Convert all videos in a selected folder to WAV."""
+        if self._process_running:
+            return
         folder_path = self.get_selected_folder_path()
         if not folder_path:
             wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
@@ -1019,6 +1201,7 @@ class VideoToWavConverter(wx.Frame):
     def convert_all_videos_to_wav(self, video_files):
         """Convert multiple videos to WAV format and save to output folder."""
         cancelled = False
+        failures = []
         try:
             total_files = len(video_files)
 
@@ -1028,23 +1211,49 @@ class VideoToWavConverter(wx.Frame):
                     break
                 file_name = os.path.basename(video_file)
                 self.set_status_message(f"Converting to WAV: {file_name}")
-                self.convert_to_wav(video_file, progress_callback=self.make_overall_progress_cb(i + 1, total_files))
+                try:
+                    self.convert_to_wav(
+                        video_file,
+                        progress_callback=self.make_overall_progress_cb(i + 1, total_files),
+                        cancel_check=lambda: self._cancel_event.is_set(),
+                    )
+                except Exception as e:
+                    failures.append(f"{file_name}: {e}")
+                    self.set_status_message(f"Failed to convert {file_name}: {e}")
 
             if not cancelled:
-                wx.CallAfter(wx.MessageBox, "Video to audio conversion completed!", "Success", wx.OK | wx.ICON_INFORMATION)
+                if failures:
+                    preview = "\n".join(failures[:5])
+                    if len(failures) > 5:
+                        preview += f"\n...and {len(failures) - 5} more."
+                    wx.CallAfter(
+                        wx.MessageBox,
+                        "Video to audio conversion finished with errors.\n\n" + preview,
+                        "Conversion Warning",
+                        wx.OK | wx.ICON_WARNING,
+                    )
+                else:
+                    wx.CallAfter(wx.MessageBox, "Video to audio conversion completed!", "Success", wx.OK | wx.ICON_INFORMATION)
         finally:
             wx.CallAfter(self._end_process, cancelled)
 
     def on_verify_consistency(self, event):
+        if self._process_running:
+            return
         folder_path = self.get_selected_folder_path()
         if not folder_path:
-            wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
+            wx.MessageBox("Please select a folder before verifying consistency.", "No Folder Selected", wx.OK | wx.ICON_INFORMATION)
             return
 
         # Ensure folders and also create verification output dirs
         self.ensure_output_folders(folder_path)
         if not self.extracted_pose_folder or not self.embedded_pose_folder:
-            wx.MessageBox("No pose or embedded outputs found. Extract and embed first.", "Error", wx.OK | wx.ICON_ERROR)
+            wx.MessageBox(
+                "There are no pose results to verify yet.\n\n"
+                "Run 'Extract Pose Features' and then 'Embed Pose on Video' first.",
+                "Nothing to Verify",
+                wx.OK | wx.ICON_INFORMATION,
+            )
             return
 
         verification_dir = os.path.join(gui_utils.resolved_dataset_root(folder_path), "verification")
@@ -1055,7 +1264,13 @@ class VideoToWavConverter(wx.Frame):
         # Collect embedded videos and match CSVs by basename
         embedded_videos = gui_utils.get_files_from_folder(self.embedded_pose_folder, self.VIDEO_EXTENSIONS)
         if not embedded_videos:
-            wx.MessageBox("No embedded videos found in embedded_pose/", "Error", wx.OK | wx.ICON_ERROR)
+            wx.MessageBox(
+                "No pose-embedded videos were found to verify.\n\n"
+                "Run 'Embed Pose on Video' first. Results are saved in the "
+                "'embedded_pose' folder inside your selected folder.",
+                "Embedded Videos Needed",
+                wx.OK | wx.ICON_INFORMATION,
+            )
             return
 
         # Launch background verification to keep UI responsive
@@ -1065,7 +1280,6 @@ class VideoToWavConverter(wx.Frame):
 
     def _verify_consistency_batch(self, embedded_videos, verification_dir, worst_frames_root):
         from verify_pose_embedding import verify, save_report
-        import glob
 
         cancelled = False
         try:
@@ -1090,9 +1304,13 @@ class VideoToWavConverter(wx.Frame):
                     self.set_status_message(f"⚠️ No CSVs found for {base}; skipping")
                     continue
 
-                self.set_status_message(f"🔎 Verifying: {os.path.basename(video)}")
+                self.set_status_message(f"🔎 Verifying pose match: {os.path.basename(video)}")
                 try:
                     worst_dir = os.path.join(worst_frames_root, base)
+                    def verify_progress(local_progress, file_index=i, file_total=total):
+                        overall = int(((file_index - 1) / max(1, file_total)) * 100 + (local_progress / max(1, file_total)))
+                        self.update_progress(overall)
+
                     report = verify(
                         video_path=video,
                         csv_paths=csv_paths,
@@ -1100,11 +1318,13 @@ class VideoToWavConverter(wx.Frame):
                         max_worst=10,
                         worst_dir=worst_dir,
                         processed_only=True,
-                        metric='both',
+                        metric='hit_rate',
                         hit_threshold=0.8,
-                        ssim_threshold=0.98,
                         window=5,
                         conf_threshold=0.0,
+                        max_frames=300,
+                        progress_callback=verify_progress,
+                        cancel_check=lambda: self._cancel_event.is_set(),
                     )
                     out_json = os.path.join(verification_dir, f"{base}_report.json")
                     out_csv = os.path.join(verification_dir, f"{base}_worst.csv")
@@ -1112,10 +1332,11 @@ class VideoToWavConverter(wx.Frame):
                     summary.append({
                         "basename": base,
                         "frames_compared": report.get("frames_compared"),
+                        "eligible_frames": report.get("eligible_frames"),
+                        "sampled": report.get("sampled"),
+                        "max_frames": report.get("max_frames"),
                         "mean_hit_rate": report.get("mean_hit_rate"),
                         "min_hit_rate": report.get("min_hit_rate"),
-                        "mean_ssim": report.get("mean_ssim"),
-                        "min_ssim": report.get("min_ssim"),
                     })
                 except Exception as e:
                     self.set_status_message(f"❌ Verification failed for {base}: {e}")
@@ -1134,64 +1355,70 @@ class VideoToWavConverter(wx.Frame):
                 pass
 
             if not cancelled:
-                wx.CallAfter(wx.MessageBox, "Verification completed! See the 'verification' folder for reports.", "Success", wx.OK | wx.ICON_INFORMATION)
+                wx.CallAfter(
+                    wx.MessageBox,
+                    "Pose match verification completed. See the 'verification' folder for reports and worst-frame thumbnails.",
+                    "Success",
+                    wx.OK | wx.ICON_INFORMATION,
+                )
         finally:
             wx.CallAfter(self._end_process, cancelled)
 
-    def convert_to_wav(self, filepath, progress_callback=None):
-        """Convert a single video file to WAV using ffmpeg."""
-        try:
-            filepath = gui_utils.normalize_path(filepath)
-            if not os.path.isfile(filepath):
-                raise FileNotFoundError(filepath)
-            if not self.converted_audio_folder:
-                raise FileNotFoundError("converted_audio output folder is unavailable")
-            os.makedirs(self.converted_audio_folder, exist_ok=True)
-            output_path = os.path.join(self.converted_audio_folder, os.path.splitext(os.path.basename(filepath))[0] + ".wav")
-            ffmpeg_cmd = gui_utils.get_ffmpeg_executable() or "ffmpeg"
-        
-            # Run ffmpeg conversion with progress tracking
-            if progress_callback:
-                # Simulate progress for ffmpeg conversion (since ffmpeg doesn't provide real-time progress easily)
-                import time
-                progress_callback(0)
-                time.sleep(0.1)  # Small delay to show progress start
-                progress_callback(50)
-            
-            (
-                ffmpeg
-                .input(filepath)
-                .output(output_path, format='wav', acodec='pcm_s16le')
-                .run(cmd=ffmpeg_cmd, overwrite_output=True)
-            )
-            
-            if progress_callback:
-                progress_callback(100)
+    def convert_to_wav(self, filepath, progress_callback=None, cancel_check=None):
+        """Convert a single video file to WAV using ffmpeg (with real progress)."""
+        filepath = gui_utils.normalize_path(filepath)
+        if not os.path.isfile(filepath):
+            raise FileNotFoundError(filepath)
+        if not self.converted_audio_folder:
+            raise FileNotFoundError("converted_audio output folder is unavailable")
+        os.makedirs(self.converted_audio_folder, exist_ok=True)
+        output_path = os.path.join(self.converted_audio_folder, os.path.splitext(os.path.basename(filepath))[0] + ".wav")
+        ffmpeg_cmd = gui_utils.get_ffmpeg_executable() or "ffmpeg"
 
-            print(f"Conversion complete: {output_path}")
+        if progress_callback:
+            progress_callback(0)
 
-        except Exception as e:
-            wx.CallAfter(wx.MessageBox, f'Error converting {filepath}: {e}', 'Error', wx.OK | wx.ICON_ERROR)
+        cmd = [
+            ffmpeg_cmd, "-y",
+            "-i", filepath,
+            "-vn", "-acodec", "pcm_s16le", "-f", "wav",
+            output_path,
+        ]
+        result = gui_utils.run_ffmpeg_with_progress(
+            cmd, progress_callback=progress_callback, cancel_check=cancel_check
+        )
+        if result is False:
+            return None
+
+        print(f"Conversion complete: {output_path}")
+        return output_path
 
 
     def on_extract_features(self, event):
+        if self._process_running:
+            return
         folder_path = self.get_selected_folder_path()
         if not folder_path:
-            wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
+            wx.MessageBox("Please select a folder before extracting pose features.", "No Folder Selected", wx.OK | wx.ICON_INFORMATION)
             return
 
         self.ensure_output_folders(folder_path)
         workspace_root = gui_utils.resolved_dataset_root(folder_path)
         video_files = gui_utils.get_files_from_folder(workspace_root, self.VIDEO_EXTENSIONS)
-        
+
         if not video_files:
-            wx.MessageBox("No video files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
+            wx.MessageBox(
+                "No video files found in the selected folder.\n\n"
+                "Add videos (.mp4, .mov, .avi, .mkv, .m4v) to the folder, then try again.",
+                "No Videos Found", wx.OK | wx.ICON_INFORMATION,
+            )
             return
 
         if not self.extracted_pose_folder:
             wx.MessageBox(
-                "Pose output folder unavailable. Ensure the dataset folder contains video files.",
-                "Error",
+                "The app could not create the 'pose_features' folder for your results.\n\n"
+                "Check that you have permission to write to the selected folder, then try again.",
+                "Cannot Save Results",
                 wx.OK | wx.ICON_ERROR,
             )
             return
@@ -1260,9 +1487,11 @@ class VideoToWavConverter(wx.Frame):
             
            
     def on_embed_poses(self, event):
+        if self._process_running:
+            return
         folder_path = self.get_selected_folder_path()
         if not folder_path:
-            wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
+            wx.MessageBox("Please select a folder before embedding pose on video.", "No Folder Selected", wx.OK | wx.ICON_INFORMATION)
             return
 
         self.ensure_output_folders(folder_path)
@@ -1270,14 +1499,40 @@ class VideoToWavConverter(wx.Frame):
         video_files = gui_utils.get_files_from_folder(workspace_root, self.VIDEO_EXTENSIONS)
 
         if not video_files:
-            wx.MessageBox("No video files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
+            wx.MessageBox(
+                "No video files found in the selected folder.\n\n"
+                "Add videos (.mp4, .mov, .avi, .mkv, .m4v) to the folder, then try again.",
+                "No Videos Found", wx.OK | wx.ICON_INFORMATION,
+            )
             return
 
         if not self.extracted_pose_folder or not self.embedded_pose_folder:
             wx.MessageBox(
-                "Pose output folders unavailable. Ensure the dataset folder contains video files.",
-                "Error",
+                "The app could not create the output folders for pose videos.\n\n"
+                "Check that you have permission to write to the selected folder, then try again.",
+                "Cannot Save Results",
                 wx.OK | wx.ICON_ERROR,
+            )
+            return
+
+        from pose import find_pose_csv_paths
+
+        missing_csv_videos = [
+            os.path.basename(video)
+            for video in video_files
+            if not find_pose_csv_paths(self.extracted_pose_folder, video)
+        ]
+        if missing_csv_videos:
+            preview = ", ".join(missing_csv_videos[:3])
+            if len(missing_csv_videos) > 3:
+                preview += f", and {len(missing_csv_videos) - 3} more"
+            wx.MessageBox(
+                "Pose data is missing for these videos:\n"
+                f"{preview}.\n\n"
+                "Run 'Extract Pose Features' first. Pose data is saved as CSV files "
+                "in the 'pose_features' folder inside your selected folder.",
+                "Pose Data Needed",
+                wx.OK | wx.ICON_INFORMATION,
             )
             return
 
@@ -1321,6 +1576,7 @@ class VideoToWavConverter(wx.Frame):
 
     def embed_pose_batch(self, video_files, pose_processor):
         cancelled = False
+        failed = False
         try:
             total_files = len(video_files)
 
@@ -1332,38 +1588,207 @@ class VideoToWavConverter(wx.Frame):
                 result = pose_processor.embed_pose_video(
                     video_file,
                     progress_callback=self.make_overall_progress_cb(index, total_files),
-                    cancel_check=self._cancel_event.is_set,
+                    cancel_check=lambda: self._cancel_event.is_set(),
                 )
                 if result is False:
                     cancelled = True
                     break
+                if result is None:
+                    failed = True
+                    self.set_status_message(
+                        f"Skipped embedding for {os.path.basename(video_file)}: no pose CSV found."
+                    )
 
-            if not cancelled:
-                wx.CallAfter(wx.MessageBox, "Pose embedding completed!", "Success", wx.OK | wx.ICON_INFORMATION)
+            if cancelled:
+                return
+            if failed:
+                wx.CallAfter(
+                    wx.MessageBox,
+                    "Pose embedding finished with errors. Some videos were skipped because CSVs were missing.",
+                    "Warning",
+                    wx.OK | wx.ICON_WARNING,
+                )
+                return
+            wx.CallAfter(wx.MessageBox, "Pose embedding completed!", "Success", wx.OK | wx.ICON_INFORMATION)
         finally:
             wx.CallAfter(self._end_process, cancelled)
 
+    def on_embed_transcript(self, event):
+        if self._process_running:
+            return
+        folder_path = self.get_selected_folder_path()
+        if not folder_path:
+            wx.MessageBox("Please select a folder before embedding transcripts on video.", "No Folder Selected", wx.OK | wx.ICON_INFORMATION)
+            return
 
-    
+        self.ensure_output_folders(folder_path)
+        workspace_root = gui_utils.resolved_dataset_root(folder_path)
+        video_files = gui_utils.get_files_from_folder(workspace_root, self.VIDEO_EXTENSIONS)
+
+        if not video_files:
+            wx.MessageBox(
+                "No video files found in the selected folder.\n\n"
+                "Add videos (.mp4, .mov, .avi, .mkv, .m4v) to the folder, then try again.",
+                "No Videos Found", wx.OK | wx.ICON_INFORMATION,
+            )
+            return
+
+        if not self.captioned_video_folder:
+            wx.MessageBox(
+                "The app could not create the 'captioned_video' folder for your results.\n\n"
+                "Check that you have permission to write to the selected folder, then try again.",
+                "Cannot Save Results",
+                wx.OK | wx.ICON_ERROR,
+            )
+            return
+
+        transcripts_dir = gui_utils.transcripts_output_folder(folder_path)
+        caption_pose_video = bool(
+            hasattr(self, 'captionPoseVideoCheckbox') and self.captionPoseVideoCheckbox.GetValue()
+        )
+        missing_srt_videos = [
+            os.path.basename(video)
+            for video in video_files
+            if not os.path.exists(
+                os.path.join(transcripts_dir, os.path.splitext(os.path.basename(video))[0] + ".srt")
+            )
+        ]
+        if missing_srt_videos:
+            preview = ", ".join(missing_srt_videos[:3])
+            if len(missing_srt_videos) > 3:
+                preview += f", and {len(missing_srt_videos) - 3} more"
+            wx.MessageBox(
+                "Transcripts are missing for these videos:\n"
+                f"{preview}.\n\n"
+                "On the Audio tab, run 'Extract Transcripts' first. Each transcript is "
+                "saved as a '.srt' file in the 'transcripts' folder inside your selected folder.",
+                "Transcripts Needed",
+                wx.OK | wx.ICON_INFORMATION,
+            )
+            return
+
+        if caption_pose_video:
+            missing_pose_videos = [
+                os.path.basename(video)
+                for video in video_files
+                if not self._embedded_pose_video_path(self.embedded_pose_folder, video)
+            ]
+            if missing_pose_videos:
+                preview = ", ".join(missing_pose_videos[:3])
+                if len(missing_pose_videos) > 3:
+                    preview += f", and {len(missing_pose_videos) - 3} more"
+                wx.MessageBox(
+                    "Pose-embedded videos are missing for these videos:\n"
+                    f"{preview}.\n\n"
+                    "Run 'Embed Pose Features' first. Captions will be added to videos in the "
+                    "'embedded_pose' folder.",
+                    "Pose Videos Needed",
+                    wx.OK | wx.ICON_INFORMATION,
+                )
+                return
+
+        ffmpeg_exe = gui_utils.get_subtitle_capable_ffmpeg()
+        if not ffmpeg_exe:
+            wx.MessageBox(
+                "Captions cannot be added because no compatible video engine (FFmpeg with "
+                "subtitle support) was found on this computer.\n\n"
+                "Reinstall the app or install FFmpeg, then try again.",
+                "Video Engine Unavailable",
+                wx.OK | wx.ICON_ERROR,
+            )
+            return
+
+        self._begin_process()
+        thread = threading.Thread(
+            target=self.embed_transcript_batch,
+            args=(video_files, transcripts_dir, ffmpeg_exe, caption_pose_video),
+        )
+        thread.start()
+
+    def embed_transcript_batch(self, video_files, transcripts_dir, ffmpeg_exe, caption_pose_video=False):
+        import captions
+
+        cancelled = False
+        failed = False
+        try:
+            total_files = len(video_files)
+            for index, video_file in enumerate(video_files, start=1):
+                if self._cancel_event.is_set():
+                    cancelled = True
+                    break
+
+                base = os.path.splitext(os.path.basename(video_file))[0]
+                srt_path = os.path.join(transcripts_dir, base + ".srt")
+                input_video = video_file
+                output_suffix = "_captioned.mp4"
+                if caption_pose_video:
+                    input_video = self._embedded_pose_video_path(self.embedded_pose_folder, video_file)
+                    output_suffix = "_pose_captioned.mp4"
+                    if not input_video:
+                        failed = True
+                        self.set_status_message(f"Missing pose-embedded video for {os.path.basename(video_file)}")
+                        continue
+                out_path = os.path.join(self.captioned_video_folder, base + output_suffix)
+
+                self.set_status_message(f"Embedding transcript for: {os.path.basename(input_video)}")
+                try:
+                    result = captions.burn_subtitles(
+                        input_video,
+                        srt_path,
+                        out_path,
+                        ffmpeg_exe,
+                        progress_callback=self.make_overall_progress_cb(index, total_files),
+                        cancel_check=lambda: self._cancel_event.is_set(),
+                    )
+                except Exception as e:
+                    failed = True
+                    self.set_status_message(f"Failed to caption {os.path.basename(video_file)}: {e}")
+                    continue
+
+                if result is False:
+                    cancelled = True
+                    break
+
+            if cancelled:
+                return
+            if failed:
+                wx.CallAfter(
+                    wx.MessageBox,
+                    "Transcript embedding finished with errors. Some videos were skipped.",
+                    "Warning",
+                    wx.OK | wx.ICON_WARNING,
+                )
+                return
+            wx.CallAfter(wx.MessageBox, "Transcript embedding completed!", "Success", wx.OK | wx.ICON_INFORMATION)
+        finally:
+            wx.CallAfter(self._end_process, cancelled)
 
     def on_extract_audio_features(self, event):
         """Extract audio features from all supported audio files in the folder."""
+        if self._process_running:
+            return
         folder_path = self.get_selected_folder_path()
         if not folder_path:
-            wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
+            wx.MessageBox("Please select a folder before extracting audio features.", "No Folder Selected", wx.OK | wx.ICON_INFORMATION)
             return
 
         self.ensure_output_folders(folder_path)
         audio_files = gui_utils.get_audio_files_for_processing(folder_path, self.AUDIO_EXTENSIONS)
 
         if not audio_files:
-            wx.MessageBox("No supported audio files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
+            wx.MessageBox(
+                "No audio files found in the selected folder.\n\n"
+                "If you have videos, run 'Convert to WAV' on the Video tab first. "
+                "Converted audio is saved in the 'converted_audio' folder.",
+                "No Audio Found", wx.OK | wx.ICON_INFORMATION,
+            )
             return
 
         if not self.extracted_audio_folder:
             wx.MessageBox(
-                "Cannot resolve the audio features output folder. Pick your dataset folder again or check permissions.",
-                "Error",
+                "The app could not create the 'audio_features' folder for your results.\n\n"
+                "Check that you have permission to write to the selected folder, then try again.",
+                "Cannot Save Results",
                 wx.OK | wx.ICON_ERROR,
             )
             return
@@ -1406,23 +1831,30 @@ class VideoToWavConverter(wx.Frame):
 
     def on_extract_transcripts(self, event):
         """Extract transcripts from all supported audio files in the folder."""
+        if self._process_running:
+            return
         folder_path = self.get_selected_folder_path()
         if not folder_path:
-            wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
+            wx.MessageBox("Please select a folder before extracting transcripts.", "No Folder Selected", wx.OK | wx.ICON_INFORMATION)
             return
 
         self.ensure_output_folders(folder_path)
         audio_files = gui_utils.get_audio_files_for_processing(folder_path, self.AUDIO_EXTENSIONS)
 
         if not audio_files:
-            wx.MessageBox("No supported audio files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
+            wx.MessageBox(
+                "No audio files found in the selected folder.\n\n"
+                "If you have videos, run 'Convert to WAV' on the Video tab first. "
+                "Converted audio is saved in the 'converted_audio' folder.",
+                "No Audio Found", wx.OK | wx.ICON_INFORMATION,
+            )
             return
 
         if not self.extracted_transcripts_folder:
             wx.MessageBox(
-                "Cannot create or resolve the transcript output folder (<dataset>/transcripts). "
-                "Check folder permissions or pick your dataset folder again.",
-                "Error",
+                "The app could not create the 'transcripts' folder for your results.\n\n"
+                "Check that you have permission to write to the selected folder, then try again.",
+                "Cannot Save Results",
                 wx.OK | wx.ICON_ERROR,
             )
             return
@@ -1542,23 +1974,34 @@ class VideoToWavConverter(wx.Frame):
             wx.CallAfter(self._end_process, cancelled)
 
     def on_align_features(self, event):
+        if self._process_running:
+            return
         folder_path = self.get_selected_folder_path()
         if not folder_path:
-            wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
+            wx.MessageBox("Please select a folder before aligning features.", "No Folder Selected", wx.OK | wx.ICON_INFORMATION)
             return
 
         self.ensure_output_folders(folder_path)
-        
+
         # Check if we have features and transcripts
-        if not os.path.exists(self.extracted_audio_folder):
-            wx.MessageBox("No audio features folder found. Please extract audio features first.", "Error", wx.OK | wx.ICON_ERROR)
+        if not self.extracted_audio_folder or not os.path.exists(self.extracted_audio_folder):
+            wx.MessageBox(
+                "Audio features haven't been extracted yet.\n\n"
+                "Run 'Extract Audio Features' first. Results are saved in the "
+                "'audio_features' folder inside your selected folder.",
+                "Audio Features Needed", wx.OK | wx.ICON_INFORMATION,
+            )
             return
-            
+
         # We don't strictly need transcripts folder to exist yet if we are going to generate them,
         # but we need audio files.
         audio_files = gui_utils.get_audio_files_for_processing(folder_path, self.AUDIO_EXTENSIONS)
         if not audio_files:
-            wx.MessageBox("No audio files found.", "Error", wx.OK | wx.ICON_ERROR)
+            wx.MessageBox(
+                "No audio files found in the selected folder.\n\n"
+                "If you have videos, run 'Convert to WAV' on the Video tab first.",
+                "No Audio Found", wx.OK | wx.ICON_INFORMATION,
+            )
             return
 
         # Run in thread
@@ -1571,13 +2014,15 @@ class VideoToWavConverter(wx.Frame):
         try:
             total_files = len(audio_files)
             
-            # Initialize processor
-            # We need token for PyAnnote if we were doing diarization, but for alignment we just need Whisper
-            # We'll pass the token just in case
+            # Initialize processor. Alignment only needs word-level Whisper output,
+            # so diarization is explicitly disabled: otherwise the AudioProcessor
+            # default (enabled) would offload Whisper and attempt pyannote for every
+            # file we auto-transcribe here, which is slow and needs an HF token.
             audio_processor = AudioProcessor(
                 output_audio_features_folder=self.extracted_audio_folder,
                 output_transcripts_folder=self.extracted_transcripts_folder,
                 status_callback=self.set_status_message,
+                enable_speaker_diarization=False,
                 auth_token=self.hf_token
             )
             

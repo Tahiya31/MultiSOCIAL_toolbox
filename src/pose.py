@@ -4,8 +4,13 @@ using MediaPipe and YOLO
 
 '''
 
+import glob
+import json
 import os
+import re
 import shutil
+import subprocess
+import time
 import cv2
 import mediapipe as mp
 import pandas as pd
@@ -41,6 +46,65 @@ def get_yolov5_weights_path():
 
     os.makedirs(runtime_assets_dir, exist_ok=True)
     return runtime_path
+
+def _resolve_ffmpeg_exe():
+    """Locate ffmpeg without importing the GUI layer.
+
+    Prefers the executable the app already resolved (cached in the
+    MULTISOCIAL_FFMPEG_EXE env var by gui_utils), then PATH.
+    """
+    cached = os.environ.get("MULTISOCIAL_FFMPEG_EXE")
+    if cached and os.path.exists(cached):
+        return cached
+    return shutil.which("ffmpeg")
+
+
+def _mux_audio_into_video(pose_video, source_video, status_callback=None):
+    """Copy the source video's audio onto the (silent) pose video in place.
+
+    OpenCV's VideoWriter produces video-only files, so the embedded pose
+    output has no sound. Re-mux: keep the rendered video stream as-is, pull
+    audio from the original. Non-fatal: if ffmpeg is missing, the source has
+    no audio, or the call fails, the silent pose video is left untouched.
+    """
+    ffmpeg_exe = _resolve_ffmpeg_exe()
+    if not ffmpeg_exe:
+        if status_callback:
+            status_callback("ffmpeg not found; pose video saved without audio.")
+        return
+
+    tmp_path = pose_video + ".muxtmp.mp4"
+    cmd = [
+        ffmpeg_exe, "-y",
+        "-i", pose_video,
+        "-i", source_video,
+        "-map", "0:v:0",
+        "-map", "1:a:0?",   # optional: source may have no audio track
+        "-c:v", "copy",
+        "-c:a", "aac",
+        tmp_path,
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+        )
+    except Exception as exc:
+        if status_callback:
+            status_callback(f"Could not add audio to pose video: {exc}")
+        return
+
+    if proc.returncode != 0 or not os.path.exists(tmp_path):
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        if status_callback:
+            status_callback("Pose video saved without audio (ffmpeg mux failed).")
+        return
+
+    os.replace(tmp_path, pose_video)
+
 
 def _sanitize_frame_for_video(frame, expected_size=None):
     """Ensure a frame is BGR, uint8, 3-channels and matches expected size for VideoWriter."""
@@ -87,8 +151,34 @@ def ensure_yolov5_weights():
             raise RuntimeError(f"Failed to download YOLOv5 weights: {e}")
 
 
+def find_pose_csv_paths(output_csv_folder, video_path):
+    """Return sorted CSV paths for a video, preferring multi-person files."""
+    base = os.path.splitext(os.path.basename(video_path))[0]
+    multi_pattern = os.path.join(output_csv_folder, f"{base}_multi_ID_*.csv")
+    paths = sorted(glob.glob(multi_pattern))
+    if paths:
+        return paths
+    single_pattern = os.path.join(output_csv_folder, f"{base}_ID_*.csv")
+    return sorted(glob.glob(single_pattern))
+
+
+def _should_emit_frame_update(frame_idx, total_frames, last_percent=None, every_frames=10):
+    """Throttle UI updates so long videos do not flood wx.CallAfter."""
+    if total_frames <= 0:
+        return (frame_idx % every_frames) == 0
+    percent = int((frame_idx / max(1, total_frames)) * 100)
+    if last_percent is not None and percent != last_percent:
+        return True
+    return (frame_idx % every_frames) == 0 or frame_idx >= total_frames
+
+
 # Core pose processor class
 class PoseProcessor:
+    PALETTE = [
+        (0, 255, 0), (0, 0, 255), (255, 0, 0), (0, 255, 255),
+        (255, 0, 255), (255, 255, 0), (128, 0, 255), (255, 128, 0),
+    ]
+
     def __init__(self, output_csv_folder, output_video_folder=None, status_callback=None, frame_threshold=10, frame_stride=1, downscale_to=None):
         self.output_csv_folder = output_csv_folder
         self.output_video_folder = output_video_folder
@@ -110,8 +200,7 @@ class PoseProcessor:
         
         # Initialize Mediapipe Pose
         self.pose = mp.solutions.pose.Pose(static_image_mode=False, min_detection_confidence=0.7, min_tracking_confidence=0.7, model_complexity=1)
-        self.drawing_utils = mp.solutions.drawing_utils
-        
+
         # Initialize YOLO lazily (only when needed for multi-person mode)
         self.yolo = None
 
@@ -152,7 +241,8 @@ class PoseProcessor:
                 # Add new people to the tracking list
                 for (x1e, y1e, x2e, y2e) in new_people:
                     roi_pose = mp.solutions.pose.Pose(static_image_mode=False, min_detection_confidence=0.7, min_tracking_confidence=0.7, model_complexity=2)
-                    locked_rois.append({"x1": x1e, "y1": y1e, "x2": x2e, "y2": y2e, "lost": 0, "pose": roi_pose, "overlap_streak": 0})
+                    locked_rois.append({"id": self._next_pid, "x1": x1e, "y1": y1e, "x2": x2e, "y2": y2e, "lost": 0, "pose": roi_pose, "overlap_streak": 0})
+                    self._next_pid += 1
                     if self.status_callback:
                         self.status_callback(f"🆕 New person detected! Now tracking {len(locked_rois)} people")
             else:
@@ -160,7 +250,8 @@ class PoseProcessor:
                 for (x1, y1, x2, y2) in person_boxes:
                     x1e, y1e, x2e, y2e = self._expand_and_clip_bbox(x1, y1, x2, y2, image_width, image_height, margin_ratio=margin_ratio)
                     roi_pose = mp.solutions.pose.Pose(static_image_mode=False, min_detection_confidence=0.7, min_tracking_confidence=0.7, model_complexity=2)
-                    locked_rois.append({"x1": x1e, "y1": y1e, "x2": x2e, "y2": y2e, "lost": 0, "pose": roi_pose, "overlap_streak": 0})
+                    locked_rois.append({"id": self._next_pid, "x1": x1e, "y1": y1e, "x2": x2e, "y2": y2e, "lost": 0, "pose": roi_pose, "overlap_streak": 0})
+                    self._next_pid += 1
         
         return locked_rois
 
@@ -176,7 +267,8 @@ class PoseProcessor:
         # Track which ROIs need reseed this frame
         rois_needing_reseed = []  # list of indices
 
-        for person_id, roi in enumerate(locked_rois):
+        for roi_index, roi in enumerate(locked_rois):
+            person_id = roi["id"]
             x1e, y1e, x2e, y2e = roi["x1"], roi["y1"], roi["x2"], roi["y2"]
             cropped = image_rgb[y1e:y2e, x1e:x2e]
             result = roi["pose"].process(cropped)
@@ -194,7 +286,7 @@ class PoseProcessor:
             else:
                 roi["lost"] += 1
                 if roi["lost"] >= self.frame_threshold:
-                    rois_needing_reseed.append(person_id)
+                    rois_needing_reseed.append(roi_index)
 
         # Perform a single reseed step using global one-to-one assignment
         if rois_needing_reseed:
@@ -242,12 +334,16 @@ class PoseProcessor:
                 # Hungarian assignment ensures one-to-one mapping
                 row_ind, col_ind = linear_sum_assignment(cost)
 
-                # Optional gating: ignore matches beyond a distance threshold (8% of image diagonal)
-                max_dist = 0.08 * diag
+                # Optional gating: ignore matches beyond 8% of the image diagonal.
+                max_dist_norm = 0.08
 
                 for r_i, c_j in zip(row_ind, col_ind):
                     if r_i < len(rois_needing_reseed) and c_j < len(person_boxes):
-                        if cost[r_i, c_j] <= max_dist:
+                        match_dist_norm = (
+                            np.linalg.norm(np.array(roi_centers[r_i]) - np.array(det_centers[c_j]))
+                            / max(1e-6, diag)
+                        )
+                        if match_dist_norm <= max_dist_norm:
                             roi_index = rois_needing_reseed[r_i]
                             rx1, ry1, rx2, ry2 = person_boxes[c_j]
                             nx1, ny1, nx2, ny2 = self._expand_and_clip_bbox(rx1, ry1, rx2, ry2, image_width, image_height, margin_ratio=0.25)
@@ -385,6 +481,126 @@ class PoseProcessor:
         """Enable or disable multi-person pose mode."""
         self.enable_multi_person_pose = enabled
 
+    @staticmethod
+    def _landmark_column_names():
+        return [
+            'Nose', 'Left_eye_inner', 'Left_eye', 'Left_eye_outer', 'Right_eye_inner',
+            'Right_eye', 'Right_eye_outer', 'Left_ear', 'Right_ear', 'Mouth_left',
+            'Mouth_right', 'Left_shoulder', 'Right_shoulder', 'Left_elbow', 'Right_elbow',
+            'Left_wrist', 'Right_wrist', 'Left_pinky', 'Right_pinky', 'Left_index',
+            'Right_index', 'Left_thumb', 'Right_thumb', 'Left_hip', 'Right_hip',
+            'Left_knee', 'Right_knee', 'Left_ankle', 'Right_ankle', 'Left_heel',
+            'Right_heel', 'Left_foot_index', 'Right_foot_index',
+        ]
+
+    @classmethod
+    def _color_for_id(cls, pid):
+        return cls.PALETTE[int(pid) % len(cls.PALETTE)]
+
+    @classmethod
+    def _csv_row_to_pts(cls, row, w, h):
+        pts = []
+        for name in cls._landmark_column_names():
+            x = row.get(f"{name}_x")
+            y = row.get(f"{name}_y")
+            conf = row.get(f"{name}_confidence", 0.0)
+            if x is None or y is None or not np.isfinite(x) or not np.isfinite(y):
+                pts.append(None)
+                continue
+            conf_val = float(conf) if np.isfinite(conf) else 0.0
+            px = int(np.clip(float(x), 0.0, 1.0) * w)
+            py = int(np.clip(float(y), 0.0, 1.0) * h)
+            pts.append((px, py, conf_val))
+        return pts
+
+    # Minimum draw intensity so low-confidence (but present) points stay
+    # faintly visible instead of rendering pure black; full gradient preserved.
+    CONF_FLOOR = 0.25
+
+    @classmethod
+    def _scaled_color(cls, color, conf):
+        conf = max(0.0, min(1.0, float(conf)))
+        factor = cls.CONF_FLOOR + (1.0 - cls.CONF_FLOOR) * conf
+        return tuple(int(c * factor) for c in color)
+
+    @classmethod
+    def _draw_pose(cls, img, pts, color):
+        for pt in pts:
+            if pt is None:
+                continue
+            px, py, conf = pt
+            cv2.circle(img, (px, py), 3, cls._scaled_color(color, conf), -1)
+        for conn in mp.solutions.pose.POSE_CONNECTIONS:
+            a, b = conn
+            pt_a = pts[a] if a < len(pts) else None
+            pt_b = pts[b] if b < len(pts) else None
+            if pt_a is None or pt_b is None:
+                continue
+            conf = min(pt_a[2], pt_b[2])
+            cv2.line(img, (pt_a[0], pt_a[1]), (pt_b[0], pt_b[1]), cls._scaled_color(color, conf), 2)
+
+    @classmethod
+    def _draw_legend(cls, img, ids):
+        if not ids:
+            return
+        h, w = img.shape[:2]
+        band_h = 28
+        y0 = max(0, h - band_h)
+        cv2.rectangle(img, (0, y0), (w, h), (0, 0, 0), -1)
+        x = 8
+        for pid in ids:
+            color = cls._color_for_id(pid)
+            cv2.rectangle(img, (x, y0 + 6), (x + 16, y0 + 22), color, -1)
+            label = f"ID_{pid}"
+            cv2.putText(img, label, (x + 22, y0 + 19), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+            x += 22 + len(label) * 8 + 12
+
+    @staticmethod
+    def _parse_person_id_from_csv_path(csv_path):
+        match = re.search(r"_ID_(\d+)\.csv$", os.path.basename(csv_path))
+        if match:
+            return int(match.group(1))
+        return None
+
+    def _find_pose_csvs(self, video_path):
+        paths = find_pose_csv_paths(self.output_csv_folder, video_path)
+        is_multi = bool(paths) and "_multi_ID_" in os.path.basename(paths[0])
+        return paths, is_multi
+
+    def _extraction_stride(self, video_path, is_multi):
+        """Read the frame_stride recorded at extraction time; fall back to the
+        embed-time stride if no sidecar exists (older CSVs)."""
+        base = os.path.splitext(os.path.basename(video_path))[0]
+        suffix = "_multi" if is_multi else ""
+        meta_path = os.path.join(self.output_csv_folder, f"{base}{suffix}_meta.json")
+        try:
+            with open(meta_path) as f:
+                stride = int(json.load(f).get("frame_stride", self.frame_stride))
+                return max(1, stride)
+        except Exception:
+            return self.frame_stride
+
+    def _load_pose_frames_from_csvs(self, csv_paths, w, h):
+        """Load CSV landmarks and precompute pixel points once per row.
+
+        Returns frames mapping proc_idx -> list of (person_id, pts) and the set
+        of all person ids. Precomputing here keeps the render loop free of any
+        per-frame CSV parsing.
+        """
+        frames = {}
+        all_ids = set()
+        for csv_path in csv_paths:
+            pid = self._parse_person_id_from_csv_path(csv_path)
+            df = pd.read_csv(csv_path)
+            for _, row in df.iterrows():
+                row_dict = row.to_dict()
+                row_pid = int(row_dict["person_id"]) if pid is None else pid
+                proc_idx = int(row_dict["frame"])
+                pts = self._csv_row_to_pts(row_dict, w, h)
+                frames.setdefault(proc_idx, []).append((row_pid, pts))
+                all_ids.add(row_pid)
+        return frames, all_ids
+
     def _ensure_yolo(self):
         """Lazily initialize YOLO only when needed for multi-person detection."""
         if self.yolo is None:
@@ -427,8 +643,11 @@ class PoseProcessor:
                 total_frames = 1  # Prevent division by zero
 
         # Maintain locked ROIs across frames for multi-person mode
-        # Each ROI holds its own MediaPipe Pose instance; index in list is stable person_id
-        locked_rois = []  # Each item: {"x1":int,"y1":int,"x2":int,"y2":int,"lost":int, "pose": Pose}
+        # Each ROI holds its own MediaPipe Pose instance with persistent id
+        locked_rois = []  # Each item: {"id":int,"x1":int,"y1":int,"x2":int,"y2":int,"lost":int, "pose": Pose}
+        self._next_pid = 0
+        last_progress_percent = -1
+        last_status_t = 0.0  # wall-clock gate so status text never floods the UI thread
 
         while cap.isOpened():
             if cancel_check and cancel_check():
@@ -455,8 +674,10 @@ class PoseProcessor:
             w = proc_frame.shape[1]
             h = proc_frame.shape[0]
 
-            if self.status_callback:
+            now = time.monotonic()
+            if self.status_callback and (now - last_status_t >= 0.5 or frame_idx + 1 >= total_frames):
                 self.status_callback(f"📸 Extracting pose from: {os.path.basename(video_path)} (Frame {frame_idx + 1}/{total_frames})")
+                last_status_t = now
 
             image_rgb = cv2.cvtColor(proc_frame, cv2.COLOR_BGR2RGB)
 
@@ -466,12 +687,17 @@ class PoseProcessor:
                 force_check = (self._spawn_period > 0) and (frame_idx % self._spawn_period == 0)
                 locked_rois = self._seed_rois_if_needed(image_rgb, w, h, locked_rois, margin_ratio=0.25, force_spawn_check=force_check)
 
-                # If still none, skip frame
+                # If still none, skip frame (advance both counters so the
+                # processed-frame index stays in lockstep with the source frame
+                # position; embed/verify rely on frame_idx == raw_frame // stride)
                 if not locked_rois:
+                    raw_frame_idx += 1
                     frame_idx += 1
                     if progress_callback and total_frames > 0:
                         progress_percent = int((frame_idx / total_frames) * 100)
-                        progress_callback(progress_percent)
+                        if progress_percent != last_progress_percent or _should_emit_frame_update(frame_idx, total_frames):
+                            progress_callback(progress_percent)
+                            last_progress_percent = progress_percent
                     continue
 
                 # Process using shared multiperson step
@@ -499,7 +725,9 @@ class PoseProcessor:
             # Update progress if callback provided
             if progress_callback and total_frames > 0:
                 progress_percent = int((frame_idx / total_frames) * 100)
-                progress_callback(progress_percent)
+                if progress_percent != last_progress_percent or _should_emit_frame_update(frame_idx, total_frames):
+                    progress_callback(progress_percent)
+                    last_progress_percent = progress_percent
 
         cap.release()
 
@@ -535,13 +763,30 @@ class PoseProcessor:
             csv_path = os.path.join(self.output_csv_folder, filename)
             df.to_csv(csv_path, index=False)
 
+        # Record the frame_stride used so embed can map CSV processed-frame
+        # indices back to source frames without assuming the embed-time stride.
+        try:
+            meta_path = os.path.join(self.output_csv_folder, f"{base_filename}_meta.json")
+            with open(meta_path, "w") as f:
+                json.dump({"frame_stride": self.frame_stride}, f)
+        except Exception:
+            pass
+
         return True
 
     def embed_pose_video(self, video_path, progress_callback=None, cancel_check=None):
-        """Overlay pose landmarks on the video and save output."""
+        """Overlay pose landmarks from extracted CSVs onto the video and save output."""
         cancelled = False
         if not self.output_video_folder:
             return None
+
+        csv_paths, is_multi = self._find_pose_csvs(video_path)
+        if not csv_paths:
+            if self.status_callback:
+                self.status_callback("No pose CSV found. Run Extract Pose Features first.")
+            return None
+
+        stride = self._extraction_stride(video_path, is_multi)
 
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
@@ -549,35 +794,31 @@ class PoseProcessor:
                 f"Could not open video for pose embedding: {video_path}. "
                 "This container or codec may not be supported by the current OpenCV backend on this machine."
             )
-        fps = int(cap.get(cv2.CAP_PROP_FPS))
+        fps = float(cap.get(cv2.CAP_PROP_FPS))
         orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        
-        # Get total frame count for progress tracking
+
+        # Output is full resolution; precompute pixel landmarks at that size.
+        frames, all_ids = self._load_pose_frames_from_csvs(csv_paths, orig_w, orig_h)
+        sorted_ids = sorted(all_ids)
+
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         if total_frames <= 0:
-            # Seek to end to get actual frame count (more reliable on Windows)
             current_pos = cap.get(cv2.CAP_PROP_POS_FRAMES)
-            cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 1.0)  # Seek to end
+            cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 1.0)
             total_frames = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
-            cap.set(cv2.CAP_PROP_POS_FRAMES, current_pos)  # Reset to original position
+            cap.set(cv2.CAP_PROP_POS_FRAMES, current_pos)
             if total_frames <= 0:
-                total_frames = 1  # Prevent division by zero
+                total_frames = 1
 
-        suffix = "_multi" if self.enable_multi_person_pose else ""
-        filename = os.path.splitext(os.path.basename(video_path))[0] + f"{suffix}_pose.mp4"
+        base = os.path.splitext(os.path.basename(video_path))[0]
+        suffix = "_multi" if is_multi else ""
+        filename = f"{base}{suffix}_pose.mp4"
         out_path = os.path.join(self.output_video_folder, filename)
-        # Determine processing size
         proc_w, proc_h = orig_w, orig_h
-        if self.downscale_to is not None and orig_w > 0 and orig_h > 0:
-            target_w, target_h = self.downscale_to
-            scale = min(target_w / max(1, orig_w), target_h / max(1, orig_h))
-            proc_w = max(1, int(orig_w * scale))
-            proc_h = max(1, int(orig_h * scale))
         if fps <= 0 or fps > 120:
             fps = 25
-        
-        # Try multiple codecs with validation to avoid green-screen corruption
+
         out = None
         codecs_to_try = [
             ('avc1', 'H.264 (recommended for macOS)'),
@@ -585,7 +826,7 @@ class PoseProcessor:
             ('XVID', 'Xvid'),
             ('MJPG', 'Motion JPEG'),
         ]
-        
+
         for fourcc_str, desc in codecs_to_try:
             try:
                 fourcc = cv2.VideoWriter_fourcc(*fourcc_str)
@@ -595,11 +836,10 @@ class PoseProcessor:
                     if self.status_callback:
                         self.status_callback(f"✓ Using codec: {desc}")
                     break
-                else:
-                    test_writer.release()
+                test_writer.release()
             except Exception:
                 pass
-        
+
         if out is None or not out.isOpened():
             error_msg = f"❌ Failed to create video writer for {out_path}. All codecs failed."
             if self.status_callback:
@@ -607,14 +847,8 @@ class PoseProcessor:
             raise RuntimeError(error_msg)
 
         raw_frame_idx = 0
-        frame_idx = 0
-        # Maintain locked ROIs across frames for multi-person mode
-        # Each ROI holds its own MediaPipe Pose instance
-        locked_rois = []  # Each item: {"x1":int,"y1":int,"x2":int,"y2":int,"lost":int, "pose": Pose}
-        
-        # Cache last detected landmarks to redraw on skipped frames (avoids flicker)
-        last_multi_landmarks = []  # list of mp_landmarks for multi-person mode
-        last_single_landmarks = None  # mp_landmarks for single-person mode
+        cached_draws = []
+        last_progress_percent = -1
 
         while cap.isOpened():
             if cancel_check and cancel_check():
@@ -624,135 +858,32 @@ class PoseProcessor:
             if not ret:
                 break
 
-            # Resolution downscaling
-            proc_frame = frame
-            if (proc_w != frame.shape[1]) or (proc_h != frame.shape[0]):
-                proc_frame = cv2.resize(frame, (proc_w, proc_h), interpolation=cv2.INTER_AREA)
+            canvas = frame.copy()
 
-            # Prepare variable for the frame to write
-            frame_to_write = proc_frame
+            if raw_frame_idx % stride == 0:
+                proc_idx = raw_frame_idx // stride
+                # Landmarks are precomputed at load; just pick this frame's rows
+                # (carried over on stride-skipped frames to avoid flicker).
+                cached_draws = frames.get(proc_idx, [])
 
-            # Check if this frame should be processed for pose detection
-            should_process_pose = (self.frame_stride == 1) or (raw_frame_idx % self.frame_stride == 0)
-            
-            if should_process_pose:
-                # Process pose detection on this frame
-                image_rgb = cv2.cvtColor(proc_frame, cv2.COLOR_BGR2RGB)
+            for pid, pts in cached_draws:
+                self._draw_pose(canvas, pts, self._color_for_id(pid))
 
-                if self.enable_multi_person_pose:
-                    # Seed ROIs using shared pipeline with periodic new-person detection
-                    # Check for new people every _spawn_period frames (default 10)
-                    force_check = (self._spawn_period > 0) and (frame_idx % self._spawn_period == 0)
-                    locked_rois = self._seed_rois_if_needed(image_rgb, proc_w, proc_h, locked_rois, margin_ratio=0.25, force_spawn_check=force_check)
-
-                    # If no ROIs found, write frame and continue
-                    if not locked_rois:
-                        safe_frame = _sanitize_frame_for_video(proc_frame, (proc_w, proc_h))
-                        out.write(safe_frame)
-                        frame_idx += 1
-                        if progress_callback and total_frames > 0:
-                            progress_percent = int((frame_idx / total_frames) * 100)
-                            progress_callback(progress_percent)
-                        continue
-
-                    # Convert back to BGR for drawing
-                    image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
-                    # Process using shared multiperson step and draw
-                    mp_outputs, locked_rois = self._process_multiperson_frame(image_rgb, proc_w, proc_h, locked_rois)
-                    for _, mp_landmarks in mp_outputs:
-                        try:
-                            self.drawing_utils.draw_landmarks(
-                                image_bgr,
-                                mp_landmarks,
-                                mp.solutions.pose.POSE_CONNECTIONS,
-                                landmark_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(color=(0, 255, 0), thickness=3, circle_radius=3),
-                                connection_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(color=(255, 0, 0), thickness=2)
-                            )
-                        except Exception as e:
-                            if self.status_callback:
-                                self.status_callback(f"❌ Error drawing landmarks: {e}")
-                            print(f"Error drawing landmarks: {e}")
-                    # Cache last landmarks for skipped frames redraw
-                    try:
-                        last_multi_landmarks = [lm for _, lm in mp_outputs]
-                    except Exception:
-                        pass
-                    frame_to_write = image_bgr
-
-                else:
-                    # Single-person mode
-                    result = self.pose.process(image_rgb)
-                    if result.pose_landmarks:
-                        # Debug output to verify landmarks are being detected
-                        if self.status_callback:
-                            self.status_callback(f"🎯 Drawing {len(result.pose_landmarks.landmark)} landmarks (single-person mode)")
-                        # Convert back to BGR for drawing
-                        image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
-                        # Draw landmarks with visible style
-                        self.drawing_utils.draw_landmarks(
-                            image_bgr, 
-                            result.pose_landmarks, 
-                            mp.solutions.pose.POSE_CONNECTIONS,
-                            landmark_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(color=(0, 255, 0), thickness=3, circle_radius=3),
-                            connection_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(color=(255, 0, 0), thickness=2)
-                        )
-                        # Cache last single-person landmarks
-                        last_single_landmarks = result.pose_landmarks
-                        frame_to_write = image_bgr
-                    else:
-                        # Debug output when no landmarks detected in single-person mode
-                        if self.status_callback:
-                            self.status_callback("⚠️ No landmarks detected (single-person mode)")
-                        # Clear cached single-person landmarks when not detected
-                        last_single_landmarks = None
-                        frame_to_write = proc_frame
-            else:
-                # Redraw last cached landmarks on skipped frames to maintain visual consistency
-                if self.enable_multi_person_pose:
-                    image_bgr = proc_frame.copy()
-                    if last_multi_landmarks:
-                        for mp_landmarks in last_multi_landmarks:
-                            try:
-                                self.drawing_utils.draw_landmarks(
-                                    image_bgr,
-                                    mp_landmarks,
-                                    mp.solutions.pose.POSE_CONNECTIONS,
-                                    landmark_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(color=(0, 255, 0), thickness=3, circle_radius=3),
-                                    connection_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(color=(255, 0, 0), thickness=2)
-                                )
-                            except Exception:
-                                pass
-                    frame_to_write = image_bgr
-                else:
-                    image_bgr = proc_frame.copy()
-                    if last_single_landmarks is not None:
-                        try:
-                            self.drawing_utils.draw_landmarks(
-                                image_bgr,
-                                last_single_landmarks,
-                                mp.solutions.pose.POSE_CONNECTIONS,
-                                landmark_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(color=(0, 255, 0), thickness=3, circle_radius=3),
-                                connection_drawing_spec=mp.solutions.drawing_utils.DrawingSpec(color=(255, 0, 0), thickness=2)
-                            )
-                        except Exception:
-                            pass
-                    frame_to_write = image_bgr
-
-            safe_frame = _sanitize_frame_for_video(frame_to_write, (proc_w, proc_h))
+            self._draw_legend(canvas, sorted_ids)
+            safe_frame = _sanitize_frame_for_video(canvas, (proc_w, proc_h))
             out.write(safe_frame)
-            
+
             raw_frame_idx += 1
-            frame_idx += 1
-            
-            # Update progress if callback provided
             if progress_callback and total_frames > 0:
-                progress_percent = int((frame_idx / total_frames) * 100)
-                progress_callback(progress_percent)
+                progress_percent = int((raw_frame_idx / total_frames) * 100)
+                if progress_percent != last_progress_percent or _should_emit_frame_update(raw_frame_idx, total_frames):
+                    progress_callback(progress_percent)
+                    last_progress_percent = progress_percent
 
         cap.release()
         out.release()
-        # Cleanup ROI Pose instances
-        self._cleanup_locked_rois(locked_rois)
         if cancelled:
             return False
+        # OpenCV writes video only; bring the original audio over.
+        _mux_audio_into_video(out_path, video_path, self.status_callback)
         return out_path
