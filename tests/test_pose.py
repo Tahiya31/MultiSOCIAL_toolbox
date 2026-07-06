@@ -195,6 +195,21 @@ def test_extract_pose_features_stride_progress_reaches_100(import_pose, tmp_path
     assert progress[-1] == 100
     assert max(progress) == 100
 
+
+def test_extract_pose_features_stride_status_reaches_source_end(import_pose, tmp_path, monkeypatch):
+    pose = import_pose
+    monkeypatch.setattr(pose, "ensure_yolov5_weights", lambda: None)
+    processor = pose.PoseProcessor(str(tmp_path), frame_stride=5, status_callback=lambda msg: messages.append(msg))
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake")
+    messages = []
+
+    result = processor.extract_pose_features(str(video))
+
+    assert result is True
+    assert messages[-1].endswith("(Source frame 20/20)")
+
+
 def test_extract_multiperson_no_roi_stride_progress_reaches_100(import_pose, tmp_path, monkeypatch):
     pose = import_pose
     monkeypatch.setattr(pose, "ensure_yolov5_weights", lambda: None)

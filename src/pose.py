@@ -191,6 +191,19 @@ def _emit_video_progress(progress_callback, current_frame, total_frames, last_pe
         return progress_percent
     return last_percent
 
+def _emit_pose_status(status_callback, video_path, current_frame, total_frames, last_status_t):
+    """Emit throttled pose extraction status based on source frames."""
+    if not status_callback:
+        return last_status_t
+    now = time.monotonic()
+    if now - last_status_t >= 0.5 or current_frame >= total_frames:
+        status_callback(
+            f"📸 Extracting pose from: {os.path.basename(video_path)} "
+            f"(Source frame {current_frame}/{total_frames})"
+        )
+        return now
+    return last_status_t
+
 
 # Core pose processor class
 class PoseProcessor:
@@ -681,6 +694,9 @@ class PoseProcessor:
             # Frame downsampling (process every k-th frame)
             if self.frame_stride > 1 and (raw_frame_idx % self.frame_stride) != 0:
                 raw_frame_idx += 1
+                last_status_t = _emit_pose_status(
+                    self.status_callback, video_path, raw_frame_idx, total_frames, last_status_t
+                )
                 last_progress_percent = _emit_video_progress(
                     progress_callback, raw_frame_idx, total_frames, last_progress_percent
                 )
@@ -699,13 +715,9 @@ class PoseProcessor:
             w = proc_frame.shape[1]
             h = proc_frame.shape[0]
 
-            now = time.monotonic()
-            if self.status_callback and (now - last_status_t >= 0.5 or raw_frame_idx + 1 >= total_frames):
-                self.status_callback(
-                    f"📸 Extracting pose from: {os.path.basename(video_path)} "
-                    f"(Source frame {raw_frame_idx + 1}/{total_frames})"
-                )
-                last_status_t = now
+            last_status_t = _emit_pose_status(
+                self.status_callback, video_path, raw_frame_idx + 1, total_frames, last_status_t
+            )
 
             image_rgb = cv2.cvtColor(proc_frame, cv2.COLOR_BGR2RGB)
 

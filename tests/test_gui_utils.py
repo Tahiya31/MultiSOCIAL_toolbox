@@ -139,3 +139,42 @@ def test_ensure_ffmpeg_available_marks_missing(monkeypatch, import_gui_utils):
 
     assert gui_utils.ensure_ffmpeg_available() is False
     assert os.environ["MULTISOCIAL_FFMPEG_SOURCE"] == "missing"
+
+
+def test_ffmpeg_has_subtitles_filter_parses_filter_listing(monkeypatch, import_gui_utils):
+    gui_utils = import_gui_utils
+
+    class Proc:
+        stdout = " T.C subtitles        V->V       Render text subtitles onto input video\n"
+
+    monkeypatch.setattr(gui_utils.subprocess, "run", lambda *args, **kwargs: Proc())
+
+    assert gui_utils._ffmpeg_has_subtitles_filter("/fake/ffmpeg") is True
+
+
+def test_get_subtitle_capable_ffmpeg_falls_back_to_imageio(monkeypatch, import_gui_utils, tmp_path):
+    gui_utils = import_gui_utils
+    primary = tmp_path / "ffmpeg-primary"
+    bundled = tmp_path / "ffmpeg-bundled"
+    primary.write_text("", encoding="utf-8")
+    bundled.write_text("", encoding="utf-8")
+    calls = []
+
+    monkeypatch.delenv("MULTISOCIAL_FFMPEG_SUBS_EXE", raising=False)
+    monkeypatch.setattr(gui_utils, "get_ffmpeg_executable", lambda: str(primary))
+
+    def fake_has_subtitles(path):
+        calls.append(path)
+        return path == str(bundled)
+
+    monkeypatch.setattr(gui_utils, "_ffmpeg_has_subtitles_filter", fake_has_subtitles)
+    monkeypatch.setattr(gui_utils, "_mark_executable", lambda path: None)
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "imageio_ffmpeg",
+        types.SimpleNamespace(get_ffmpeg_exe=lambda: str(bundled)),
+    )
+
+    assert gui_utils.get_subtitle_capable_ffmpeg() == str(bundled)
+    assert calls == [str(primary), str(bundled)]
+    assert os.environ["MULTISOCIAL_FFMPEG_SUBS_EXE"] == str(bundled)

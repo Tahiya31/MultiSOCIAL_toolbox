@@ -223,7 +223,7 @@ If **Enable Multi-person Pose** is used, pose CSVs and embedded pose videos incl
   * Then press **Extract Pose Features** button. This step may take some time.
   * Note: If your video has multiple people, you must select **Enable Multi-person Pose** for getting pose information of each person. Keep this checkbox in the same state for **Extract Pose Features**, **Embed Pose Features**, and **Verify Pose Match** so the toolbox uses the matching CSV set.
   * **Performance Options:**
-    * **Process every k-th frame**: Skip frames to speed up processing (e.g., k=2 processes every other frame). The progress bar follows source video frames, so it still reaches 100% when stride is greater than 1.
+    * **Process every k-th frame**: Skip frames to speed up processing (e.g., k=2 processes every other frame). The progress bar and status line both follow **source video frames** (for example, `Source frame 20/20`), so they still reach the end of the clip when stride is greater than 1.
     * **Downscale to 720p**: Reduce video resolution during processing for faster extraction.
     * **Frame Threshold for Bounding Box Recalibration**: Controls how often person bounding boxes are re-detected in multi-person mode.
   * Once the pose features are extracted, you can find them in **pose_features** folder created before.
@@ -381,6 +381,7 @@ Speaker diarization is optional and can be slower than plain transcription, espe
 
 The packaged app and current source setup try a bundled FFmpeg fallback automatically, so most users should not need to install FFmpeg manually.
 
+- **Embed Transcript on Video** needs an FFmpeg build with the `subtitles` filter (libass). The app checks your system FFmpeg first and falls back to the bundled `imageio-ffmpeg` build when the system copy cannot burn captions.
 - If **Convert video to audio**, **Embed Transcript on Video**, or caption burning reports a video-engine error, relaunch the app once so it can re-check the bundled FFmpeg.
 - If the bundled fallback is unavailable on your machine, install FFmpeg and add it to `PATH`.
 - On Windows, you can start from [ffmpeg.org](https://ffmpeg.org/download.html) and these [PATH setup steps](https://phoenixnap.com/kb/ffmpeg-windows).

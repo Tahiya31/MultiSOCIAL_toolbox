@@ -51,3 +51,47 @@ def test_write_srt_groups_word_level_chunks(tmp_path):
     assert "next turn" in text
     assert "hello\n\n2\n" not in text
     assert text.count("-->") == 2
+
+
+def test_escape_subtitles_filename_handles_filter_special_chars():
+    import captions
+
+    assert captions._escape_subtitles_filename(r"speaker's C:\clip.srt") == r"speaker\'s C\:\\clip.srt"
+
+
+def test_burn_subtitles_builds_filter_and_reports_progress(tmp_path, monkeypatch):
+    import captions
+
+    video = tmp_path / "clip.mp4"
+    srt = tmp_path / "speaker's.srt"
+    out = tmp_path / "captioned.mp4"
+    video.write_bytes(b"fake")
+    srt.write_text("1\n00:00:00,000 --> 00:00:01,000\nHi\n", encoding="utf-8")
+    captured = {}
+
+    class FakeProc:
+        returncode = 0
+        stderr = [
+            "Duration: 00:00:10.00\n",
+            "frame=1 time=00:00:05.00 bitrate=1kbits/s\n",
+        ]
+
+        def wait(self, *args, **kwargs):
+            return self.returncode
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["cwd"] = kwargs["cwd"]
+        return FakeProc()
+
+    monkeypatch.setattr(captions.subprocess, "Popen", fake_popen)
+    progress = []
+
+    result = captions.burn_subtitles(str(video), str(srt), str(out), "/fake/ffmpeg", progress.append)
+
+    assert result == str(out)
+    assert captured["cmd"][0] == "/fake/ffmpeg"
+    assert captured["cwd"] == str(tmp_path)
+    vf = captured["cmd"][captured["cmd"].index("-vf") + 1]
+    assert r"subtitles=speaker\'s.srt" in vf
+    assert progress == [50, 100]
