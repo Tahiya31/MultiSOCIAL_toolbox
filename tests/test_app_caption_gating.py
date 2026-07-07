@@ -54,3 +54,16 @@ def test_verify_uses_mode_specific_csvs_and_meta_stride():
     assert "stride=self._pose_stride_for_embedded_video(video)" in app_source
     assert 'f"{csv_base}*_ID_*.csv"' not in app_source
     assert "self.frameStrideInput.GetValue()" not in app_source.split("def _verify_consistency_batch", 1)[1].split("def convert_to_wav", 1)[0]
+
+
+def test_pose_batch_failures_are_reported_to_packaged_ui():
+    app_source = (Path(__file__).resolve().parents[1] / "src" / "app.py").read_text(encoding="utf-8")
+    extract_batch = app_source.split("def extract_pose_features_batch", 1)[1].split("def on_embed_poses", 1)[0]
+    embed_batch = app_source.split("def embed_pose_batch", 1)[1].split("def on_embed_transcript", 1)[0]
+
+    assert "except Exception as e:" in extract_batch
+    assert "Pose feature extraction finished with errors" in extract_batch
+    assert "no {mode_label} pose CSV was produced" in extract_batch
+    assert "find_pose_csv_paths(" in extract_batch
+    assert "except Exception as e:" in embed_batch
+    assert "Pose embedding finished with errors" in embed_batch

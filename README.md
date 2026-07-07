@@ -227,6 +227,7 @@ If **Enable Multi-person Pose** is used, pose CSVs and embedded pose videos incl
     * **Downscale to 720p**: Reduce video resolution during processing for faster extraction.
     * **Frame Threshold for Bounding Box Recalibration**: Controls how often person bounding boxes are re-detected in multi-person mode.
   * Once the pose features are extracted, you can find them in **pose_features** folder created before.
+  * When processing a folder of videos, the toolbox continues through the batch and shows a warning listing any files that failed or produced no CSVs.
   * **For multi-person mode**: Each output csv file will represent a single person's information (files will be named as {name of original video file}_multi_ID_0, {name of original video file}_multi_ID_1, etc.).
   * **CSV format** Each row represents a frame, each column represents features. For each of the 33 body landmarks, you should see 4 columns:
     * x and y: Landmark coordinates normalized to [0.0, 1.0] by the image width and height respectively.
@@ -238,6 +239,7 @@ If **Enable Multi-person Pose** is used, pose CSVs and embedded pose videos incl
   * Then press **Embed Pose Features** button. The toolbox reads pose CSVs from `pose_features/` and draws landmarks onto the video. Each tracked person gets a stable color with an on-screen legend, and each landmark's brightness reflects its detection confidence: brighter means more confident, dimmer means less confident.
   * Embed automatically reuses the frame stride recorded at extraction time, so the overlay stays aligned with the CSV rows regardless of the stride selected when embedding.
   * Output naming follows the mode: `*_pose.mp4` for single-person CSVs, `*_multi_pose.mp4` for multi-person CSVs.
+  * When embedding a folder of videos, the toolbox continues through the batch and shows a warning listing any files that were skipped or failed.
   * Once all the frames are processed, an output video will appear in the **embedded_pose** folder where your input video is located.
 
 **Embed Transcript on Video** Burn the turn-by-turn transcript onto the video as captions so you can watch the video and read the transcript in sync — useful for evaluating transcription accuracy. The **Embed Transcript on Video** button stays greyed out until **Extract Transcripts** (on the Audio tab) has produced matching `.srt` files for the selected videos; hover over it for a reminder.
@@ -355,6 +357,8 @@ Greyed-out buttons usually mean a required file is missing. Hover over the butto
 ### Multi-person pose looks wrong or buttons stay locked
 
 Make sure **Enable Multi-person Pose** matches how you extracted pose data. Single-person CSVs (`session_ID_0.csv`) and multi-person CSVs (`session_multi_ID_0.csv`) are treated separately — toggling the checkbox after extraction will not unlock **Embed Pose Features** until the matching files exist.
+
+If **Enable Multi-person Pose** fails only in a packaged build (for example, a missing `ultralytics` dependency), install or rerun the latest packaged **Complete** or **Standard** build from Releases, or use a source install with `run_app.sh` / `run_app.bat`.
 
 ### Captions are missing or the caption button stays locked
 

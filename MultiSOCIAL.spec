@@ -156,7 +156,16 @@ datas += collect_data_files("opensmile")
 datas += collect_data_files("audinterface")
 datas += collect_data_files("imageio_ffmpeg")
 datas += collect_data_files("yolov5")
+datas += collect_data_files("ultralytics")
 datas += collect_data_files("lightning_fabric")
+
+for package in ("yolov5", "ultralytics", "torch", "torchvision"):
+    try:
+        datas += copy_metadata(package)
+    except Exception:
+        pass
+
+hiddenimports += collect_submodules("ultralytics")
 binaries = collect_dynamic_libs("mediapipe")
 binaries += collect_dynamic_libs("audresample")
 binaries += collect_dynamic_libs("opensmile")

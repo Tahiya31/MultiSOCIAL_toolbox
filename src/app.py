@@ -1493,24 +1493,60 @@ class VideoToWavConverter(wx.Frame):
     def extract_pose_features_batch(self, video_files, pose_processor):
         """Batch process all video files to extract pose features."""
         cancelled = False
+        failed = False
+        failures = []
         try:
+            from pose import find_pose_csv_paths
+
             total_files = len(video_files)
+            multi_person = bool(getattr(pose_processor, "enable_multi_person_pose", False))
+            mode_label = "multi-person" if multi_person else "single-person"
 
             for index, video_file in enumerate(video_files, start=1):
                 if self._cancel_event.is_set():
                     cancelled = True
                     break
                 self.set_status_message(f"Extracting pose from: {os.path.basename(video_file)}")
-                result = pose_processor.extract_pose_features(
-                    video_file,
-                    progress_callback=self.make_overall_progress_cb(index, total_files),
-                    cancel_check=self._cancel_event.is_set,
-                )
+                try:
+                    result = pose_processor.extract_pose_features(
+                        video_file,
+                        progress_callback=self.make_overall_progress_cb(index, total_files),
+                        cancel_check=self._cancel_event.is_set,
+                    )
+                except Exception as e:
+                    failed = True
+                    message = f"{os.path.basename(video_file)}: {e}"
+                    failures.append(message)
+                    self.set_status_message(f"Failed to extract pose for {os.path.basename(video_file)}: {e}")
+                    continue
                 if result is False:
                     cancelled = True
                     break
 
-            if not cancelled:
+                csv_paths = find_pose_csv_paths(
+                    pose_processor.output_csv_folder,
+                    video_file,
+                    multi_person=multi_person,
+                )
+                if not csv_paths:
+                    failed = True
+                    message = f"{os.path.basename(video_file)}: no {mode_label} pose CSV was produced"
+                    failures.append(message)
+                    self.set_status_message(message)
+
+            if cancelled:
+                return
+            if failed:
+                preview = "\n".join(failures[:5])
+                if len(failures) > 5:
+                    preview += f"\n...and {len(failures) - 5} more."
+                wx.CallAfter(
+                    wx.MessageBox,
+                    "Pose feature extraction finished with errors.\n\n" + preview,
+                    "Pose Extraction Warning",
+                    wx.OK | wx.ICON_WARNING,
+                )
+            else:
                 wx.CallAfter(wx.MessageBox, "Pose feature extraction completed!", "Success", wx.OK | wx.ICON_INFORMATION)
         finally:
             wx.CallAfter(self._end_process, cancelled)
@@ -1611,6 +1647,7 @@ class VideoToWavConverter(wx.Frame):
     def embed_pose_batch(self, video_files, pose_processor):
         cancelled = False
         failed = False
+        failures = []
         try:
             total_files = len(video_files)
 
@@ -1619,16 +1656,23 @@ class VideoToWavConverter(wx.Frame):
                     cancelled = True
                     break
                 self.set_status_message(f"Embedding poses for: {os.path.basename(video_file)}")
-                result = pose_processor.embed_pose_video(
-                    video_file,
-                    progress_callback=self.make_overall_progress_cb(index, total_files),
-                    cancel_check=lambda: self._cancel_event.is_set(),
-                )
+                try:
+                    result = pose_processor.embed_pose_video(
+                        video_file,
+                        progress_callback=self.make_overall_progress_cb(index, total_files),
+                        cancel_check=lambda: self._cancel_event.is_set(),
+                    )
+                except Exception as e:
+                    failed = True
+                    failures.append(f"{os.path.basename(video_file)}: {e}")
+                    self.set_status_message(f"Failed to embed poses for {os.path.basename(video_file)}: {e}")
+                    continue
                 if result is False:
                     cancelled = True
                     break
                 if result is None:
                     failed = True
+                    failures.append(f"{os.path.basename(video_file)}: no pose CSV found")
                     self.set_status_message(
                         f"Skipped embedding for {os.path.basename(video_file)}: no pose CSV found."
                     )
@@ -1636,9 +1680,12 @@ class VideoToWavConverter(wx.Frame):
             if cancelled:
                 return
             if failed:
+                detail = "\n\n" + "\n".join(failures[:5]) if failures else ""
+                if len(failures) > 5:
+                    detail += f"\n...and {len(failures) - 5} more."
                 wx.CallAfter(
                     wx.MessageBox,
-                    "Pose embedding finished with errors. Some videos were skipped because CSVs were missing.",
+                    "Pose embedding finished with errors. Some videos were skipped." + detail,
                     "Warning",
                     wx.OK | wx.ICON_WARNING,
                 )
