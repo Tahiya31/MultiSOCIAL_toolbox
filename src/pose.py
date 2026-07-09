@@ -137,18 +137,31 @@ def _sanitize_frame_for_video(frame, expected_size=None):
 def ensure_yolov5_weights():
     """Ensure yolov5s weights exist without triggering network calls at import in other modules."""
     weights_path = get_yolov5_weights_path()
-    if not os.path.exists(weights_path):
-        try:
-            import requests
-            url = "https://github.com/ultralytics/yolov5/releases/download/v6.0/yolov5s.pt"
-            response = requests.get(url)
-            response.raise_for_status()  # Raise exception for HTTP errors
-            os.makedirs(os.path.dirname(weights_path), exist_ok=True)
-            with open(weights_path, "wb") as f:
-                f.write(response.content)
-            print(f"Downloaded YOLOv5 weights to {weights_path}")
-        except Exception as e:
-            raise RuntimeError(f"Failed to download YOLOv5 weights: {e}")
+    if _is_valid_weights_file(weights_path):
+        return
+
+    if runtime_services.is_frozen_runtime():
+        bundled_path = runtime_services.resource_path("assets", "yolov5s.pt")
+        raise RuntimeError(
+            "YOLOv5 weights are missing from this packaged app. "
+            f"Expected bundled weights at {bundled_path}. "
+            "Rebuild the app with assets/yolov5s.pt included."
+        )
+
+    try:
+        import requests
+        url = "https://github.com/ultralytics/yolov5/releases/download/v6.0/yolov5s.pt"
+        response = requests.get(url)
+        response.raise_for_status()  # Raise exception for HTTP errors
+        os.makedirs(os.path.dirname(weights_path), exist_ok=True)
+        with open(weights_path, "wb") as f:
+            f.write(response.content)
+        print(f"Downloaded YOLOv5 weights to {weights_path}")
+    except Exception as e:
+        raise RuntimeError(f"Failed to download YOLOv5 weights: {e}")
+
+    if not _is_valid_weights_file(weights_path):
+        raise RuntimeError(f"Downloaded YOLOv5 weights are invalid: {weights_path}")
 
 
 def find_pose_csv_paths(output_csv_folder, video_path, multi_person=None):

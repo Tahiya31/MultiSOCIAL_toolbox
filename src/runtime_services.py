@@ -45,13 +45,17 @@ def _frozen_resource_roots() -> list[str]:
     executable_dir = os.path.dirname(sys.executable) if getattr(sys, "executable", None) else None
 
     add(meipass)
+    add(os.path.join(meipass, "_internal") if meipass else None)
     add(executable_dir)
+    add(os.path.join(executable_dir, "_internal") if executable_dir else None)
 
     if sys.platform == "darwin" and executable_dir:
         contents_dir = os.path.dirname(executable_dir)
         add(contents_dir)
         add(os.path.join(contents_dir, "Resources"))
+        add(os.path.join(contents_dir, "Resources", "_internal"))
         add(os.path.join(contents_dir, "Frameworks"))
+        add(os.path.join(contents_dir, "Frameworks", "_internal"))
 
     return roots
 

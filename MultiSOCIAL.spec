@@ -147,6 +147,7 @@ hiddenimports = [
 
 datas = [
     (os.path.join(ROOT, "assets"), "assets"),
+    (os.path.join(ROOT, "assets", "yolov5s.pt"), "assets"),
     (os.path.join(ROOT, "env.example"), "."),
     (os.path.join(ROOT, "pyproject.toml"), "."),
 ]

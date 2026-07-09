@@ -18,6 +18,7 @@ def test_yolov5_runtime_dependencies_are_packaged():
     assert 'collect_data_files("ultralytics")' in spec_text
     assert 'collect_submodules("ultralytics")' in spec_text
     assert '"yolov5", "ultralytics", "torch", "torchvision"' in spec_text
+    assert 'os.path.join(ROOT, "assets", "yolov5s.pt")' in spec_text
 
     assert 'collect_data_files("ultralytics")' in hook_text
     assert 'collect_submodules("ultralytics")' in hook_text

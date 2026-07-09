@@ -181,6 +181,27 @@ def test_extract_pose_features_cancel_check_stops_early(import_pose, tmp_path, m
     assert result is False
     assert checks["n"] <= 4
 
+
+def test_frozen_yolov5_weights_missing_does_not_download(import_pose, tmp_path, monkeypatch):
+    pose = import_pose
+    runtime_path = tmp_path / "runtime" / "assets" / "yolov5s.pt"
+    bundled_path = tmp_path / "bundle" / "assets" / "yolov5s.pt"
+
+    monkeypatch.setattr(pose, "get_yolov5_weights_path", lambda: str(runtime_path))
+    monkeypatch.setattr(pose.runtime_services, "is_frozen_runtime", lambda: True)
+    monkeypatch.setattr(pose.runtime_services, "resource_path", lambda *parts: str(bundled_path))
+
+    class _Requests:
+        @staticmethod
+        def get(*args, **kwargs):
+            raise AssertionError("frozen builds must not download YOLO weights")
+
+    monkeypatch.setitem(sys.modules, "requests", _Requests)
+
+    with pytest.raises(RuntimeError, match="packaged app"):
+        pose.ensure_yolov5_weights()
+
+
 def test_extract_pose_features_stride_progress_reaches_100(import_pose, tmp_path, monkeypatch):
     pose = import_pose
     monkeypatch.setattr(pose, "ensure_yolov5_weights", lambda: None)
