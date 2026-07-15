@@ -7,21 +7,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_windows_complete_lock_uses_the_successful_baseline_and_is_fully_pinned():
-    lock_path = ROOT / "requirements" / "windows-complete.lock"
-    packages = [
-        line.strip()
-        for line in lock_path.read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.startswith("#")
-    ]
-
-    assert "torch==2.5.1" in packages
-    assert "torchaudio==2.5.1" in packages
-    assert "pyannote.audio==3.2.0" in packages
-    assert "pyarrow==24.0.0" in packages
-    assert all("==" in package for package in packages)
-
-
 def test_runtime_hook_uses_a_stable_allowlist_without_recursive_discovery(tmp_path):
     hook = importlib.import_module("runtime_hook_dlls")
     (tmp_path / "torch" / "lib").mkdir(parents=True)
@@ -37,14 +22,16 @@ def test_runtime_hook_uses_a_stable_allowlist_without_recursive_discovery(tmp_pa
     assert "os.walk" not in (ROOT / "src" / "runtime_hook_dlls.py").read_text(encoding="utf-8")
 
 
-def test_ci_uses_lock_and_uploads_complete_windows_diagnostics():
+def test_ci_captures_complete_windows_diagnostics_without_a_blanket_lock():
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
-    assert "requirements/windows-complete.lock" in workflow
-    assert 'python -m pip install --no-deps ".[complete,dev]"' in workflow
+    assert 'python -m pip install ".[complete,dev]"' in workflow
+    assert "requirements/windows-complete.lock" not in workflow
     assert "MULTISOCIAL_SMOKE_TRACE" in workflow
     assert "windows-complete-smoke-diagnostics" in workflow
     assert "if: always() && matrix.profile == 'complete' && runner.os == 'Windows'" in workflow
+    assert "${{ github.workspace }}/.tmp/multisocial-smoke-${{ matrix.os }}-${{ matrix.profile }}" in workflow
+    assert "${{ runner.temp }}" not in workflow
 
 
 def test_smoke_checkpoints_cover_bootstrap_asset_and_native_imports():
