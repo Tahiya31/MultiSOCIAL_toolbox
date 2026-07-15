@@ -159,9 +159,30 @@ def test_extract_transcripts_batch_saves_word_json_when_requested(monkeypatch, i
     data = json.loads(json_path.read_text(encoding="utf-8"))
     assert data["chunks"][0]["text"] == "hello"
     # ...and the plain .txt transcript is still produced.
-    assert (tmp_path / "clip.txt").exists()
+    assert (tmp_path / "clip.txt").read_text(encoding="utf-8") == "hello world"
     srt_text = (tmp_path / "clip.srt").read_text(encoding="utf-8")
     assert "hello world" in srt_text
+
+
+def test_plain_transcript_groups_word_timestamp_chunks(monkeypatch, import_audio, tmp_path):
+    audio = import_audio
+    processor = _make_processor(audio, tmp_path)
+    result = {
+        "text": "hello world. next phrase",
+        "chunks": [
+            {"text": "hello", "timestamp": (0.0, 0.2)},
+            {"text": "world.", "timestamp": (0.2, 0.4)},
+            {"text": "next", "timestamp": (0.5, 0.7)},
+            {"text": "phrase", "timestamp": (0.7, 0.9)},
+        ],
+    }
+    _stub_transcription(processor, audio, monkeypatch, result)
+    clip = tmp_path / "clip.wav"
+    clip.write_bytes(b"RIFF")
+
+    processor.extract_transcripts_batch([str(clip)], word_timestamps=True)
+
+    assert (tmp_path / "clip.txt").read_text(encoding="utf-8") == "hello world.\nnext phrase"
 
 
 def test_extract_transcripts_batch_segment_mode_writes_no_word_json(monkeypatch, import_audio, tmp_path):
@@ -180,6 +201,35 @@ def test_extract_transcripts_batch_segment_mode_writes_no_word_json(monkeypatch,
     assert not (tmp_path / "clip_words.json").exists()
     assert (tmp_path / "clip.txt").exists()
     assert (tmp_path / "clip.srt").exists()
+
+
+def test_extract_transcripts_batch_reports_mixed_file_outcomes(monkeypatch, import_audio, tmp_path):
+    audio = import_audio
+    processor = _make_processor(audio, tmp_path)
+    _stub_transcription(processor, audio, monkeypatch, {"text": "saved", "chunks": []})
+
+    good = tmp_path / "good.wav"
+    bad = tmp_path / "bad.wav"
+    good.write_bytes(b"RIFF")
+    bad.write_bytes(b"RIFF")
+    original_pipe = processor.whisper_pipe
+
+    def fake_pipe(*args, **kwargs):
+        if not hasattr(fake_pipe, "called"):
+            fake_pipe.called = True
+            return original_pipe(*args, **kwargs)
+        raise RuntimeError("decode failed")
+
+    processor.whisper_pipe = fake_pipe
+    outcome = processor.extract_transcripts_batch([str(good), str(bad)])
+
+    assert outcome == {
+        "succeeded": [str(good)],
+        "failed": [(str(bad), "decode failed")],
+        "cancelled": False,
+    }
+    assert (tmp_path / "good.txt").exists()
+    assert not (tmp_path / "bad.txt").exists()
 
 
 def test_clear_whisper_model_releases_large_objects(import_audio, tmp_path):
@@ -339,6 +389,58 @@ def test_extract_transcripts_batch_diarization_saves_each_file_and_clears_whispe
     assert (tmp_path / "clip1.txt").exists()
 
 
+def test_diarized_transcripts_report_mixed_file_outcomes(monkeypatch, import_audio, tmp_path):
+    audio = import_audio
+    processor = audio.AudioProcessor(
+        output_audio_features_folder=str(tmp_path),
+        output_transcripts_folder=str(tmp_path),
+        status_callback=None,
+        enable_speaker_diarization=True,
+        auth_token="token",
+    )
+    monkeypatch.setattr(
+        audio,
+        "_whisper_pipeline_audio_input",
+        lambda path: {"array": np.zeros(4, dtype=np.float32), "sampling_rate": 16000},
+    )
+    calls = []
+
+    def fake_load_whisper():
+        def fake_pipe(*args, **kwargs):
+            calls.append(None)
+            if len(calls) == 2:
+                raise RuntimeError("model failed")
+            return {"text": "saved", "chunks": [{"text": "saved", "timestamp": (0.0, 1.0)}]}
+
+        processor.whisper_model = object()
+        processor.whisper_processor = object()
+        processor.whisper_pipe = fake_pipe
+
+    class FakeDiarizer:
+        def diarize_speakers(self, path):
+            return []
+
+        def offload_model(self):
+            pass
+
+    monkeypatch.setattr(processor, "_load_whisper_model", fake_load_whisper)
+    monkeypatch.setattr(
+        processor,
+        "_load_speaker_diarizer",
+        lambda *a, **k: setattr(processor, "speaker_diarizer", FakeDiarizer()),
+    )
+    good = tmp_path / "good.wav"
+    bad = tmp_path / "bad.wav"
+    good.write_bytes(b"RIFF")
+    bad.write_bytes(b"RIFF")
+
+    outcome = processor.extract_transcripts_batch([str(good), str(bad)])
+
+    assert outcome["succeeded"] == [str(good)]
+    assert outcome["failed"] == [(str(bad), "model failed")]
+    assert outcome["cancelled"] is False
+
+
 def test_extract_transcripts_batch_diarization_failure_writes_plain_outputs(monkeypatch, import_audio, tmp_path):
     audio = import_audio
     processor = audio.AudioProcessor(
@@ -415,6 +517,22 @@ def test_align_features_maps_words_to_feature_means(import_audio, tmp_path):
     assert result.loc[1, "f0"] == 6.0
 
 
+def test_align_features_rejects_empty_word_timestamps(import_audio, tmp_path):
+    audio = import_audio
+    processor = _make_processor(audio, tmp_path)
+    feature_csv = tmp_path / "clip.csv"
+    pd.DataFrame({"Timestamp_Seconds": [0.0], "f0": [1.0]}).to_csv(feature_csv, index=False)
+    words_json = tmp_path / "clip_words.json"
+    words_json.write_text(json.dumps({"chunks": []}), encoding="utf-8")
+
+    try:
+        processor.align_features(str(feature_csv), str(words_json), str(tmp_path / "aligned.csv"))
+    except ValueError as exc:
+        assert "No usable word timestamps" in str(exc)
+    else:
+        raise AssertionError("Expected empty word timestamps to fail alignment")
+
+
 def test_extract_audio_features_batch_cancel_check(import_audio, tmp_path, monkeypatch):
     audio = import_audio
     processor = _make_processor(audio, tmp_path)
@@ -470,6 +588,18 @@ def test_align_features_batch_reports_per_file_failure(import_audio, tmp_path, m
     assert outcome["failed"] == [("aligned.csv", "bad data")]
 
 
+def test_align_features_batch_requires_written_output(import_audio, tmp_path, monkeypatch):
+    audio = import_audio
+    processor = _make_processor(audio, tmp_path)
+    out_csv = tmp_path / "missing.csv"
+    monkeypatch.setattr(processor, "align_features", lambda *args: str(out_csv))
+
+    outcome = processor.align_features_batch([("features.csv", "words.json", str(out_csv))])
+
+    assert outcome["succeeded"] == []
+    assert outcome["failed"] == [(str(out_csv), "Alignment did not write its output CSV")]
+
+
 def test_extract_transcripts_batch_cancel_check(monkeypatch, import_audio, tmp_path):
     audio = import_audio
     processor = _make_processor(audio, tmp_path)
@@ -498,3 +628,27 @@ def test_extract_transcripts_batch_cancel_check(monkeypatch, import_audio, tmp_p
 
     processor.extract_transcripts_batch(files, cancel_check=cancel_check)
     assert len(transcribed) == 1
+
+
+def test_align_segments_with_speakers_sorts_out_of_order_chunks(import_audio):
+    audio = import_audio
+    processor = audio.AudioProcessor.__new__(audio.AudioProcessor)
+
+    # Whisper can emit chunks out of chronological order on long audio.
+    whisper_segments = [
+        {"start": 10.0, "end": 11.0, "text": "second"},
+        {"start": 2.0, "end": 3.0, "text": "first"},
+        {"start": 20.0, "end": 21.0, "text": "third"},
+    ]
+    speaker_segments = [
+        {"start": 0.0, "end": 5.0, "speaker": "SPEAKER_00"},
+        {"start": 9.0, "end": 12.0, "speaker": "SPEAKER_01"},
+        {"start": 19.0, "end": 22.0, "speaker": "SPEAKER_02"},
+    ]
+
+    out = processor._align_segments_with_speakers(whisper_segments, speaker_segments)
+    lines = out.splitlines()
+
+    assert lines[0].endswith("first")
+    assert lines[1].endswith("second")
+    assert lines[2].endswith("third")

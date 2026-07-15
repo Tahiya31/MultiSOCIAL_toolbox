@@ -218,13 +218,14 @@ Use this step after **Extract Transcripts** to burn transcript captions onto vid
 2. Use **Browse** on the Video tab to select the same folder as your video files.
 3. Press **Embed Transcript on Video**.
 
-The captioned video is written to `captioned_video` as `<name>_captioned.mp4`. The original video is left untouched.
+Captioned videos are written to `captioned_video`; the original video is left untouched.
 
-Optional:
+Use **Add captions to pose-embedded video** to choose the caption target:
 
-- Check **Add captions to pose-embedded video** to burn captions onto the pose-overlay video instead of the raw source.
-- Pose-captioned output is written as `*_pose_captioned.mp4`.
-- If both single-person and multi-person pose-overlay videos exist, the newest embedded pose video is used.
+- Off: captions the original video and writes `<name>_captioned.mp4`.
+- On: captions the pose-overlay video and writes `<name>_pose_captioned.mp4`. Run **Embed Pose Features** and **Extract Transcripts** first.
+
+When both single-person and multi-person pose-overlay videos exist, the most recently modified one is captioned.
 
 If the button stays greyed out, rerun **Extract Transcripts** and make sure each audio file has the same base name as its video. For example, `session01.wav` produces captions for `session01.mp4`.
 
@@ -322,6 +323,7 @@ Use this step to transcribe audio. The toolbox uses [Whisper Large V3 Turbo](htt
 1. Use **Browse** to select the folder with your audio files.
 2. Press **Extract Transcripts**.
 3. Each file is saved to `transcripts` as soon as it finishes, so you can inspect partial batch results while the rest are still processing.
+4. When the batch ends, the toolbox reports how many files succeeded and lists any that failed.
 
 Outputs:
 
@@ -429,7 +431,7 @@ converted_audio/session01.wav
 transcripts/session01.srt
 ```
 
-If the `.srt` file is missing, rerun **Extract Transcripts**. If you want captions on the pose-overlay video, run **Embed Pose Features** first.
+If the `.srt` file is missing, rerun **Extract Transcripts**. To caption a pose-overlay video, enable **Add captions to pose-embedded video**, then run **Embed Pose Features** before **Embed Transcript on Video**.
 
 ### Speaker diarization is slow or uses a lot of memory
 
@@ -460,7 +462,7 @@ Some libraries print warnings about model loading, package paths, or cache folde
 
 Run **Verify Pose Match** after **Embed Pose Features**. It creates a `verification` folder with a report and worst-frame thumbnails so you can quickly inspect whether the CSV and embedded video match.
 
-If a multi-person video looks like it used the wrong overlay, remember that **Add captions to pose-embedded video** uses the newest pose-overlay video when both single-person and multi-person versions exist.
+If a multi-person video looks wrong, make sure **Enable Multi-person Pose** was selected before extracting and embedding that video. When captioning pose videos, the newest pose-overlay video is selected if both modes exist.
 
 ## Acknowledgement
 

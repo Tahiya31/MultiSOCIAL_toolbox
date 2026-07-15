@@ -31,6 +31,7 @@ from ui_components import (
     GradientPanel,
     GlassPanel,
     ElevatedLogoPanel,
+    InfoIcon,
     TooltipButton,
     CustomGauge,
     FlatButton,
@@ -345,7 +346,12 @@ class VideoToWavConverter(wx.Frame):
         self.convertBtn, hbox_convert = TooltipButton.create_with_icon(
             actions_card,
             'Convert video to audio',
-            f'Converts video files ({self._format_supported_extensions(self.VIDEO_EXTENSIONS)}) to audio files (.wav) for further processing',
+            "CREATES\n"
+            "• WAV audio from each selected video\n\n"
+            "SAVES TO\n"
+            "• converted_audio/<name>.wav\n\n"
+            "USE NEXT\n"
+            "• Extract Audio Features or Extract Transcripts",
             font=button_font,
             handler=self.on_convert,
             variant=FlatButton.VARIANT_SECONDARY,
@@ -356,7 +362,13 @@ class VideoToWavConverter(wx.Frame):
         self.extractFeaturesBtn, hbox_extract_pose = TooltipButton.create_with_icon(
             actions_card,
             'Extract Pose Features',
-            'Extracts human pose landmarks and features from video files using MediaPipe. Supports single and multi-person detection.',
+            "CREATES\n"
+            "• Pose landmark CSV files from each video\n"
+            "• Single-person or multi-person tracking, based on the setting\n\n"
+            "SAVES TO\n"
+            "• pose_features\n\n"
+            "USE NEXT\n"
+            "• Embed Pose Features",
             font=button_font,
             handler=self.on_extract_features,
         )
@@ -366,7 +378,13 @@ class VideoToWavConverter(wx.Frame):
         self.embedFeaturesBtn, hbox_embed_pose = TooltipButton.create_with_icon(
             actions_card,
             'Embed Pose Features',
-            "Overlays each tracked person's pose skeleton onto the video in its own color, with a legend. Landmark brightness reflects detection confidence (brighter = more confident). Run Extract Pose Features first.",
+            "CREATES\n"
+            "• A video with pose skeletons and a color legend\n"
+            "• Brighter landmarks indicate higher detection confidence\n\n"
+            "REQUIRES\n"
+            "• Extract Pose Features\n\n"
+            "SAVES TO\n"
+            "• embedded_pose",
             font=button_font,
             handler=self.on_embed_poses,
             variant=FlatButton.VARIANT_SECONDARY,
@@ -374,33 +392,33 @@ class VideoToWavConverter(wx.Frame):
         self._register_scalable(self.embedFeaturesBtn, Theme.FONT_BUTTON)
         actions.Add(hbox_embed_pose, flag=wx.EXPAND | wx.BOTTOM, border=Theme.SPACE_SM)
 
-        # Sub-option of "Embed Transcript on Video": burn captions onto the
-        # pose-embedded video instead of the raw source. Indented + hinted so it
-        # reads as a modifier of the action button below it.
+        # Target selector for Embed Transcript on Video. Its details live in the
+        # same adjacent tooltip pattern as the action controls.
         self.captionPoseVideoCheckbox = CustomCheckBox(actions_card, label="Add captions to pose-embedded video")
         self.captionPoseVideoCheckbox.SetFont(Theme.get_font(Theme.FONT_BODY))
         self.captionPoseVideoCheckbox.SetForegroundColour(Theme.colour(Theme.COLOR_TEXT_WHITE))
-        self.captionPoseVideoCheckbox.SetToolTip(
-            "On: burn the transcript onto the pose-embedded video, saved as "
-            "*_pose_captioned.mp4.\n"
-            "Off: caption the original video (*_captioned.mp4).\n"
-            "Requires Embed Pose Features and Extract Transcripts to have run first.\n"
-            "If both single-person and multi-person pose videos exist, the newest one is used."
+        self.captionPoseVideoInfoIcon = InfoIcon(
+            actions_card,
+            "APPLIES TO\n"
+            "• Embed Transcript on Video\n\n"
+            "ON\n"
+            "• Captions the pose-overlay video\n"
+            "• Saves <name>_pose_captioned.mp4\n"
+            "• Requires Embed Pose Features and Extract Transcripts\n\n"
+            "OFF\n"
+            "• Captions the original video\n"
+            "• Saves <name>_captioned.mp4\n"
+            "• Requires Extract Transcripts",
         )
         self._register_scalable(self.captionPoseVideoCheckbox, Theme.FONT_BODY)
         self.captionPoseVideoCheckbox.Bind(wx.EVT_CHECKBOX, lambda event: self.update_buttons_enabled())
 
-        self.captionPoseVideoHint = gui_utils.create_transparent_text(
-            actions_card, label="Uses newest pose video · outputs *_pose_captioned.mp4"
-        )
-        self.captionPoseVideoHint.SetFont(Theme.get_font(Theme.FONT_CAPTION))
-        self.captionPoseVideoHint.SetForegroundColour(Theme.colour(Theme.COLOR_TEXT_MUTED))
-        self._register_scalable(self.captionPoseVideoHint, Theme.FONT_CAPTION)
-
-        caption_pose_opt = wx.BoxSizer(wx.VERTICAL)
-        caption_pose_opt.Add(self.captionPoseVideoCheckbox, flag=wx.EXPAND)
+        caption_pose_opt = wx.BoxSizer(wx.HORIZONTAL)
+        caption_pose_opt.Add(self.captionPoseVideoCheckbox, proportion=1, flag=wx.EXPAND)
         caption_pose_opt.Add(
-            self.captionPoseVideoHint, flag=wx.TOP, border=Theme.SPACE_XS
+            self.captionPoseVideoInfoIcon,
+            flag=wx.ALIGN_CENTER_VERTICAL | wx.LEFT,
+            border=Theme.SPACE_SM,
         )
         actions.Add(
             caption_pose_opt,
@@ -411,7 +429,13 @@ class VideoToWavConverter(wx.Frame):
         self.embedTranscriptBtn, hbox_embed_transcript = TooltipButton.create_with_icon(
             actions_card,
             'Embed Transcript on Video',
-            "Burns the turn-by-turn transcript (with speaker labels when diarization was used) onto the video as captions, for reviewing transcription accuracy. Run Extract Transcripts first.",
+            "CREATES\n"
+            "• A video with burned-in transcript captions\n"
+            "• Speaker labels when diarization was used\n\n"
+            "REQUIRES\n"
+            "• Extract Transcripts\n\n"
+            "TARGET\n"
+            "• Original or pose-overlay video, chosen by the checkbox above",
             font=button_font,
             handler=self.on_embed_transcript,
             variant=FlatButton.VARIANT_SECONDARY,
@@ -422,7 +446,12 @@ class VideoToWavConverter(wx.Frame):
         self.verifyBtn, hbox_verify = TooltipButton.create_with_icon(
             actions_card,
             'Verify Pose Match',
-            'Checks that pose CSVs match the embedded pose videos and saves a sampled QA report with worst-frame thumbnails.',
+            "CHECKS\n"
+            "• Whether pose CSV data matches each pose-overlay video\n\n"
+            "SAVES\n"
+            "• Sampled QA reports and worst-frame thumbnails\n\n"
+            "REQUIRES\n"
+            "• Embed Pose Features",
             font=button_font,
             handler=self.on_verify_consistency,
             variant=FlatButton.VARIANT_SECONDARY,
@@ -482,7 +511,12 @@ class VideoToWavConverter(wx.Frame):
         self.extractAudioFeaturesBtn, hbox_extract_audio = TooltipButton.create_with_icon(
             actions_card,
             'Extract Audio Features',
-            f'Extracts acoustic features from supported audio files ({self._format_supported_extensions(self.AUDIO_EXTENSIONS)}) including MFCC, spectral features, and prosodic characteristics.',
+            "CREATES\n"
+            "• Acoustic feature CSV files, including MFCC and spectral measures\n\n"
+            "SAVES TO\n"
+            "• audio_features\n\n"
+            "USE NEXT\n"
+            "• Align Features",
             font=button_font,
             handler=self.on_extract_audio_features,
         )
@@ -492,7 +526,12 @@ class VideoToWavConverter(wx.Frame):
         self.extractTranscriptsBtn, hbox_extract_transcripts = TooltipButton.create_with_icon(
             actions_card,
             'Extract Transcripts',
-            f'Converts speech in supported audio files ({self._format_supported_extensions(self.AUDIO_EXTENSIONS)}) to text transcripts using automatic speech recognition (ASR) technology.',
+            "CREATES\n"
+            "• Text transcripts and caption (.srt) files from speech\n\n"
+            "SAVES TO\n"
+            "• transcripts\n\n"
+            "USE NEXT\n"
+            "• Embed Transcript on Video or Align Features",
             font=button_font,
             handler=self.on_extract_transcripts,
             variant=FlatButton.VARIANT_SECONDARY,
@@ -503,7 +542,12 @@ class VideoToWavConverter(wx.Frame):
         self.alignFeaturesBtn, hbox_align = TooltipButton.create_with_icon(
             actions_card,
             'Align Features',
-            'Aligns extracted audio features with word-level transcripts. Requires both features and transcripts.',
+            "CREATES\n"
+            "• Audio features aligned with word-level transcript timing\n\n"
+            "AUTOMATICALLY\n"
+            "• Generates missing audio features or word timestamps\n\n"
+            "SAVES TO\n"
+            "• audio_features/<name>_aligned.csv",
             font=button_font,
             handler=self.on_align_features,
             variant=FlatButton.VARIANT_SECONDARY,
@@ -900,7 +944,7 @@ class VideoToWavConverter(wx.Frame):
             elif enable_video and caption_pose_requested and not has_all_embedded_pose:
                 embed_transcript_btn.set_locked(
                     True,
-                    "Run 'Embed Pose Features' first. Captions will be added to videos in the 'embedded_pose' folder.",
+                    "Run 'Embed Pose Features' first to caption the pose-overlay video.",
                 )
             else:
                 embed_transcript_btn.set_locked(False)
@@ -912,7 +956,7 @@ class VideoToWavConverter(wx.Frame):
             if enable_video and not has_embedded_video:
                 verify_btn.set_locked(
                     True,
-                    "Run 'Embed Pose on Video' first. Results are saved in the "
+                    "Run 'Embed Pose Features' first. Results are saved in the "
                     "'embedded_pose' folder.",
                 )
             else:
@@ -1733,7 +1777,7 @@ class VideoToWavConverter(wx.Frame):
                     self.set_status_message(
                         f"Skipped embedding for {os.path.basename(video_file)}: no pose CSV found."
                     )
-
+                    continue
             if cancelled:
                 return
             if failed:
@@ -1781,9 +1825,7 @@ class VideoToWavConverter(wx.Frame):
             return
 
         transcripts_dir = gui_utils.transcripts_output_folder(folder_path)
-        caption_pose_video = bool(
-            hasattr(self, 'captionPoseVideoCheckbox') and self.captionPoseVideoCheckbox.GetValue()
-        )
+        caption_pose_video = bool(self.captionPoseVideoCheckbox.GetValue())
         missing_srt_videos = [
             os.path.basename(video)
             for video in video_files
@@ -1818,8 +1860,7 @@ class VideoToWavConverter(wx.Frame):
                 wx.MessageBox(
                     "Pose-embedded videos are missing for these videos:\n"
                     f"{preview}.\n\n"
-                    "Run 'Embed Pose Features' first. Captions will be added to videos in the "
-                    "'embedded_pose' folder.",
+                    "Run 'Embed Pose Features' first to caption the pose-overlay video.",
                     "Pose Videos Needed",
                     wx.OK | wx.ICON_INFORMATION,
                 )
@@ -2102,15 +2143,33 @@ class VideoToWavConverter(wx.Frame):
             def progress_callback(progress):
                 self.update_progress(progress)
 
-            audio_processor.extract_transcripts_batch(
+            outcome = audio_processor.extract_transcripts_batch(
                 audio_files,
                 progress_callback=progress_callback,
                 word_timestamps=word_timestamps,
                 cancel_check=self._cancel_event.is_set,
             )
-            cancelled = self._cancel_event.is_set()
+            cancelled = self._cancel_event.is_set() or outcome["cancelled"]
             if not cancelled:
-                wx.CallAfter(wx.MessageBox, "Transcription extraction completed!", "Success", wx.OK | wx.ICON_INFORMATION)
+                failed = outcome["failed"]
+                succeeded = outcome["succeeded"]
+                if not failed:
+                    wx.CallAfter(
+                        wx.MessageBox,
+                        f"Transcription extraction completed for {len(succeeded)} file(s)!",
+                        "Success",
+                        wx.OK | wx.ICON_INFORMATION,
+                    )
+                else:
+                    detail = "\n".join(
+                        f"• {os.path.basename(path)}: {error}" for path, error in failed[:8]
+                    )
+                    title = "Transcription Warning" if succeeded else "Transcription Failed"
+                    message = (
+                        f"Transcripts were created for {len(succeeded)} of {len(audio_files)} file(s).\n\n"
+                        f"{detail}"
+                    )
+                    wx.CallAfter(wx.MessageBox, message, title, wx.OK | wx.ICON_WARNING)
         except Exception as e:
             if not self._cancel_event.is_set():
                 wx.CallAfter(wx.MessageBox, f"Error during transcript extraction: {e}", "Error", wx.OK | wx.ICON_ERROR)

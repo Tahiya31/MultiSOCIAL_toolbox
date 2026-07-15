@@ -11,7 +11,7 @@ def test_caption_embed_gating_requires_all_matching_srts():
     assert "not os.path.exists(os.path.join(transcripts_dir, f\"{base}.srt\"))" in app_source
     assert "_has_all_embedded_pose_videos" in app_source
     assert "captionPoseVideoCheckbox" in app_source
-    assert "Run 'Embed Pose Features' first" in app_source
+    assert "Run 'Embed Pose Features' first to caption the pose-overlay video." in app_source
 
 
 def test_caption_embed_can_target_pose_embedded_video():
@@ -21,8 +21,8 @@ def test_caption_embed_can_target_pose_embedded_video():
     assert 'f"{base}_pose.mp4"' in app_source
     assert 'f"{base}_multi_pose.mp4"' in app_source
     assert "max(existing, key=lambda path: os.path.getmtime(path))" in app_source
-    assert "the newest one is used" in app_source
     assert 'output_suffix = "_pose_captioned.mp4"' in app_source
+    assert "if caption_pose_video:" in app_source
     assert "input_video = self._embedded_pose_video_path(self.embedded_pose_folder, video_file)" in app_source
     assert "captions.burn_subtitles(" in app_source
 

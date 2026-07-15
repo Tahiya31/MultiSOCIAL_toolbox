@@ -277,7 +277,9 @@ class CustomTooltip(wx.PopupWindow):
         self.text_ctrl = wx.StaticText(panel, label=text, style=wx.ALIGN_LEFT)
         self.text_ctrl.SetFont(Theme.get_font(Theme.FONT_CAPTION, bold=False))
         self.text_ctrl.SetForegroundColour(Theme.COLOR_TOOLTIP_FG)
-        self.text_ctrl.Wrap(340)
+        # A slightly wider, section-friendly layout keeps short lists readable
+        # without forcing each item onto several wrapped lines.
+        self.text_ctrl.Wrap(380)
         
         # Layout
         sizer = wx.BoxSizer(wx.VERTICAL)

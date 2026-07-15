@@ -158,7 +158,11 @@ Rounded progress track with gradient fill and top shine. Default height 32 DIP.
 
 Horizontal row: expanding `FlatButton` + `InfoIcon`.
 
-`InfoIcon` constructs **one** reusable `wx.Timer` in `__init__` and rebinds it for leave/re-entry hide cycles. Do not allocate a new timer inside `_schedule_hide`.
+Action tooltips use compact, scannable sections (typically `CREATES` / `REQUIRES` / `SAVES TO` / `USE NEXT`) rather than long prose. Keep lists short; avoid packing every edge case into the tip.
+
+Settings modifiers that affect an action (for example **Add captions to pose-embedded video**) should use the **same adjacent InfoIcon pattern** as action buttons — put details on `InfoIcon`, not native `SetToolTip` on the checkbox. That keeps hover look and wrap behavior consistent with the rest of the panel.
+
+`InfoIcon` / `CustomTooltip` wrap width is intentionally a bit wider (~380 DIP) so short section lists stay readable. `InfoIcon` constructs **one** reusable `wx.Timer` in `__init__` and rebinds it for leave/re-entry hide cycles. Do not allocate a new timer inside `_schedule_hide`.
 
 ### ElevatedLogoPanel
 
