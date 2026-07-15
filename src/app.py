@@ -7,6 +7,7 @@ This is the main script for multisocial app
 import glob
 import json
 import os
+import sys
 import threading
 
 # Set up GPU environment specially for Mediapipe (specific for Saturn Cloud), if you use some other high performance computing platform check compatibility before usage
@@ -81,6 +82,14 @@ class VideoToWavConverter(wx.Frame):
         self._cancel_event = threading.Event()
         self._scalable_widgets = []  # (widget, base_size, bold)
         self._panels_horizontal = None  # tri-state: None = not yet laid out
+        # Worker threads can emit many status updates.  Keep only the latest
+        # pending value and coalesce its GUI work onto a single event-loop pass.
+        self._pending_status_text = None
+        self._displayed_status_text = None
+        self._status_update_pending = False
+        self._status_layout_pending = False
+        self._status_layout_text = None
+        self._status_wrap_width = None
         # File extensions constants
         self.VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv", ".m4v")
         self.AUDIO_EXTENSIONS = (".wav", ".wave", ".aiff", ".aif", ".aifc", ".flac", ".caf", ".au", ".snd")
@@ -633,8 +642,37 @@ class VideoToWavConverter(wx.Frame):
             except Exception:
                 pass
         self.ensure_output_folders(normalized_path)
+        self._warn_stem_collisions(normalized_path)
         self.update_buttons_enabled()
         self._refresh_idle_hint()
+
+    def _warn_stem_collisions(self, folder_path):
+        """Tell users which same-stem inputs were skipped before any job starts."""
+        if not folder_path:
+            return
+        skipped = gui_utils.get_media_stem_collisions(
+            folder_path,
+            self.VIDEO_EXTENSIONS,
+        )
+        skipped += gui_utils.get_media_stem_collisions(
+            folder_path,
+            self.AUDIO_EXTENSIONS,
+            include_converted_audio=True,
+        )
+        if not skipped:
+            return
+        details = "\n".join(
+            f"• {os.path.basename(path)} (using {os.path.basename(winner)} instead)"
+            for path, winner in skipped[:10]
+        )
+        if len(skipped) > 10:
+            details += f"\n…and {len(skipped) - 10} more."
+        wx.MessageBox(
+            "Files with the same basename would overwrite shared outputs, so only the first "
+            "sorted file for each basename will be processed.\n\n" + details,
+            "Duplicate media names skipped",
+            wx.OK | wx.ICON_WARNING,
+        )
 
     def get_selected_folder_path(self):
         return gui_utils.normalize_path(self.folderPicker.GetPath())
@@ -1044,34 +1082,53 @@ class VideoToWavConverter(wx.Frame):
                     sanitized = str(message)
 
             final_text = f"Status: {sanitized}" if sanitized else "Status:"
-            wx.CallAfter(self.statusLabel.SetLabel, final_text)
-            # Wrap/center now (post event) and request layout
+            if final_text in (self._pending_status_text, self._displayed_status_text):
+                return
+            self._pending_status_text = final_text
+            if not self._status_update_pending:
+                self._status_update_pending = True
+                wx.CallAfter(self._flush_status_message)
+
+    def _flush_status_message(self):
+        """Apply the newest queued status text from the GUI event loop."""
+        self._status_update_pending = False
+        final_text = self._pending_status_text
+        if not final_text or final_text == self._displayed_status_text:
+            return
+        self.statusLabel.SetLabel(final_text)
+        self._displayed_status_text = final_text
+        if not self._status_layout_pending:
+            self._status_layout_pending = True
             wx.CallAfter(self._apply_status_wrap_and_center)
 
     def _apply_status_wrap_and_center(self):
         """One place to wrap, center, and layout the status label based on current frame width."""
+        self._status_layout_pending = False
         if not hasattr(self, 'statusLabel') or not self.statusLabel:
             return
+        status_text = self._displayed_status_text
         try:
             cur_w = self.GetSize()[0]
             wrap_width = max(300, int(cur_w * 0.9))
-            self.statusLabel.Wrap(wrap_width)
         except Exception:
-            try:
-                self.statusLabel.Wrap(600)
-            except Exception:
-                pass
+            wrap_width = 600
+        if (
+            status_text == self._status_layout_text
+            and wrap_width == self._status_wrap_width
+        ):
+            return
         try:
+            self.statusLabel.Wrap(wrap_width)
             self.statusLabel.SetWindowStyleFlag(wx.ALIGN_CENTER_HORIZONTAL)
         except Exception:
             pass
-        # --- Added layout/refresh logic to fix initial left alignment ---
+        self._status_layout_text = status_text
+        self._status_wrap_width = wrap_width
         try:
             parent = self.statusLabel.GetParent()
             if parent:
                 parent.Layout()
-            self.Layout()
-            self.Refresh()
+                parent.Refresh()
         except Exception:
             pass
 
@@ -1892,14 +1949,22 @@ class VideoToWavConverter(wx.Frame):
             def progress_callback(progress):
                 self.update_progress(progress)
 
-            audio_processor.extract_audio_features_batch(
+            outcome = audio_processor.extract_audio_features_batch(
                 audio_files,
                 progress_callback=progress_callback,
                 cancel_check=self._cancel_event.is_set,
             )
             cancelled = self._cancel_event.is_set()
             if not cancelled:
-                wx.CallAfter(wx.MessageBox, "Audio feature extraction completed!", "Success", wx.OK | wx.ICON_INFORMATION)
+                failed = outcome["failed"]
+                succeeded = outcome["succeeded"]
+                if not failed:
+                    wx.CallAfter(wx.MessageBox, f"Audio feature extraction completed for {len(succeeded)} file(s)!", "Success", wx.OK | wx.ICON_INFORMATION)
+                else:
+                    detail = "\n".join(f"• {os.path.basename(path)}: {error}" for path, error in failed[:8])
+                    title = "Audio Feature Extraction Warning" if succeeded else "Audio Feature Extraction Failed"
+                    message = f"Audio features were created for {len(succeeded)} of {len(audio_files)} file(s).\n\n{detail}"
+                    wx.CallAfter(wx.MessageBox, message, title, wx.OK | wx.ICON_WARNING)
         except Exception as e:
             if not self._cancel_event.is_set():
                 wx.CallAfter(wx.MessageBox, f"Error during audio feature extraction: {e}", "Error", wx.OK | wx.ICON_ERROR)
@@ -2170,16 +2235,20 @@ class VideoToWavConverter(wx.Frame):
                     message += "\n\nWhat went wrong:\n" + detail
                 wx.CallAfter(wx.MessageBox, message, "Warning", wx.OK | wx.ICON_WARNING)
             elif not self._cancel_event.is_set():
-                audio_processor.align_features_batch(
+                outcome = audio_processor.align_features_batch(
                     alignment_pairs,
                     progress_callback=lambda p: self.update_progress(50 + int(p / 2)),
                 )
-                success_message = f"Feature alignment completed for {len(alignment_pairs)} file(s)!"
-                if prep_errors:
-                    success_message += (
-                        f"\n\n{len(prep_errors)} file(s) were skipped (see console/log for details)."
-                    )
-                wx.CallAfter(wx.MessageBox, success_message, "Success", wx.OK | wx.ICON_INFORMATION)
+                alignment_errors = prep_errors + [
+                    (os.path.basename(path), error) for path, error in outcome["failed"]
+                ]
+                if not alignment_errors:
+                    wx.CallAfter(wx.MessageBox, f"Feature alignment completed for {len(outcome['succeeded'])} file(s)!", "Success", wx.OK | wx.ICON_INFORMATION)
+                else:
+                    detail = "\n".join(f"• {name}: {reason}" for name, reason in alignment_errors[:10])
+                    title = "Feature Alignment Warning" if outcome["succeeded"] else "Feature Alignment Failed"
+                    message = f"Feature alignment completed for {len(outcome['succeeded'])} of {len(audio_files)} file(s).\n\n{detail}"
+                    wx.CallAfter(wx.MessageBox, message, title, wx.OK | wx.ICON_WARNING)
             else:
                 cancelled = True
             
@@ -2193,6 +2262,14 @@ class VideoToWavConverter(wx.Frame):
 
 def main():
     if os.environ.get("MULTISOCIAL_IMPORT_SMOKE_TEST") == "1":
+        if os.environ.get("MULTISOCIAL_VERIFY_HEAVY_POSE_ASSET") == "1":
+            heavy_model = runtime_services.resource_path(
+                "mediapipe", "modules", "pose_landmark", "pose_landmark_heavy.tflite"
+            )
+            if not os.path.isfile(heavy_model):
+                print(f"ERROR: Missing bundled Heavy pose model: {heavy_model}", file=sys.stderr)
+                sys.exit(1)
+            print("Bundled Heavy pose model check passed.")
         profile = runtime_services.get_build_profile().lower()
         if profile == "complete":
             try:

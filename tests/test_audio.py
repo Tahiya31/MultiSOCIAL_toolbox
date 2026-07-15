@@ -110,6 +110,7 @@ def test_extract_audio_features_writes_timestamped_csv(monkeypatch, import_audio
         "Timestamp_Milliseconds",
         "Timestamp_Formatted",
     ]
+    assert df["Timestamp_Seconds"].tolist() == [0.0, 0.01]
     assert progress_updates[0] == 0
     assert progress_updates[-1] == 100
 
@@ -437,8 +438,36 @@ def test_extract_audio_features_batch_cancel_check(import_audio, tmp_path, monke
         checks["n"] += 1
         return checks["n"] > 1
 
-    processor.extract_audio_features_batch(files, cancel_check=cancel_check)
+    outcome = processor.extract_audio_features_batch(files, cancel_check=cancel_check)
     assert len(processed) == 1
+    assert outcome["cancelled"] is True
+
+
+def test_extract_audio_features_batch_reports_per_file_failure(import_audio, tmp_path, monkeypatch):
+    audio = import_audio
+    processor = _make_processor(audio, tmp_path)
+
+    def fake_extract(path, progress_callback=None):
+        if path.endswith("bad.wav"):
+            raise RuntimeError("decode failed")
+        return path + ".csv"
+
+    monkeypatch.setattr(processor, "extract_audio_features", fake_extract)
+    outcome = processor.extract_audio_features_batch(["good.wav", "bad.wav"])
+
+    assert outcome["succeeded"] == ["good.wav"]
+    assert outcome["failed"] == [("bad.wav", "decode failed")]
+
+
+def test_align_features_batch_reports_per_file_failure(import_audio, tmp_path, monkeypatch):
+    audio = import_audio
+    processor = _make_processor(audio, tmp_path)
+    monkeypatch.setattr(processor, "align_features", lambda *args: (_ for _ in ()).throw(RuntimeError("bad data")))
+
+    outcome = processor.align_features_batch([("features.csv", "words.json", "aligned.csv")])
+
+    assert outcome["succeeded"] == []
+    assert outcome["failed"] == [("aligned.csv", "bad data")]
 
 
 def test_extract_transcripts_batch_cancel_check(monkeypatch, import_audio, tmp_path):

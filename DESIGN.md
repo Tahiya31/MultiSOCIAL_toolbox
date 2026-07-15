@@ -152,9 +152,21 @@ Native inputs on cards: call `gui_utils.style_native_input()` for `SpinCtrl` / `
 
 Rounded progress track with gradient fill and top shine. Default height 32 DIP.
 
-### TooltipButton
+`SetValue` no-ops when the clamped value is unchanged (avoids needless `Refresh` during dense worker progress callbacks). Prefer `Refresh()` over `Update()` when the value does change — do not force synchronous paints from the worker-driven UI path.
 
-Horizontal row: expanding `FlatButton` + `InfoIcon` (unchanged tooltip behavior).
+### TooltipButton / InfoIcon
+
+Horizontal row: expanding `FlatButton` + `InfoIcon`.
+
+`InfoIcon` constructs **one** reusable `wx.Timer` in `__init__` and rebinds it for leave/re-entry hide cycles. Do not allocate a new timer inside `_schedule_hide`.
+
+### ElevatedLogoPanel
+
+Caches circular-masked bitmaps by diameter (`_circular_bitmap_cache`) so normal ↔ hover size changes do not rebuild the alpha mask every time.
+
+### Status line (app.py)
+
+Worker threads may emit hundreds of status updates per second. `set_status_message` keeps only the latest pending string and schedules a single `_flush_status_message` on the GUI event loop. Wrap/center work is similarly coalesced; parent `Refresh()` is preferred over full-frame `Layout()` when only the status text changed.
 
 ### ResponsiveText
 

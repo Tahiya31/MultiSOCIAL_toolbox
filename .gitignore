@@ -217,7 +217,10 @@ venv/
 # Agent cofig
 .cursor/
 .serena/
+.claude/
+.tokensave/
 CONTEXT.md
+ISSUES.md
 
 # Testing Workflows
 /audio-test

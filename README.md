@@ -128,6 +128,11 @@ The toolbox takes two types of input:
 
 Select a folder with your files, then run the steps you need. The toolbox creates output folders inside the selected folder.
 
+If two supported files share the same basename (for example, `session.wav` and
+`session.flac`, or `clip.mp4` and `clip.mov`), they would produce the same
+output names. The toolbox processes only the first filename in sorted order and
+shows a warning listing the skipped duplicates.
+
 ## How the toolbox keeps your workflow safe
 
 The toolbox runs one task at a time and guides you through the right order of steps.
@@ -302,7 +307,7 @@ Use this step to extract speech features from audio. The toolbox uses [OpenSMILE
 
 1. Use **Browse** to select the folder with your audio files. You can select audio in `converted_audio` as well.
 2. Press **Extract Audio Features**.
-3. When the features are ready, the toolbox shows a confirmation message.
+3. The toolbox reports how many files completed and lists any files that failed.
 
 Feature CSV format:
 
@@ -371,6 +376,8 @@ The toolbox:
 - merges audio features with each word based on timestamps
 - saves the result as `_aligned.csv` in `audio_features`
 
+The completion message reports successful and failed files separately.
+
 Features are averaged over the duration of each word.
 
 ### Typical audio outputs
@@ -410,7 +417,7 @@ Greyed-out buttons usually mean a required file is missing. Hover over the butto
 
 Make sure **Enable Multi-person Pose** matches how you extracted pose data. Single-person CSVs such as `session_ID_0.csv` and multi-person CSVs such as `session_multi_ID_0.csv` are treated separately. Toggling the checkbox after extraction will not unlock **Embed Pose Features** until the matching files exist.
 
-If **Enable Multi-person Pose** fails in a packaged build with a message about missing YOLOv5 weights, reinstall from the latest Release build. Multi-person detection uses `yolov5s.pt` bundled inside the app and does not download weights at runtime.
+If **Enable Multi-person Pose** fails in a packaged build with a message about missing YOLOv5 weights or a missing MediaPipe Heavy pose model, reinstall from the latest Release build. Multi-person detection and Heavy pose assets are bundled inside the app and are not downloaded at runtime.
 
 ### Captions are missing or the caption button stays locked
 

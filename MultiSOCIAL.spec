@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import os
+import re
 import sys
 from importlib.util import find_spec
 from pathlib import Path
@@ -22,6 +23,11 @@ SRC = os.path.join(ROOT, "src")
 HOOKS = os.path.join(ROOT, "hooks")
 BUILD_PROFILE = os.environ.get("MULTISOCIAL_BUILD_PROFILE", "standard").strip().lower()
 APP_NAME = "MultiSOCIAL-Complete" if BUILD_PROFILE == "complete" else "MultiSOCIAL-Standard"
+_pyproject_text = Path(ROOT, "pyproject.toml").read_text(encoding="utf-8")
+_version_match = re.search(r'^version\s*=\s*"([^"]+)"', _pyproject_text, re.MULTILINE)
+if _version_match is None:
+    raise RuntimeError("Could not determine application version from pyproject.toml")
+APP_VERSION = _version_match.group(1)
 IS_MACOS = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
 ICON_ICO = os.path.join(ROOT, "assets", "MultiSOCIAL_logo.ico")
@@ -148,6 +154,10 @@ hiddenimports = [
 datas = [
     (os.path.join(ROOT, "assets"), "assets"),
     (os.path.join(ROOT, "assets", "yolov5s.pt"), "assets"),
+    (
+        os.path.join(ROOT, "assets", "pose_landmark_heavy.tflite"),
+        os.path.join("mediapipe", "modules", "pose_landmark"),
+    ),
     (os.path.join(ROOT, "env.example"), "."),
     (os.path.join(ROOT, "pyproject.toml"), "."),
 ]
@@ -312,6 +322,10 @@ if IS_MACOS:
         name=f"{APP_NAME}.app",
         icon=ICON_ICNS if os.path.exists(ICON_ICNS) else None,
         bundle_identifier="edu.colby.multisocial",
+        info_plist={
+            "CFBundleShortVersionString": APP_VERSION,
+            "CFBundleVersion": APP_VERSION,
+        },
     )
 else:
     exe = EXE(

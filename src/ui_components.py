@@ -146,9 +146,9 @@ class ElevatedLogoPanel(wx.Panel):
         self.Bind(wx.EVT_LEAVE_WINDOW, self.OnMouseLeave)
         self.hover = False
         self.scale_factor = 1.0
-        # Simple cache to avoid regenerating the circular bitmap too often
-        self._cached_diameter = None
-        self._cached_circular_bitmap = None
+        # Normal and hover sizes alternate, so retain each rendered diameter
+        # instead of rebuilding the per-pixel alpha mask on every hover.
+        self._circular_bitmap_cache = {}
 
     def _create_circular_bitmap(self, src_bitmap: wx.Bitmap, diameter: int) -> wx.Bitmap:
         """Return a circular-masked bitmap of the requested diameter.
@@ -157,9 +157,9 @@ class ElevatedLogoPanel(wx.Panel):
         if diameter <= 0:
             return src_bitmap
 
-        # Return cached if same diameter
-        if self._cached_diameter == diameter and self._cached_circular_bitmap is not None:
-            return self._cached_circular_bitmap
+        cached_bitmap = self._circular_bitmap_cache.get(diameter)
+        if cached_bitmap is not None:
+            return cached_bitmap
 
         image = src_bitmap.ConvertToImage()
         image = image.Scale(diameter, diameter, wx.IMAGE_QUALITY_HIGH)
@@ -182,8 +182,7 @@ class ElevatedLogoPanel(wx.Panel):
                     image.SetAlpha(x, y, 0)
 
         circ_bmp = wx.Bitmap(image)
-        self._cached_diameter = diameter
-        self._cached_circular_bitmap = circ_bmp
+        self._circular_bitmap_cache[diameter] = circ_bmp
         return circ_bmp
  
     def OnPaint(self, event):
@@ -297,7 +296,8 @@ class InfoIcon(wx.StaticText):
         self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
         self.tooltip_text = tooltip_text
         self.tooltip = None
-        self._hide_timer = None
+        # Reuse one timer and one binding for all tooltip leave/re-entry cycles.
+        self._hide_timer = wx.Timer(self)
         self._top_level = self.GetTopLevelParent()
         
         self.SetFont(Theme.get_font(Theme.FONT_CAPTION, bold=True))
@@ -307,6 +307,7 @@ class InfoIcon(wx.StaticText):
         self.Bind(wx.EVT_ENTER_WINDOW, self.OnMouseEnter)
         self.Bind(wx.EVT_LEAVE_WINDOW, self.OnMouseLeave)
         self.Bind(wx.EVT_PAINT, self.OnPaint)
+        self.Bind(wx.EVT_TIMER, self._on_hide_timer, self._hide_timer)
         if self._top_level:
             self._top_level.Bind(wx.EVT_MOVE, self._on_parent_move_or_resize)
             self._top_level.Bind(wx.EVT_SIZE, self._on_parent_move_or_resize)
@@ -379,8 +380,6 @@ class InfoIcon(wx.StaticText):
 
     def _schedule_hide(self):
         self._cancel_hide()
-        self._hide_timer = wx.Timer(self)
-        self.Bind(wx.EVT_TIMER, self._on_hide_timer, self._hide_timer)
         self._hide_timer.Start(150, oneShot=True)
 
     def _on_hide_timer(self, event):
@@ -857,6 +856,7 @@ class CustomCheckBox(wx.Window):
     def _on_enter(self, event):
         self._hover = True
         self.SetCursor(wx.Cursor(wx.CURSOR_HAND))
+        self.Refresh()
         event.Skip()
 
     def _on_leave(self, event):
@@ -927,9 +927,11 @@ class CustomGauge(wx.Panel):
         pass
 
     def SetValue(self, value):
-        self._value = max(0, min(value, self._range))
+        clamped_value = max(0, min(value, self._range))
+        if clamped_value == self._value:
+            return
+        self._value = clamped_value
         self.Refresh()
-        self.Update()
         
     def GetValue(self):
         return self._value
@@ -940,10 +942,6 @@ class CustomGauge(wx.Panel):
     def GetRange(self):
         return self._range
     
-    def Pulse(self):
-        # Indeterminate mode not fully implemented, but method exists for compatibility.
-        pass
-        
     def SetForegroundColour(self, color):
         self._fg_color = color
         self.Refresh()

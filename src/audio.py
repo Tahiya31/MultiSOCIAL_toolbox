@@ -209,14 +209,17 @@ class AudioProcessor:
             if progress_callback:
                 progress_callback(70)
 
-            # Add timestamp columns as the leftmost columns
-            # Calculate precise frame duration based on actual audio length
-            audio_duration = len(y) / sr  # Total audio duration in seconds
-            num_frames = len(features)
-            frame_duration = audio_duration / num_frames  # Actual frame duration
-            
-            # Create timestamps for each frame
-            timestamps_seconds = [i * frame_duration for i in range(num_frames)]
+            # OpenSMILE returns a pandas IntervalIndex whose left boundary is
+            # the real LLD frame start. Some versions expose the same intervals
+            # as ``(start, end)`` tuples in a MultiIndex. Do not infer timing
+            # from frame count.
+            try:
+                timestamps_seconds = [
+                    float((interval[0] if isinstance(interval, tuple) else interval.left).total_seconds())
+                    for interval in features.index
+                ]
+            except (AttributeError, IndexError, TypeError):
+                raise RuntimeError("OpenSMILE did not return frame timing information")
             timestamps_milliseconds = [t * 1000 for t in timestamps_seconds]  # Convert to milliseconds
             timestamps_formatted = [f"{int(t//60):02d}:{t%60:06.3f}" for t in timestamps_seconds]  # MM:SS.mmm format
             
@@ -252,10 +255,12 @@ class AudioProcessor:
             progress_callback (callable, optional): Callback function for progress updates
             cancel_check (callable, optional): Return True to stop before the next file
         """
+        outcome = {"succeeded": [], "failed": [], "cancelled": False}
         total_files = len(audio_files)
         
         for i, audio_file in enumerate(audio_files):
             if cancel_check and cancel_check():
+                outcome["cancelled"] = True
                 break
             self.set_status_message(f"🎧 Extracting audio features from: {os.path.basename(audio_file)}")
             print(f"Extracting features from: {audio_file}")
@@ -271,9 +276,11 @@ class AudioProcessor:
             
             try:
                 self.extract_audio_features(audio_file, progress_callback=make_progress_callback(i + 1, total_files))
+                outcome["succeeded"].append(audio_file)
             except Exception as e:
                 print(f"Error processing {audio_file}: {e}")
-                continue
+                outcome["failed"].append((audio_file, str(e)))
+        return outcome
 
     def _load_whisper_model(self, progress_callback=None):
         """
@@ -1261,16 +1268,20 @@ class AudioProcessor:
             alignment_pairs (list): List of tuples (features_csv, transcript_json, output_csv)
             progress_callback (callable): Progress callback
         """
+        outcome = {"succeeded": [], "failed": [], "cancelled": False}
         total = len(alignment_pairs)
         for i, (feat_csv, trans_json, out_csv) in enumerate(alignment_pairs):
             try:
                 self.set_status_message(f"🔗 Aligning: {os.path.basename(out_csv)}")
                 self.align_features(feat_csv, trans_json, out_csv)
+                outcome["succeeded"].append(out_csv)
             except Exception as e:
                 print(f"Error aligning {os.path.basename(out_csv)}: {e}")
+                outcome["failed"].append((out_csv, str(e)))
             
             if progress_callback:
                 progress_callback(int((i + 1) / total * 100))
+        return outcome
 
 
 # PyAnnote-based SpeakerDiarizer

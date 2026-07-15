@@ -370,6 +370,13 @@ def test_roi_spawn_assigns_monotonic_ids(import_pose, tmp_path, monkeypatch):
     monkeypatch.setattr(pose, "ensure_yolov5_weights", lambda: None)
     processor = pose.PoseProcessor(str(tmp_path))
     processor._next_pid = 0
+    model_complexities = []
+
+    class _RoiPose:
+        def __init__(self, *args, **kwargs):
+            model_complexities.append(kwargs["model_complexity"])
+
+    monkeypatch.setattr(pose.mp.solutions.pose, "Pose", _RoiPose)
 
     def _make_box(x1, y1, x2, y2):
         values = [x1, y1, x2, y2, 0.9, 0]
@@ -400,6 +407,7 @@ def test_roi_spawn_assigns_monotonic_ids(import_pose, tmp_path, monkeypatch):
     image = np.zeros((40, 40, 3), dtype=np.uint8)
     rois = processor._seed_rois_if_needed(image, 40, 40, [], margin_ratio=0.0)
     assert [r["id"] for r in rois] == [0, 1]
+    assert model_complexities == [2, 2]
 
 
 def test_dedup_preserves_survivor_ids(import_pose, monkeypatch):

@@ -90,6 +90,27 @@ def test_get_audio_files_for_processing_keeps_different_basenames(import_gui_uti
     assert files == sorted([str(converted / "converted.wav"), str(dataset / "root.wav")])
 
 
+def test_same_stem_media_keeps_first_sorted_file_and_reports_skip(import_gui_utils, tmp_path):
+    gui_utils = import_gui_utils
+    (tmp_path / "session.wav").write_text("", encoding="utf-8")
+    (tmp_path / "session.flac").write_text("", encoding="utf-8")
+
+    selected, skipped = gui_utils.select_unique_media_files(
+        [str(tmp_path / "session.wav"), str(tmp_path / "session.flac")]
+    )
+
+    assert selected == [str(tmp_path / "session.flac")]
+    assert skipped == [(str(tmp_path / "session.wav"), str(tmp_path / "session.flac"))]
+
+
+def test_get_files_from_folder_skips_same_stem_video(import_gui_utils, tmp_path):
+    gui_utils = import_gui_utils
+    (tmp_path / "clip.mov").write_text("", encoding="utf-8")
+    (tmp_path / "clip.mp4").write_text("", encoding="utf-8")
+
+    assert gui_utils.get_files_from_folder(str(tmp_path), (".mp4", ".mov")) == [str(tmp_path / "clip.mov")]
+
+
 def test_get_ffmpeg_executable_prefers_cached_value(monkeypatch, import_gui_utils, tmp_path):
     gui_utils = import_gui_utils
     exe = tmp_path / "ffmpeg"
