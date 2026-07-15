@@ -51,5 +51,7 @@ def test_smoke_checkpoints_cover_bootstrap_asset_and_native_imports():
         assert stage in app_source
     assert 'trace_path = os.environ.get("MULTISOCIAL_SMOKE_TRACE")' in app_source
     assert "if not trace_path:\n        return" in app_source
+    assert "faulthandler.enable(file=_SMOKE_FAULT_FILE, all_threads=True)" in app_source
+    assert '("regex", "sentencepiece", "pyarrow", "speechbrain")' in app_source
     assert 'print("Bundled Heavy pose model check passed.", flush=True)' in app_source
     assert 'print("Import smoke test passed (complete profile).", flush=True)' in app_source

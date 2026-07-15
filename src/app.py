@@ -5,6 +5,7 @@ This is the main script for multisocial app
 
 # Import necessary system and utility modules
 import glob
+import importlib
 import json
 import os
 import sys
@@ -21,6 +22,25 @@ def _smoke_checkpoint(stage):
             print(f"app:{stage}", file=trace_file, flush=True)
     except OSError:
         pass
+
+
+_SMOKE_FAULT_FILE = None
+
+
+def _enable_smoke_faulthandler():
+    """Capture a native crash traceback only for the packaged CI smoke test."""
+    global _SMOKE_FAULT_FILE
+    trace_path = os.environ.get("MULTISOCIAL_SMOKE_TRACE")
+    if not trace_path or _SMOKE_FAULT_FILE is not None:
+        return
+    try:
+        import faulthandler
+
+        _SMOKE_FAULT_FILE = open(trace_path, "a", encoding="utf-8", buffering=1)
+        faulthandler.enable(file=_SMOKE_FAULT_FILE, all_threads=True)
+        _smoke_checkpoint("faulthandler:enabled")
+    except (OSError, RuntimeError):
+        _smoke_checkpoint("faulthandler:unavailable")
 
 
 _smoke_checkpoint("bootstrap")
@@ -2282,6 +2302,7 @@ class VideoToWavConverter(wx.Frame):
 def main():
     if os.environ.get("MULTISOCIAL_IMPORT_SMOKE_TEST") == "1":
         _smoke_checkpoint("main:entered")
+        _enable_smoke_faulthandler()
         if os.environ.get("MULTISOCIAL_VERIFY_HEAVY_POSE_ASSET") == "1":
             _smoke_checkpoint("heavy-model:before")
             heavy_model = runtime_services.resource_path(
@@ -2300,6 +2321,10 @@ def main():
                 _smoke_checkpoint("torch:passed")
                 import torchaudio
                 _smoke_checkpoint("torchaudio:passed")
+                for module_name in ("regex", "sentencepiece", "pyarrow", "speechbrain"):
+                    _smoke_checkpoint(f"{module_name}:before")
+                    importlib.import_module(module_name)
+                    _smoke_checkpoint(f"{module_name}:passed")
                 _smoke_checkpoint("pyannote.audio:before")
                 import pyannote.audio
                 _smoke_checkpoint("pyannote.audio:passed")
