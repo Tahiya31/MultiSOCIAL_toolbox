@@ -337,7 +337,10 @@ else:
         debug=False,
         bootloader_ignore_signals=False,
         strip=False,
-        upx=True,
+        # UPX corrupts the torch/torchvision native DLLs on Windows, which
+        # crashes the packaged app with a segfault when the ML stack is
+        # imported. Leave binaries uncompressed there.
+        upx=not IS_WINDOWS,
         console=False,
         icon=ICON_ICO if os.path.exists(ICON_ICO) else None,
         contents_directory='.',
@@ -348,7 +351,7 @@ else:
         a.zipfiles,
         a.datas,
         strip=False,
-        upx=True,
+        upx=not IS_WINDOWS,
         upx_exclude=[],
         name=APP_NAME,
     )
