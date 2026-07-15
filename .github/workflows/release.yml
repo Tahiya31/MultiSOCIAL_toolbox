@@ -128,9 +128,6 @@ jobs:
       PIP_NO_CACHE_DIR: "1"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PYTHONPYCACHEPREFIX: ${{ github.workspace }}/.tmp/pycache-${{ matrix.os }}-${{ matrix.profile }}
-      # `runner` is unavailable in job-level env expressions; use the workspace
-      # so the workflow is validated before a runner is assigned.
-      MULTISOCIAL_SMOKE_DIAGNOSTICS_DIR: ${{ github.workspace }}/.tmp/multisocial-smoke-${{ matrix.os }}-${{ matrix.profile }}
 
     steps:
       - name: Checkout
@@ -160,15 +157,6 @@ jobs:
       - name: Install complete build dependencies
         if: matrix.profile == 'complete'
         run: python -m pip install ".[complete,dev]"
-
-      - name: Capture Windows Complete dependency resolution
-        if: matrix.profile == 'complete' && runner.os == 'Windows'
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "${MULTISOCIAL_SMOKE_DIAGNOSTICS_DIR}"
-          python -m pip check
-          python -m pip freeze --all > "${MULTISOCIAL_SMOKE_DIAGNOSTICS_DIR}/pip-freeze.txt"
 
       - name: Build PyInstaller bundle
         env:
@@ -257,19 +245,7 @@ jobs:
             exit 1
           fi
 
-          if [[ "${RUNNER_OS}" == "Windows" && "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]]; then
-            MULTISOCIAL_IMPORT_SMOKE_TEST=1 MULTISOCIAL_VERIFY_HEAVY_POSE_ASSET=1 MULTISOCIAL_SMOKE_TRACE="${MULTISOCIAL_SMOKE_DIAGNOSTICS_DIR}/smoke-trace.txt" "${target}"
-          else
-            MULTISOCIAL_IMPORT_SMOKE_TEST=1 MULTISOCIAL_VERIFY_HEAVY_POSE_ASSET=1 "${target}"
-          fi
-
-      - name: Upload Windows Complete smoke diagnostics
-        if: always() && matrix.profile == 'complete' && runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-complete-smoke-diagnostics
-          path: ${{ env.MULTISOCIAL_SMOKE_DIAGNOSTICS_DIR }}
-          if-no-files-found: warn
+          MULTISOCIAL_IMPORT_SMOKE_TEST=1 MULTISOCIAL_VERIFY_HEAVY_POSE_ASSET=1 "${target}"
 
       - name: Archive release bundle
         shell: bash

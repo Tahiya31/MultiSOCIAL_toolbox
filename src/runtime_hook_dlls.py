@@ -40,26 +40,14 @@ def bundled_dll_directories(bundle_root: str) -> list[str]:
     return directories
 
 
-def _smoke_trace(message: str) -> None:
-    trace_path = os.environ.get("MULTISOCIAL_SMOKE_TRACE")
-    if not trace_path:
-        return
-    try:
-        with open(trace_path, "a", encoding="utf-8") as trace_file:
-            print(message, file=trace_file, flush=True)
-    except OSError:
-        pass
-
-
 def configure_windows_dll_search_path(bundle_root: str) -> list[str]:
     """Add only the known bundle-native directories to the Windows loader."""
     directories = bundled_dll_directories(bundle_root)
     for directory in directories:
         try:
             _DLL_DIR_HANDLES.append(os.add_dll_directory(directory))
-            _smoke_trace(f"runtime-hook:dll-directory:{directory}")
-        except OSError as error:
-            _smoke_trace(f"runtime-hook:dll-directory-error:{directory}:{error}")
+        except OSError:
+            pass
     if directories:
         current_path = os.environ.get("PATH", "")
         os.environ["PATH"] = os.pathsep.join(directories + [current_path])

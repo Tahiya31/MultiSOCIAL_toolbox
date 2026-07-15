@@ -22,36 +22,9 @@ def test_runtime_hook_uses_a_stable_allowlist_without_recursive_discovery(tmp_pa
     assert "os.walk" not in (ROOT / "src" / "runtime_hook_dlls.py").read_text(encoding="utf-8")
 
 
-def test_ci_captures_complete_windows_diagnostics_without_a_blanket_lock():
-    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-
-    assert 'python -m pip install ".[complete,dev]"' in workflow
-    assert "requirements/windows-complete.lock" not in workflow
-    assert "MULTISOCIAL_SMOKE_TRACE" in workflow
-    assert "windows-complete-smoke-diagnostics" in workflow
-    assert "if: always() && matrix.profile == 'complete' && runner.os == 'Windows'" in workflow
-    assert "${{ github.workspace }}/.tmp/multisocial-smoke-${{ matrix.os }}-${{ matrix.profile }}" in workflow
-    assert "${{ runner.temp }}" not in workflow
-
-
-def test_smoke_checkpoints_cover_bootstrap_asset_and_native_imports():
+def test_complete_smoke_and_diarization_use_the_windows_native_preload():
     app_source = (ROOT / "src" / "app.py").read_text(encoding="utf-8")
+    audio_source = (ROOT / "src" / "audio.py").read_text(encoding="utf-8")
 
-    for stage in (
-        '"bootstrap"',
-        '"wx"',
-        '"heavy-model:before"',
-        '"heavy-model:passed"',
-        '"torch:before"',
-        '"torch:passed"',
-        '"torchaudio:passed"',
-        '"pyannote.audio:before"',
-        '"pyannote.audio:passed"',
-    ):
-        assert stage in app_source
-    assert 'trace_path = os.environ.get("MULTISOCIAL_SMOKE_TRACE")' in app_source
-    assert "if not trace_path:\n        return" in app_source
-    assert "faulthandler.enable(file=_SMOKE_FAULT_FILE, all_threads=True)" in app_source
-    assert '("regex", "sentencepiece", "pyarrow", "speechbrain")' in app_source
-    assert 'print("Bundled Heavy pose model check passed.", flush=True)' in app_source
-    assert 'print("Import smoke test passed (complete profile).", flush=True)' in app_source
+    assert "runtime_services.preload_frozen_windows_diarization_dependencies()" in app_source
+    assert "preload_frozen_windows_diarization_dependencies()" in audio_source

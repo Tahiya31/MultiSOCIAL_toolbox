@@ -17,7 +17,10 @@ import numpy as np
 from scipy.io import wavfile
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 
-from runtime_services import DIARIZATION_MODEL_ID
+from runtime_services import (
+    DIARIZATION_MODEL_ID,
+    preload_frozen_windows_diarization_dependencies,
+)
 
 
 _SCIPY_WAV_EXTENSIONS = {".wav", ".wave"}
@@ -1328,6 +1331,7 @@ class PyAnnoteSpeakerDiarizer:
             kw = {"use_auth_token": self.auth_token}
 
             try:
+                preload_frozen_windows_diarization_dependencies()
                 from pyannote.audio import Pipeline
             except ModuleNotFoundError as e:
                 raise Exception(

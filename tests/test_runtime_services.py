@@ -54,6 +54,37 @@ def test_get_build_profile_uses_state_then_diarization(monkeypatch, import_runti
     assert rs.get_build_profile() == "complete"
 
 
+def test_frozen_windows_diarization_preload_uses_the_verified_native_order(monkeypatch, import_runtime_services):
+    rs = import_runtime_services
+    imported = []
+    monkeypatch.setattr(rs.sys, "platform", "win32")
+    monkeypatch.setattr(rs.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(rs.importlib, "import_module", imported.append)
+
+    rs.preload_frozen_windows_diarization_dependencies()
+
+    assert imported == [
+        "torch",
+        "torchaudio",
+        "regex",
+        "sentencepiece",
+        "pyarrow",
+        "speechbrain",
+    ]
+
+
+def test_diarization_preload_is_inactive_outside_frozen_windows(monkeypatch, import_runtime_services):
+    rs = import_runtime_services
+    imported = []
+    monkeypatch.setattr(rs.sys, "platform", "darwin")
+    monkeypatch.setattr(rs.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(rs.importlib, "import_module", imported.append)
+
+    rs.preload_frozen_windows_diarization_dependencies()
+
+    assert imported == []
+
+
 def test_get_diarization_feature_state_resets_stale_enabled_status(monkeypatch, import_runtime_services):
     rs = import_runtime_services
     monkeypatch.setattr(
