@@ -10,6 +10,21 @@ import os
 import sys
 import threading
 
+
+def _smoke_checkpoint(stage):
+    """Write an opt-in, flushed checkpoint for frozen-app CI diagnostics."""
+    trace_path = os.environ.get("MULTISOCIAL_SMOKE_TRACE")
+    if not trace_path:
+        return
+    try:
+        with open(trace_path, "a", encoding="utf-8") as trace_file:
+            print(f"app:{stage}", file=trace_file, flush=True)
+    except OSError:
+        pass
+
+
+_smoke_checkpoint("bootstrap")
+
 # Set up GPU environment specially for Mediapipe (specific for Saturn Cloud), if you use some other high performance computing platform check compatibility before usage
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # Make sure the system uses the GPU
 # Enable MPS fallback for Mac to prevent freezes on unsupported operations
@@ -18,6 +33,7 @@ os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 # Third-party libraries (assumed pre-installed via the project package metadata)
 import wx
+_smoke_checkpoint("wx")
 import unicodedata
 from dotenv import load_dotenv
 
@@ -25,7 +41,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import gui_utils
+_smoke_checkpoint("gui_utils")
 import runtime_services
+_smoke_checkpoint("runtime_services")
 from gui_utils import Theme
 from ui_components import (
     GradientPanel,
@@ -38,6 +56,7 @@ from ui_components import (
     CustomCheckBox,
     SectionCard,
 )
+_smoke_checkpoint("ui_components")
 
 _PoseProcessorCls = None
 
@@ -2262,25 +2281,34 @@ class VideoToWavConverter(wx.Frame):
 
 def main():
     if os.environ.get("MULTISOCIAL_IMPORT_SMOKE_TEST") == "1":
+        _smoke_checkpoint("main:entered")
         if os.environ.get("MULTISOCIAL_VERIFY_HEAVY_POSE_ASSET") == "1":
+            _smoke_checkpoint("heavy-model:before")
             heavy_model = runtime_services.resource_path(
                 "mediapipe", "modules", "pose_landmark", "pose_landmark_heavy.tflite"
             )
             if not os.path.isfile(heavy_model):
-                print(f"ERROR: Missing bundled Heavy pose model: {heavy_model}", file=sys.stderr)
+                print(f"ERROR: Missing bundled Heavy pose model: {heavy_model}", file=sys.stderr, flush=True)
                 sys.exit(1)
-            print("Bundled Heavy pose model check passed.")
+            print("Bundled Heavy pose model check passed.", flush=True)
+            _smoke_checkpoint("heavy-model:passed")
         profile = runtime_services.get_build_profile().lower()
         if profile == "complete":
             try:
+                _smoke_checkpoint("torch:before")
+                import torch
+                _smoke_checkpoint("torch:passed")
+                import torchaudio
+                _smoke_checkpoint("torchaudio:passed")
+                _smoke_checkpoint("pyannote.audio:before")
                 import pyannote.audio
-                print("Import smoke test passed (complete profile).")
+                _smoke_checkpoint("pyannote.audio:passed")
+                print("Import smoke test passed (complete profile).", flush=True)
             except ImportError as e:
-                import sys
-                print(f"ERROR: pyannote.audio import failed: {e}", file=sys.stderr)
+                print(f"ERROR: pyannote.audio import failed: {e}", file=sys.stderr, flush=True)
                 sys.exit(1)
         else:
-            print("Import smoke test passed (standard profile).")
+            print("Import smoke test passed (standard profile).", flush=True)
         return
 
     # Create wx.App FIRST before any wx calls (including MessageBox)

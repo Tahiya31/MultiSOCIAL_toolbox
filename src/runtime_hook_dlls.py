@@ -1,46 +1,81 @@
-"""
-Runtime hook to make bundled native libraries visible on Windows.
-"""
+"""Runtime hook for the frozen application's Windows-native dependencies."""
 
 from __future__ import annotations
 
 import os
 import sys
 
+
 _DLL_DIR_HANDLES = []
 
+# Keep DLL lookup deterministic.  Adding every directory containing a DLL to
+# PATH lets unrelated packages win filename collisions during native imports.
+_DLL_DIRECTORY_RELATIVE_PATHS = (
+    ".",
+    "torch/lib",
+    "torchvision",
+    "torchaudio",
+    "torchaudio/lib",
+    "mediapipe",
+    "mediapipe/python",
+    "opensmile/core/bin/win_amd64",
+    "audresample/core/bin/win_amd64",
+    "numpy.libs",
+    "scipy.libs",
+    "pandas.libs",
+    "pyarrow.libs",
+    "cv2",
+)
 
-def _iter_candidate_dirs(root: str):
-    yielded = set()
-    for current_root, _dirs, files in os.walk(root):
-        if any(name.lower().endswith((".dll", ".pyd")) for name in files):
-            if current_root not in yielded:
-                yielded.add(current_root)
-                yield current_root
+
+def bundled_dll_directories(bundle_root: str) -> list[str]:
+    """Return existing native-library directories in their required order."""
+    directories = []
+    seen = set()
+    for relative_path in _DLL_DIRECTORY_RELATIVE_PATHS:
+        directory = os.path.normcase(os.path.abspath(os.path.join(bundle_root, relative_path)))
+        if directory not in seen and os.path.isdir(directory):
+            directories.append(directory)
+            seen.add(directory)
+    return directories
+
+
+def _smoke_trace(message: str) -> None:
+    trace_path = os.environ.get("MULTISOCIAL_SMOKE_TRACE")
+    if not trace_path:
+        return
+    try:
+        with open(trace_path, "a", encoding="utf-8") as trace_file:
+            print(message, file=trace_file, flush=True)
+    except OSError:
+        pass
+
+
+def configure_windows_dll_search_path(bundle_root: str) -> list[str]:
+    """Add only the known bundle-native directories to the Windows loader."""
+    directories = bundled_dll_directories(bundle_root)
+    for directory in directories:
+        try:
+            _DLL_DIR_HANDLES.append(os.add_dll_directory(directory))
+            _smoke_trace(f"runtime-hook:dll-directory:{directory}")
+        except OSError as error:
+            _smoke_trace(f"runtime-hook:dll-directory-error:{directory}:{error}")
+    if directories:
+        current_path = os.environ.get("PATH", "")
+        os.environ["PATH"] = os.pathsep.join(directories + [current_path])
+    return directories
 
 
 if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
-    bundle_root = getattr(sys, "_MEIPASS", None)
-    if bundle_root and os.path.isdir(bundle_root):
-        search_dirs = []
-        for directory in _iter_candidate_dirs(bundle_root):
-            try:
-                handle = os.add_dll_directory(directory)
-                _DLL_DIR_HANDLES.append(handle)
-                search_dirs.append(directory)
-            except OSError:
-                continue
-        if search_dirs:
-            current_path = os.environ.get("PATH", "")
-            os.environ["PATH"] = os.pathsep.join(search_dirs + [current_path])
+    _bundle_root = getattr(sys, "_MEIPASS", None)
+    if _bundle_root and os.path.isdir(_bundle_root):
+        configure_windows_dll_search_path(_bundle_root)
 
 
-# --- SPEECHBRAIN OS.LISTDIR PATCH ---
-# PyInstaller compiles python files into a PYZ archive.
-# speechbrain uses os.listdir(os.path.dirname(__file__)) to find its submodules
-# in dataio, nnet, and utils. This fails if the directory doesn't exist on disk.
-# We patch os.listdir to return the correct files.
+# SpeechBrain uses os.listdir(os.path.dirname(__file__)) to discover modules
+# that PyInstaller keeps in the PYZ archive rather than on disk.
 _original_listdir = os.listdir
+
 
 def _patched_listdir(path="."):
     str_path = str(path).replace("\\", "/")
@@ -54,20 +89,21 @@ def _patched_listdir(path="."):
                 "data_utils.py", "depgraph.py", "distributed.py", "edit_distance.py",
                 "epoch_loop.py", "hparams.py", "hpopt.py", "logger.py", "metric_stats.py",
                 "optimizers.py", "parallel.py", "parameter_transfer.py", "profiling.py",
-                "superpowers.py", "text_to_sequence.py", "torch_audio_backend.py", "train_logger.py"
+                "superpowers.py", "text_to_sequence.py", "torch_audio_backend.py", "train_logger.py",
             ]
-        elif "speechbrain/dataio" in str_path:
+        if "speechbrain/dataio" in str_path:
             return [
                 "__init__.py", "batch.py", "dataio.py", "dataloader.py", "dataset.py",
-                "encoder.py", "iterators.py", "legacy.py", "preprocess.py", "sampler.py", "wer.py"
+                "encoder.py", "iterators.py", "legacy.py", "preprocess.py", "sampler.py", "wer.py",
             ]
-        elif "speechbrain/nnet" in str_path:
+        if "speechbrain/nnet" in str_path:
             return [
                 "CNN.py", "RNN.py", "__init__.py", "activations.py", "attention.py",
                 "autoencoders.py", "containers.py", "diffusion.py", "dropout.py",
                 "embedding.py", "linear.py", "losses.py", "normalization.py",
-                "pooling.py", "quantisers.py", "schedulers.py", "unet.py", "utils.py"
+                "pooling.py", "quantisers.py", "schedulers.py", "unet.py", "utils.py",
             ]
         raise
+
 
 os.listdir = _patched_listdir
