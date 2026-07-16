@@ -54,10 +54,26 @@ def configure_windows_dll_search_path(bundle_root: str) -> list[str]:
     return directories
 
 
+def _preload_torch_before_gui() -> None:
+    """Initialize Torch's native libraries before the app imports wx.
+
+    Importing a Qt/wx GUI stack before Torch has made Torch's native
+    initialization crash on Windows (pytorch/pytorch#166628), and the app
+    imports ``wx`` at module load before any Torch use.  This runtime hook
+    runs before ``app.py``, so importing Torch here guarantees the safe
+    order regardless of undefined AddDllDirectory search order.  Scoped to
+    the frozen Complete build, whose diarization stack is where the crash
+    appears; the Standard build's startup is left unchanged.
+    """
+    import torch  # noqa: F401
+
+
 if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
     _bundle_root = getattr(sys, "_MEIPASS", None)
     if _bundle_root and os.path.isdir(_bundle_root):
         configure_windows_dll_search_path(_bundle_root)
+        if "complete" in os.path.basename(sys.executable).lower():
+            _preload_torch_before_gui()
 
 
 # SpeechBrain uses os.listdir(os.path.dirname(__file__)) to discover modules
