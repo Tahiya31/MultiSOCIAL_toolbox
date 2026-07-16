@@ -73,6 +73,11 @@ If Windows shows a trust warning on an unsigned build:
 
 If a future Windows release is signed, this warning should be reduced or removed.
 
+On a university- or company-managed computer, an administrator policy may block
+the unsigned app entirely (not just show a warning). If it will not launch, ask
+your IT department to allow it. A source install (Option 2) may be an
+alternative if your institution permits Python and terminal use.
+
 ## Option 2: Source install from the repository
 
 This path uses the launcher scripts in the repo and requires Python `3.10.x`.
@@ -97,11 +102,13 @@ The script will create or reuse `.venv`, install the correct dependencies, and l
 
 1. Download or clone the repository.
 2. Install Python `3.10.x`.
-3. Open **Command Prompt**.
+3. Open **Command Prompt** or **PowerShell**.
 4. Go to the repository folder:
-   - `cd \path\to\MultiSOCIAL_toolbox`
-5. Run:
-   - `run_app.bat`
+   - Command Prompt: `cd \path\to\MultiSOCIAL_toolbox`
+   - PowerShell: `cd "C:\path\to\MultiSOCIAL_toolbox"`
+5. Run the launcher:
+   - Command Prompt: `run_app.bat`
+   - PowerShell: `.\run_app.bat`
 6. Choose one profile when prompted:
    - `Standard`
    - `Complete`
@@ -121,19 +128,46 @@ Once launched, the MultiSOCIAL Toolbox application looks like this.
 
 <img src="./assets/ApplicationUI.png" width="350">
 
+### Your input files
+
 The toolbox takes two types of input:
 
 - Audio: `.wav`, `.wave`, `.aiff`, `.aif`, `.aifc`, `.flac`, `.caf`, `.au`, `.snd`
 - Video: `.mp4`, `.avi`, `.mov`, `.mkv`, `.m4v`
 
-Select a folder with your files, then run the steps you need. The toolbox creates output folders inside the selected folder.
+Select a folder with your files, then run the steps you need. The toolbox
+creates each output folder inside the selected folder when you start the
+corresponding step.
+
+### Before your first run
+
+- The toolbox can run without a dedicated GPU. Transcription uses NVIDIA CUDA or
+  Apple Silicon acceleration when available and otherwise uses the CPU. Long or
+  high-resolution recordings can therefore take a while to process.
+- Make sure you have a reliable internet connection for the first transcription
+  or diarization run, plus enough free disk space for downloaded models and
+  generated audio, CSV, and video outputs.
+- The first time you transcribe, and the first time you use speaker diarization,
+  the toolbox downloads the required speech models. This can take several
+  minutes and may look like it has stalled; this is normal. Models are cached
+  locally afterward, so later runs are faster and can use the cached models.
+- After models are available locally, the toolbox processes your recordings on
+  your computer; it does not send audio or video to an external transcription or
+  diarization service.
+
+### Quick start
+
+- **Transcript:** select your folder, open the **Audio** tab, then choose
+  **Extract Transcripts**.
+- **Body pose:** select your folder, open the **Video** tab, then choose
+  **Extract Pose Features**.
 
 If two supported files share the same basename (for example, `session.wav` and
 `session.flac`, or `clip.mp4` and `clip.mov`), they would produce the same
 output names. The toolbox processes only the first filename in sorted order and
 shows a warning listing the skipped duplicates.
 
-## How the toolbox keeps your workflow safe
+### How the toolbox keeps your workflow safe
 
 The toolbox runs one task at a time and guides you through the right order of steps.
 
@@ -143,10 +177,10 @@ The toolbox runs one task at a time and guides you through the right order of st
 
 Specifically:
 
-- **Embed Pose Features** unlocks once **Extract Pose Features** has produced pose CSVs in `pose_features` for the selected mode: single-person `*_ID_*.csv` or multi-person `*_multi_ID_*.csv`.
-- **Embed Transcript on Video** unlocks once **Extract Transcripts** has produced matching `.srt` files in `transcripts` for every selected video.
-- If **Add captions to pose-embedded video** is checked, **Embed Transcript on Video** also waits for matching videos in `embedded_pose`.
-- **Verify Pose Match** unlocks once **Embed Pose Features** has produced videos in `embedded_pose`.
+- **Embed Pose Features** unlocks once **Extract Pose Features** has produced pose data for the selected mode (single-person or multi-person).
+- **Embed Transcript on Video** unlocks once **Extract Transcripts** has produced transcripts for every selected video.
+- If **Add captions to pose-embedded video** is checked, **Embed Transcript on Video** also waits for the pose-overlay videos from **Embed Pose Features**.
+- **Verify Pose Match** unlocks once **Embed Pose Features** has produced pose-overlay videos.
 
 ## Video files
 
@@ -179,7 +213,8 @@ Outputs:
 
 - Single-person mode creates files such as `session01_ID_0.csv`.
 - Multi-person mode creates one CSV per tracked person, such as `session01_multi_ID_0.csv`, `session01_multi_ID_1.csv`, and so on.
-- A metadata sidecar records extraction settings such as frame stride.
+- A small settings file records extraction options, including how often frames
+  were processed.
 - When processing a folder of videos, the toolbox continues through the batch and shows a warning listing any files that failed or produced no CSVs.
 
 CSV format:
@@ -206,8 +241,9 @@ Details:
 - The button stays greyed out until pose CSVs exist for every selected video in the current mode.
 - Each tracked person gets a stable color with an on-screen legend.
 - Landmark brightness reflects detection confidence.
-- Embed automatically reuses the frame stride recorded during extraction, so the overlay stays aligned with the CSV rows.
-- Output naming follows the mode: `*_pose.mp4` for single-person CSVs and `*_multi_pose.mp4` for multi-person CSVs.
+- Embed automatically reuses the saved frame-sampling setting, so the overlay
+  stays aligned with the CSV rows.
+- Output names distinguish single-person and multi-person results.
 - When embedding a folder of videos, the toolbox continues through the batch and shows a warning listing any files that were skipped or failed.
 
 ### Embed Transcript on Video
@@ -238,7 +274,8 @@ Pre-requisites:
 - `pose_features` must contain CSVs generated from **Extract Pose Features** for the same mode as the embedded video.
 - `embedded_pose` must contain pose-overlay videos generated from **Embed Pose Features**.
 
-Verification matches each embedded video to the correct CSV set and reads the extraction `frame_stride` from the matching metadata sidecar.
+Verification matches each embedded video to the correct pose data and uses the
+saved extraction settings to keep the comparison aligned.
 
 The tool creates a `verification` folder with:
 
@@ -298,7 +335,8 @@ YourVideoFolder/
     worst_frames/
 ```
 
-If **Enable Multi-person Pose** is used, pose CSVs and embedded pose videos include `_multi`, for example `session01_multi_ID_0.csv` and `session01_multi_pose.mp4`.
+Multi-person output names include `_multi` to distinguish them from
+single-person results.
 
 ## Audio files
 
@@ -350,16 +388,16 @@ SPEAKER_01: [00:11.000 - 00:19.000] It's a hard question. I'm not really scared 
 How to get and use the Hugging Face token:
 
 1. Create or sign in to a Hugging Face account: `https://huggingface.co`
-2. Accept the model licenses:
-   - `https://huggingface.co/pyannote/speaker-diarization`
-   - `https://huggingface.co/pyannote/segmentation`
-3. Create an access token: go to `https://huggingface.co/settings/tokens`, choose **New token**, set scope to **Read**, and copy the token.
+2. Accept the access conditions for both models:
+   - `https://huggingface.co/pyannote/speaker-diarization-3.1`
+   - `https://huggingface.co/pyannote/segmentation-3.0`
+3. Create an access token: go to `https://huggingface.co/settings/tokens`, choose **New token**, select the **Read** role, and copy the token. A Read token is sufficient for this local diarization workflow.
 4. In MultiSOCIAL Toolbox, paste the token when prompted and confirm.
 
 Notes:
 
 - The app stores the token in local app settings for future runs.
-- You can still set `HF_TOKEN` in your environment or a local `.env` file if you prefer.
+- Advanced users can instead provide the token through an `HF_TOKEN` environment variable.
 - If you cancel or the token is invalid, the app continues with transcript only.
 - The first diarization run may download models and can take a few minutes.
 - Once models are downloaded, they are cached locally for later use.
@@ -410,14 +448,20 @@ YourAudioFolder/
 
 Greyed-out buttons usually mean a required file is missing. Hover over the button for the exact next step.
 
-- **Embed Pose Features** needs matching pose CSVs in `pose_features` for the current **Enable Multi-person Pose** setting.
-- **Embed Transcript on Video** needs matching `.srt` files in `transcripts`.
-- If **Add captions to pose-embedded video** is checked, **Embed Transcript on Video** also needs matching videos in `embedded_pose`.
-- **Verify Pose Match** needs pose-overlay videos in `embedded_pose` plus CSVs that match each video's mode: `*_pose.mp4` with `*_ID_*.csv`, or `*_multi_pose.mp4` with `*_multi_ID_*.csv`.
+- **Embed Pose Features** needs pose data from **Extract Pose Features** for the
+  current **Enable Multi-person Pose** setting.
+- **Embed Transcript on Video** needs transcripts from **Extract Transcripts**.
+- If **Add captions to pose-embedded video** is checked, **Embed Transcript on
+  Video** also needs pose-overlay videos from **Embed Pose Features**.
+- **Verify Pose Match** needs both pose-overlay videos and their matching pose
+  data.
 
 ### Multi-person pose looks wrong or buttons stay locked
 
-Make sure **Enable Multi-person Pose** matches how you extracted pose data. Single-person CSVs such as `session_ID_0.csv` and multi-person CSVs such as `session_multi_ID_0.csv` are treated separately. Toggling the checkbox after extraction will not unlock **Embed Pose Features** until the matching files exist.
+Make sure **Enable Multi-person Pose** matches how you extracted pose data.
+Single-person and multi-person results are kept separate, so changing the
+checkbox after extraction will not unlock **Embed Pose Features** until you
+have the matching result set.
 
 If **Enable Multi-person Pose** fails in a packaged build with a message about missing YOLOv5 weights or a missing MediaPipe Heavy pose model, reinstall from the latest Release build. Multi-person detection and Heavy pose assets are bundled inside the app and are not downloaded at runtime.
 

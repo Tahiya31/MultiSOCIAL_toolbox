@@ -78,3 +78,10 @@ def test_status_updates_coalesce_label_layout_and_parent_refresh():
     assert "parent.Refresh()" in apply_status
     assert "self.Refresh()" not in apply_status
     assert "self.Layout()" not in apply_status
+
+
+def test_process_lock_disables_caption_target_setting():
+    app = _class_source(ROOT / "src" / "app.py", "VideoToWavConverter")
+    lock_controls = _method_source(app, "_set_process_controls_enabled")
+
+    assert 'getattr(self, "captionPoseVideoCheckbox", None)' in lock_controls

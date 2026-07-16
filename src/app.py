@@ -164,6 +164,7 @@ class VideoToWavConverter(wx.Frame):
                 getattr(self, "downscaleCheckbox", None),
                 getattr(self, "frameStrideInput", None),
                 getattr(self, "frameThresholdInput", None),
+                getattr(self, "captionPoseVideoCheckbox", None),
                 getattr(self, "diarizationCheckbox", None),
                 getattr(self, "wordTimestampsCheckbox", None),
             ]:
@@ -685,7 +686,7 @@ class VideoToWavConverter(wx.Frame):
                 self.folderPicker.SetPath(normalized_path)
             except Exception:
                 pass
-        self.ensure_output_folders(normalized_path)
+        self.configure_output_paths(normalized_path)
         self._warn_stem_collisions(normalized_path)
         self.update_buttons_enabled()
         self._refresh_idle_hint()
@@ -1257,10 +1258,9 @@ class VideoToWavConverter(wx.Frame):
         return _cb
 
 
-    def ensure_output_folders(self, folder_path):
-        """Ensures output directories exist inside the selected folder only when needed."""
+    def configure_output_paths(self, folder_path):
+        """Set canonical result paths without changing the selected dataset folder."""
         folder_path = gui_utils.normalize_path(folder_path)
-        # Guard against empty/invalid path
         if not folder_path or not os.path.isdir(folder_path):
             self.converted_audio_folder = None
             self.extracted_pose_folder = None
@@ -1271,47 +1271,29 @@ class VideoToWavConverter(wx.Frame):
             return
 
         workspace_root = gui_utils.resolved_dataset_root(folder_path)
-        converted_audio_dir = os.path.join(workspace_root, "converted_audio")
-
-        # Canonical paths (actually created only when the folder has matching media).
+        self.converted_audio_folder = os.path.join(workspace_root, "converted_audio")
         self.extracted_pose_folder = os.path.join(workspace_root, "pose_features")
         self.embedded_pose_folder = os.path.join(workspace_root, "embedded_pose")
         self.captioned_video_folder = os.path.join(workspace_root, "captioned_video")
         self.extracted_audio_folder = os.path.join(workspace_root, "audio_features")
         self.extracted_transcripts_folder = gui_utils.transcripts_output_folder(folder_path)
 
-        video_files = gui_utils.get_files_from_folder(workspace_root, self.VIDEO_EXTENSIONS)
-        if video_files:
-            self.converted_audio_folder = converted_audio_dir
-            try:
-                os.makedirs(converted_audio_dir, exist_ok=True)
-                os.makedirs(self.extracted_pose_folder, exist_ok=True)
-                os.makedirs(self.embedded_pose_folder, exist_ok=True)
-                os.makedirs(self.captioned_video_folder, exist_ok=True)
-            except (OSError, PermissionError) as e:
-                self.converted_audio_folder = None
-                self.extracted_pose_folder = None
-                self.embedded_pose_folder = None
-                self.captioned_video_folder = None
-                wx.CallAfter(wx.MessageBox, f"Cannot create output folders: {e}", "Warning", wx.OK | wx.ICON_WARNING)
-        else:
-            self.converted_audio_folder = None
-            self.extracted_pose_folder = None
-            self.embedded_pose_folder = None
-            self.captioned_video_folder = None
-
-        audio_files = gui_utils.get_audio_files_for_processing(folder_path, self.AUDIO_EXTENSIONS)
-        if audio_files:
-            try:
-                for folder in [self.extracted_audio_folder, self.extracted_transcripts_folder]:
-                    os.makedirs(folder, exist_ok=True)
-            except (OSError, PermissionError) as e:
-                self.extracted_audio_folder = None
-                self.extracted_transcripts_folder = None
-                wx.CallAfter(wx.MessageBox, f"Cannot create output folders: {e}", "Warning", wx.OK | wx.ICON_WARNING)
-        else:
-            self.extracted_audio_folder = None
-            self.extracted_transcripts_folder = None
+    def _ensure_output_directory(self, directory, folder_name):
+        """Create one action's output directory after its inputs are validated."""
+        if not directory:
+            return False
+        try:
+            os.makedirs(directory, exist_ok=True)
+            return True
+        except (OSError, PermissionError) as e:
+            wx.MessageBox(
+                f"The app could not create the '{folder_name}' folder for your results.\n\n"
+                "Check that you have permission to write to the selected folder, then try again.\n\n"
+                f"{e}",
+                "Cannot Save Results",
+                wx.OK | wx.ICON_ERROR,
+            )
+            return False
 
       
       
@@ -1324,12 +1306,15 @@ class VideoToWavConverter(wx.Frame):
             wx.MessageBox("Please select a folder.", "Error", wx.OK | wx.ICON_ERROR)
             return
 
-        self.ensure_output_folders(folder_path)
+        self.configure_output_paths(folder_path)
         workspace_root = gui_utils.resolved_dataset_root(folder_path)
         video_files = gui_utils.get_files_from_folder(workspace_root, self.VIDEO_EXTENSIONS)
 
         if not video_files:
             wx.MessageBox("No video files found in the selected folder.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        if not self._ensure_output_directory(self.converted_audio_folder, "converted_audio"):
             return
 
         # Process each video file in a separate thread
@@ -1384,8 +1369,7 @@ class VideoToWavConverter(wx.Frame):
             wx.MessageBox("Please select a folder before verifying consistency.", "No Folder Selected", wx.OK | wx.ICON_INFORMATION)
             return
 
-        # Ensure folders and also create verification output dirs
-        self.ensure_output_folders(folder_path)
+        self.configure_output_paths(folder_path)
         if not self.extracted_pose_folder or not self.embedded_pose_folder:
             wx.MessageBox(
                 "There are no pose results to verify yet.\n\n"
@@ -1394,11 +1378,6 @@ class VideoToWavConverter(wx.Frame):
                 wx.OK | wx.ICON_INFORMATION,
             )
             return
-
-        verification_dir = os.path.join(gui_utils.resolved_dataset_root(folder_path), "verification")
-        os.makedirs(verification_dir, exist_ok=True)
-        worst_frames_root = os.path.join(verification_dir, "worst_frames")
-        os.makedirs(worst_frames_root, exist_ok=True)
 
         # Collect embedded videos and match CSVs by basename
         embedded_videos = gui_utils.get_files_from_folder(self.embedded_pose_folder, self.VIDEO_EXTENSIONS)
@@ -1410,6 +1389,13 @@ class VideoToWavConverter(wx.Frame):
                 "Embedded Videos Needed",
                 wx.OK | wx.ICON_INFORMATION,
             )
+            return
+
+        verification_dir = os.path.join(gui_utils.resolved_dataset_root(folder_path), "verification")
+        if not self._ensure_output_directory(verification_dir, "verification"):
+            return
+        worst_frames_root = os.path.join(verification_dir, "worst_frames")
+        if not self._ensure_output_directory(worst_frames_root, "verification/worst_frames"):
             return
 
         # Launch background verification to keep UI responsive
@@ -1533,7 +1519,7 @@ class VideoToWavConverter(wx.Frame):
             wx.MessageBox("Please select a folder before extracting pose features.", "No Folder Selected", wx.OK | wx.ICON_INFORMATION)
             return
 
-        self.ensure_output_folders(folder_path)
+        self.configure_output_paths(folder_path)
         workspace_root = gui_utils.resolved_dataset_root(folder_path)
         video_files = gui_utils.get_files_from_folder(workspace_root, self.VIDEO_EXTENSIONS)
 
@@ -1545,13 +1531,7 @@ class VideoToWavConverter(wx.Frame):
             )
             return
 
-        if not self.extracted_pose_folder:
-            wx.MessageBox(
-                "The app could not create the 'pose_features' folder for your results.\n\n"
-                "Check that you have permission to write to the selected folder, then try again.",
-                "Cannot Save Results",
-                wx.OK | wx.ICON_ERROR,
-            )
+        if not self._ensure_output_directory(self.extracted_pose_folder, "pose_features"):
             return
 
         PoseCls = _get_pose_processor_class()
@@ -1661,7 +1641,7 @@ class VideoToWavConverter(wx.Frame):
             wx.MessageBox("Please select a folder before embedding pose on video.", "No Folder Selected", wx.OK | wx.ICON_INFORMATION)
             return
 
-        self.ensure_output_folders(folder_path)
+        self.configure_output_paths(folder_path)
         workspace_root = gui_utils.resolved_dataset_root(folder_path)
         video_files = gui_utils.get_files_from_folder(workspace_root, self.VIDEO_EXTENSIONS)
 
@@ -1670,15 +1650,6 @@ class VideoToWavConverter(wx.Frame):
                 "No video files found in the selected folder.\n\n"
                 "Add videos (.mp4, .mov, .avi, .mkv, .m4v) to the folder, then try again.",
                 "No Videos Found", wx.OK | wx.ICON_INFORMATION,
-            )
-            return
-
-        if not self.extracted_pose_folder or not self.embedded_pose_folder:
-            wx.MessageBox(
-                "The app could not create the output folders for pose videos.\n\n"
-                "Check that you have permission to write to the selected folder, then try again.",
-                "Cannot Save Results",
-                wx.OK | wx.ICON_ERROR,
             )
             return
 
@@ -1710,6 +1681,9 @@ class VideoToWavConverter(wx.Frame):
         PoseCls = _get_pose_processor_class()
         if PoseCls is None:
             wx.MessageBox("Pose embedding is unavailable in this launch mode.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        if not self._ensure_output_directory(self.embedded_pose_folder, "embedded_pose"):
             return
 
         stride_val = 1
@@ -1803,7 +1777,7 @@ class VideoToWavConverter(wx.Frame):
             wx.MessageBox("Please select a folder before embedding transcripts on video.", "No Folder Selected", wx.OK | wx.ICON_INFORMATION)
             return
 
-        self.ensure_output_folders(folder_path)
+        self.configure_output_paths(folder_path)
         workspace_root = gui_utils.resolved_dataset_root(folder_path)
         video_files = gui_utils.get_files_from_folder(workspace_root, self.VIDEO_EXTENSIONS)
 
@@ -1812,15 +1786,6 @@ class VideoToWavConverter(wx.Frame):
                 "No video files found in the selected folder.\n\n"
                 "Add videos (.mp4, .mov, .avi, .mkv, .m4v) to the folder, then try again.",
                 "No Videos Found", wx.OK | wx.ICON_INFORMATION,
-            )
-            return
-
-        if not self.captioned_video_folder:
-            wx.MessageBox(
-                "The app could not create the 'captioned_video' folder for your results.\n\n"
-                "Check that you have permission to write to the selected folder, then try again.",
-                "Cannot Save Results",
-                wx.OK | wx.ICON_ERROR,
             )
             return
 
@@ -1875,6 +1840,9 @@ class VideoToWavConverter(wx.Frame):
                 "Video Engine Unavailable",
                 wx.OK | wx.ICON_ERROR,
             )
+            return
+
+        if not self._ensure_output_directory(self.captioned_video_folder, "captioned_video"):
             return
 
         self._begin_process()
@@ -1951,7 +1919,7 @@ class VideoToWavConverter(wx.Frame):
             wx.MessageBox("Please select a folder before extracting audio features.", "No Folder Selected", wx.OK | wx.ICON_INFORMATION)
             return
 
-        self.ensure_output_folders(folder_path)
+        self.configure_output_paths(folder_path)
         audio_files = gui_utils.get_audio_files_for_processing(folder_path, self.AUDIO_EXTENSIONS)
 
         if not audio_files:
@@ -1963,13 +1931,7 @@ class VideoToWavConverter(wx.Frame):
             )
             return
 
-        if not self.extracted_audio_folder:
-            wx.MessageBox(
-                "The app could not create the 'audio_features' folder for your results.\n\n"
-                "Check that you have permission to write to the selected folder, then try again.",
-                "Cannot Save Results",
-                wx.OK | wx.ICON_ERROR,
-            )
+        if not self._ensure_output_directory(self.extracted_audio_folder, "audio_features"):
             return
 
         # Initialize audio processor
@@ -2025,7 +1987,7 @@ class VideoToWavConverter(wx.Frame):
             wx.MessageBox("Please select a folder before extracting transcripts.", "No Folder Selected", wx.OK | wx.ICON_INFORMATION)
             return
 
-        self.ensure_output_folders(folder_path)
+        self.configure_output_paths(folder_path)
         audio_files = gui_utils.get_audio_files_for_processing(folder_path, self.AUDIO_EXTENSIONS)
 
         if not audio_files:
@@ -2037,13 +1999,7 @@ class VideoToWavConverter(wx.Frame):
             )
             return
 
-        if not self.extracted_transcripts_folder:
-            wx.MessageBox(
-                "The app could not create the 'transcripts' folder for your results.\n\n"
-                "Check that you have permission to write to the selected folder, then try again.",
-                "Cannot Save Results",
-                wx.OK | wx.ICON_ERROR,
-            )
+        if not self._ensure_output_directory(self.extracted_transcripts_folder, "transcripts"):
             return
 
         # Determine diarization preference and collect token if needed
@@ -2186,7 +2142,7 @@ class VideoToWavConverter(wx.Frame):
             wx.MessageBox("Please select a folder before aligning features.", "No Folder Selected", wx.OK | wx.ICON_INFORMATION)
             return
 
-        self.ensure_output_folders(folder_path)
+        self.configure_output_paths(folder_path)
 
         # Check if we have features and transcripts
         if not self.extracted_audio_folder or not os.path.exists(self.extracted_audio_folder):
@@ -2207,6 +2163,9 @@ class VideoToWavConverter(wx.Frame):
                 "If you have videos, run 'Convert to WAV' on the Video tab first.",
                 "No Audio Found", wx.OK | wx.ICON_INFORMATION,
             )
+            return
+
+        if not self._ensure_output_directory(self.extracted_transcripts_folder, "transcripts"):
             return
 
         # Run in thread
