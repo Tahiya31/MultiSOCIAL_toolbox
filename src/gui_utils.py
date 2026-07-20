@@ -573,19 +573,61 @@ def transcripts_output_folder(folder_path):
 
 
 def get_audio_files_for_processing(folder_path, extensions):
-    """WAV files at the dataset root and under ``converted_audio`` (non-recursive each)."""
+    """Audio files from dataset root and ``converted_audio``.
+
+    If both locations contain the same basename, prefer the converted copy so
+    generated outputs named by basename cannot overwrite/cross-pair.
+    """
     dr = resolved_dataset_root(folder_path)
     cad = resolved_converted_audio_folder(folder_path)
-    seen = {}
+    candidates = []
     for root in (dr, cad):
         if root and os.path.isdir(root):
-            for fpath in get_files_from_folder(root, extensions):
-                seen[fpath] = True
-    return sorted(seen.keys())
+            candidates.extend(_get_files_from_folder_raw(root, extensions))
+    return select_unique_media_files(candidates)[0]
+
+
+def media_output_stem(path):
+    """Case-insensitive output key shared by all stem-based workflows."""
+    return os.path.splitext(os.path.basename(path))[0].casefold()
+
+
+def select_unique_media_files(paths):
+    """Keep the first sorted path for each output stem and report skipped paths."""
+    selected = []
+    skipped = []
+    winners = {}
+    for path in sorted(paths, key=lambda item: os.path.normcase(os.path.abspath(item))):
+        stem = media_output_stem(path)
+        winner = winners.get(stem)
+        if winner is None:
+            winners[stem] = path
+            selected.append(path)
+        else:
+            skipped.append((path, winner))
+    return selected, skipped
+
+
+def get_media_stem_collisions(folder_path, extensions, include_converted_audio=False):
+    """Return ``(skipped, winner)`` pairs for selected-folder media inputs."""
+    root = resolved_dataset_root(folder_path)
+    folders = [root]
+    if include_converted_audio:
+        folders.append(resolved_converted_audio_folder(folder_path))
+    candidates = []
+    for folder in folders:
+        if folder and os.path.isdir(folder):
+            candidates.extend(_get_files_from_folder_raw(folder, extensions))
+    return select_unique_media_files(candidates)[1]
 
 
 def get_files_from_folder(folder_path, extensions):
     """Return a list of full paths for files in folder_path matching extensions."""
+    return select_unique_media_files(_get_files_from_folder_raw(folder_path, extensions))[0]
+
+
+def _get_files_from_folder_raw(folder_path, extensions):
+    """Return sorted supported files without output-stem de-duplication."""
     files = []
     folder_path = normalize_path(folder_path)
     if os.path.isdir(folder_path):

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "multisocial-toolbox"
-version = "1.2.0"
+version = "1.2.1"
 description = "Desktop toolbox for multimodal interaction analysis across video and audio."
 readme = "README.md"
 requires-python = ">=3.10,<3.11"

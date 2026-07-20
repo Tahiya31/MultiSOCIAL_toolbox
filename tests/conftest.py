@@ -94,7 +94,12 @@ def _install_fake_audio_deps() -> None:
             pass
 
         def process_signal(self, y, sr):
-            return pd.DataFrame({"energy": [1.0, 2.0], "pitch": [3.0, 4.0]})
+            index = pd.IntervalIndex.from_arrays(
+                pd.to_timedelta([0.0, 0.01], unit="s"),
+                pd.to_timedelta([0.06, 0.07], unit="s"),
+                closed="left",
+            )
+            return pd.DataFrame({"energy": [1.0, 2.0], "pitch": [3.0, 4.0]}, index=index)
 
     opensmile.Smile = _Smile
     sys.modules["opensmile"] = opensmile

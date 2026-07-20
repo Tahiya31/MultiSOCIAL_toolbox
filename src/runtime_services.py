@@ -20,6 +20,28 @@ DEFAULT_BUILD_PROFILE = "standard"
 DIARIZATION_FEATURE = "diarization"
 DIARIZATION_PIP_SPEC = ("pyannote.audio==3.2.0", "speechbrain==0.5.16", "torchaudio==2.5.1")
 DIARIZATION_MODEL_ID = "pyannote/speaker-diarization-3.1"
+_FROZEN_WINDOWS_DIARIZATION_PRELOADS = (
+    "torch",
+    "torchaudio",
+    "regex",
+    "sentencepiece",
+    "pyarrow",
+    "speechbrain",
+)
+
+
+def preload_frozen_windows_diarization_dependencies() -> None:
+    """Initialize native diarization dependencies before importing PyAnnote.
+
+    In a Windows PyInstaller bundle, loading PyAnnote first has produced a
+    native crash even though the same dependencies load successfully in this
+    order. Keep this scoped to frozen Windows builds and the diarization path;
+    development launches and non-diarization workflows remain lazy.
+    """
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return
+    for module_name in _FROZEN_WINDOWS_DIARIZATION_PRELOADS:
+        importlib.import_module(module_name)
 
 
 def bundle_root() -> str:
@@ -45,13 +67,17 @@ def _frozen_resource_roots() -> list[str]:
     executable_dir = os.path.dirname(sys.executable) if getattr(sys, "executable", None) else None
 
     add(meipass)
+    add(os.path.join(meipass, "_internal") if meipass else None)
     add(executable_dir)
+    add(os.path.join(executable_dir, "_internal") if executable_dir else None)
 
     if sys.platform == "darwin" and executable_dir:
         contents_dir = os.path.dirname(executable_dir)
         add(contents_dir)
         add(os.path.join(contents_dir, "Resources"))
+        add(os.path.join(contents_dir, "Resources", "_internal"))
         add(os.path.join(contents_dir, "Frameworks"))
+        add(os.path.join(contents_dir, "Frameworks", "_internal"))
 
     return roots
 

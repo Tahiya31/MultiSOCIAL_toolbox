@@ -182,6 +182,85 @@ def test_extract_pose_features_cancel_check_stops_early(import_pose, tmp_path, m
     assert checks["n"] <= 4
 
 
+def test_frozen_yolov5_weights_missing_does_not_download(import_pose, tmp_path, monkeypatch):
+    pose = import_pose
+    runtime_path = tmp_path / "runtime" / "assets" / "yolov5s.pt"
+    bundled_path = tmp_path / "bundle" / "assets" / "yolov5s.pt"
+
+    monkeypatch.setattr(pose, "get_yolov5_weights_path", lambda: str(runtime_path))
+    monkeypatch.setattr(pose.runtime_services, "is_frozen_runtime", lambda: True)
+    monkeypatch.setattr(pose.runtime_services, "resource_path", lambda *parts: str(bundled_path))
+
+    class _Requests:
+        @staticmethod
+        def get(*args, **kwargs):
+            raise AssertionError("frozen builds must not download YOLO weights")
+
+    monkeypatch.setitem(sys.modules, "requests", _Requests)
+
+    with pytest.raises(RuntimeError, match="packaged app"):
+        pose.ensure_yolov5_weights()
+
+
+def test_extract_pose_features_stride_progress_reaches_100(import_pose, tmp_path, monkeypatch):
+    pose = import_pose
+    monkeypatch.setattr(pose, "ensure_yolov5_weights", lambda: None)
+    processor = pose.PoseProcessor(str(tmp_path), frame_stride=5)
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake")
+    progress = []
+
+    result = processor.extract_pose_features(str(video), progress_callback=progress.append)
+
+    assert result is True
+    assert progress[-1] == 100
+    assert max(progress) == 100
+
+
+def test_extract_pose_features_stride_status_reaches_source_end(import_pose, tmp_path, monkeypatch):
+    pose = import_pose
+    monkeypatch.setattr(pose, "ensure_yolov5_weights", lambda: None)
+    processor = pose.PoseProcessor(str(tmp_path), frame_stride=5, status_callback=lambda msg: messages.append(msg))
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake")
+    messages = []
+
+    result = processor.extract_pose_features(str(video))
+
+    assert result is True
+    assert messages[-1].endswith("(Source frame 20/20)")
+
+
+def test_extract_multiperson_no_roi_stride_progress_reaches_100(import_pose, tmp_path, monkeypatch):
+    pose = import_pose
+    monkeypatch.setattr(pose, "ensure_yolov5_weights", lambda: None)
+    processor = pose.PoseProcessor(str(tmp_path), frame_stride=4)
+    processor.set_multi_person_mode(True)
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake")
+    progress = []
+
+    result = processor.extract_pose_features(str(video), progress_callback=progress.append)
+
+    assert result is True
+    assert progress[-1] == 100
+    assert max(progress) == 100
+
+
+def test_find_pose_csv_paths_filters_by_mode(import_pose, tmp_path):
+    pose = import_pose
+    _write_min_pose_csv(tmp_path / "clip_ID_0.csv")
+    _write_min_pose_csv(tmp_path / "clip_multi_ID_0.csv")
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake")
+
+    single = pose.find_pose_csv_paths(str(tmp_path), str(video), multi_person=False)
+    multi = pose.find_pose_csv_paths(str(tmp_path), str(video), multi_person=True)
+
+    assert single == [str(tmp_path / "clip_ID_0.csv")]
+    assert multi == [str(tmp_path / "clip_multi_ID_0.csv")]
+
+
 def test_embed_pose_video_cancel_check_stops_early(import_pose, tmp_path, monkeypatch):
     pose = import_pose
     monkeypatch.setattr(pose, "ensure_yolov5_weights", lambda: None)
@@ -221,6 +300,40 @@ def test_embed_pose_video_preserves_fractional_fps(import_pose, tmp_path, monkey
     assert pose.cv2.VideoWriter.instances[0].args[2] == 29.97
 
 
+def test_embed_pose_video_respects_selected_mode(import_pose, tmp_path, monkeypatch):
+    pose = import_pose
+    monkeypatch.setattr(pose, "ensure_yolov5_weights", lambda: None)
+    csv_dir = tmp_path / "csv"
+    csv_dir.mkdir()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    _write_min_pose_csv(csv_dir / "clip_ID_0.csv")
+    _write_min_pose_csv(csv_dir / "clip_multi_ID_0.csv")
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake")
+
+    processor = pose.PoseProcessor(str(csv_dir), output_video_folder=str(out_dir))
+    assert processor.embed_pose_video(str(video)) == str(out_dir / "clip_pose.mp4")
+
+    processor.set_multi_person_mode(True)
+    assert processor.embed_pose_video(str(video)) == str(out_dir / "clip_multi_pose.mp4")
+
+
+def test_embed_pose_video_returns_none_when_selected_mode_csv_missing(import_pose, tmp_path, monkeypatch):
+    pose = import_pose
+    monkeypatch.setattr(pose, "ensure_yolov5_weights", lambda: None)
+    csv_dir = tmp_path / "csv"
+    csv_dir.mkdir()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    _write_min_pose_csv(csv_dir / "clip_multi_ID_0.csv")
+    processor = pose.PoseProcessor(str(csv_dir), output_video_folder=str(out_dir))
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake")
+
+    assert processor.embed_pose_video(str(video)) is None
+
+
 def test_embed_pose_video_returns_none_without_csv(import_pose, tmp_path, monkeypatch):
     pose = import_pose
     monkeypatch.setattr(pose, "ensure_yolov5_weights", lambda: None)
@@ -257,6 +370,13 @@ def test_roi_spawn_assigns_monotonic_ids(import_pose, tmp_path, monkeypatch):
     monkeypatch.setattr(pose, "ensure_yolov5_weights", lambda: None)
     processor = pose.PoseProcessor(str(tmp_path))
     processor._next_pid = 0
+    model_complexities = []
+
+    class _RoiPose:
+        def __init__(self, *args, **kwargs):
+            model_complexities.append(kwargs["model_complexity"])
+
+    monkeypatch.setattr(pose.mp.solutions.pose, "Pose", _RoiPose)
 
     def _make_box(x1, y1, x2, y2):
         values = [x1, y1, x2, y2, 0.9, 0]
@@ -287,6 +407,7 @@ def test_roi_spawn_assigns_monotonic_ids(import_pose, tmp_path, monkeypatch):
     image = np.zeros((40, 40, 3), dtype=np.uint8)
     rois = processor._seed_rois_if_needed(image, 40, 40, [], margin_ratio=0.0)
     assert [r["id"] for r in rois] == [0, 1]
+    assert model_complexities == [2, 2]
 
 
 def test_dedup_preserves_survivor_ids(import_pose, monkeypatch):

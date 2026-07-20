@@ -17,7 +17,10 @@ import numpy as np
 from scipy.io import wavfile
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 
-from runtime_services import DIARIZATION_MODEL_ID
+from runtime_services import (
+    DIARIZATION_MODEL_ID,
+    preload_frozen_windows_diarization_dependencies,
+)
 
 
 _SCIPY_WAV_EXTENSIONS = {".wav", ".wave"}
@@ -209,14 +212,17 @@ class AudioProcessor:
             if progress_callback:
                 progress_callback(70)
 
-            # Add timestamp columns as the leftmost columns
-            # Calculate precise frame duration based on actual audio length
-            audio_duration = len(y) / sr  # Total audio duration in seconds
-            num_frames = len(features)
-            frame_duration = audio_duration / num_frames  # Actual frame duration
-            
-            # Create timestamps for each frame
-            timestamps_seconds = [i * frame_duration for i in range(num_frames)]
+            # OpenSMILE returns a pandas IntervalIndex whose left boundary is
+            # the real LLD frame start. Some versions expose the same intervals
+            # as ``(start, end)`` tuples in a MultiIndex. Do not infer timing
+            # from frame count.
+            try:
+                timestamps_seconds = [
+                    float((interval[0] if isinstance(interval, tuple) else interval.left).total_seconds())
+                    for interval in features.index
+                ]
+            except (AttributeError, IndexError, TypeError):
+                raise RuntimeError("OpenSMILE did not return frame timing information")
             timestamps_milliseconds = [t * 1000 for t in timestamps_seconds]  # Convert to milliseconds
             timestamps_formatted = [f"{int(t//60):02d}:{t%60:06.3f}" for t in timestamps_seconds]  # MM:SS.mmm format
             
@@ -252,10 +258,12 @@ class AudioProcessor:
             progress_callback (callable, optional): Callback function for progress updates
             cancel_check (callable, optional): Return True to stop before the next file
         """
+        outcome = {"succeeded": [], "failed": [], "cancelled": False}
         total_files = len(audio_files)
         
         for i, audio_file in enumerate(audio_files):
             if cancel_check and cancel_check():
+                outcome["cancelled"] = True
                 break
             self.set_status_message(f"🎧 Extracting audio features from: {os.path.basename(audio_file)}")
             print(f"Extracting features from: {audio_file}")
@@ -271,9 +279,11 @@ class AudioProcessor:
             
             try:
                 self.extract_audio_features(audio_file, progress_callback=make_progress_callback(i + 1, total_files))
+                outcome["succeeded"].append(audio_file)
             except Exception as e:
                 print(f"Error processing {audio_file}: {e}")
-                continue
+                outcome["failed"].append((audio_file, str(e)))
+        return outcome
 
     def _load_whisper_model(self, progress_callback=None):
         """
@@ -640,11 +650,13 @@ class AudioProcessor:
             whisper_segments = []
 
         if whisper_segments:
-            lines = []
-            for seg in whisper_segments:
-                text = str(seg.get('text') or '').strip()
-                if text:
-                    lines.append(text)
+            from captions import group_caption_segments
+
+            lines = [
+                str(seg.get("text") or "").strip()
+                for seg in group_caption_segments(whisper_segments)
+                if str(seg.get("text") or "").strip()
+            ]
             if lines:
                 return "\n".join(lines)
 
@@ -764,9 +776,15 @@ class AudioProcessor:
         Returns:
             str: Aligned transcript with speaker labels (merged by speaker)
         """
-        # Label each ASR chunk with a speaker
+        # Label each ASR chunk with a speaker. Sort by start time first because
+        # Whisper can emit non-monotonic chunk timestamps on long audio, which
+        # otherwise scrambles the merged transcript ordering.
+        ordered_segments = sorted(
+            whisper_segments,
+            key=lambda seg: (float(seg.get('start') or 0.0), float(seg.get('end') or 0.0)),
+        )
         labeled = []
-        for seg in whisper_segments:
+        for seg in ordered_segments:
             speaker = self._find_speaker_for_time(seg['start'], seg['end'], speaker_segments)
             labeled.append({
                 'speaker': speaker,
@@ -923,7 +941,11 @@ class AudioProcessor:
             with open(output_txt, 'w', encoding='utf-8', newline='\n') as f:
                 f.write(formatted_transcript)
             print(f"Saved transcript: {output_txt}")
-            self._write_srt_sidecar(audio_file, transcript, whisper_result, speaker_segments)
+            output_srt = self._write_srt_sidecar(
+                audio_file, transcript, whisper_result, speaker_segments
+            )
+            if not output_srt or not os.path.isfile(output_srt):
+                return False, f"{output_txt}: caption sidecar was not written"
         except OSError as e:
             print(f"Error saving transcript for {audio_file}: {e}")
             return False, f"{output_txt}: {e}"
@@ -939,13 +961,12 @@ class AudioProcessor:
         """Memory-bounded diarized batch path: transcribe, clear Whisper, diarize, save per file."""
         total_files = len(audio_files)
         os.makedirs(self.output_transcripts_folder, exist_ok=True)
-        save_errors = []
-        transcription_errors = []
-        saved_count = 0
+        outcome = {"succeeded": [], "failed": [], "cancelled": False}
 
         for i, audio_file in enumerate(audio_files):
             if cancel_check and cancel_check():
-                return
+                outcome["cancelled"] = True
+                break
 
             file_start = (i / total_files) * 100
             file_span = 100 / total_files
@@ -997,37 +1018,23 @@ class AudioProcessor:
                     audio_file, transcript, compact_result, speaker_segments, False
                 )
                 if ok:
-                    saved_count += 1
+                    outcome["succeeded"].append(audio_file)
                 elif err:
-                    save_errors.append(err)
+                    outcome["failed"].append((audio_file, err))
                 file_progress(100)
 
             except Exception as e:
                 print(f"Error transcribing {audio_file}: {e}")
-                transcription_errors.append((audio_file, str(e)))
+                outcome["failed"].append((audio_file, str(e)))
             finally:
                 transcript = None
                 compact_result = None
                 self._clear_whisper_model()
                 self._clear_torch_cache()
 
-        if saved_count == 0:
-            detail_bits = [
-                f"{os.path.basename(path)}: {err}"
-                for path, err in transcription_errors[:8]
-            ]
-            detail = "\n".join(detail_bits) if detail_bits else "(see console / log for details)"
-            raise RuntimeError(
-                "Speech recognition failed for every file; no transcripts were produced.\n\n" + detail
-            )
-
-        if save_errors:
-            raise RuntimeError(
-                "Could not write one or more transcript files:\n\n" + "\n".join(save_errors)
-            )
-
-        if progress_callback:
+        if progress_callback and not outcome["cancelled"]:
             progress_callback(100)
+        return outcome
 
     def extract_transcripts_batch(self, audio_files, progress_callback=None, word_timestamps=False, cancel_check=None):
         """
@@ -1044,8 +1051,9 @@ class AudioProcessor:
                 of re-transcribing later.
             cancel_check (callable, optional): Return True to stop before the next file
         """
+        outcome = {"succeeded": [], "failed": [], "cancelled": False}
         if not audio_files:
-            return
+            return outcome
 
         if self.output_transcripts_folder is None:
             raise ValueError(
@@ -1083,14 +1091,10 @@ class AudioProcessor:
         transcription_range = transcription_end - transcription_start
 
         os.makedirs(self.output_transcripts_folder, exist_ok=True)
-        save_errors = []
-        saved_count = 0
-        transcribed_ok = 0
-
-        transcription_errors = []
         for i, audio_file in enumerate(audio_files):
             if cancel_check and cancel_check():
-                return
+                outcome["cancelled"] = True
+                break
             self.set_status_message(f"🗣️ Transcribing ({i+1}/{total_files}): {os.path.basename(audio_file)}")
 
             transcript, result = None, None
@@ -1109,46 +1113,25 @@ class AudioProcessor:
                 transcript = result['text']
             except Exception as e:
                 print(f"Error transcribing {audio_file}: {e}")
-                transcription_errors.append((audio_file, str(e)))
+                outcome["failed"].append((audio_file, str(e)))
 
             if transcript is not None:
-                transcribed_ok += 1
                 ok, err = self._save_transcript_outputs(
                     audio_file, transcript, result, None, word_timestamps
                 )
                 if ok:
-                    saved_count += 1
+                    outcome["succeeded"].append(audio_file)
                 elif err:
-                    save_errors.append(err)
+                    outcome["failed"].append((audio_file, err))
 
             # Update progress
             if progress_callback:
                 file_progress = ((i + 1) / total_files) * transcription_range
                 progress_callback(int(transcription_start + file_progress))
 
-        if transcribed_ok == 0:
-            detail_bits = [
-                f"{os.path.basename(path)}: {err}"
-                for path, err in transcription_errors[:8]
-            ]
-            detail = "\n".join(detail_bits) if detail_bits else "(see console / log for details)"
-            raise RuntimeError(
-                "Speech recognition failed for every file; no transcripts were produced.\n\n" + detail
-            )
-
-        if save_errors:
-            raise RuntimeError(
-                "Could not write one or more transcript files:\n\n" + "\n".join(save_errors)
-            )
-
-        if transcribed_ok > 0 and saved_count == 0:
-            raise RuntimeError(
-                "Transcription succeeded but no .txt files were saved (unexpected). "
-                f"Output folder: {self.output_transcripts_folder}"
-            )
-
-        if progress_callback:
+        if progress_callback and not outcome["cancelled"]:
             progress_callback(100)
+        return outcome
 
     def align_features(self, features_csv, transcript_json, output_csv):
         """
@@ -1212,8 +1195,7 @@ class AudioProcessor:
             raise Exception(f"Failed to parse transcript JSON: {e}")
 
         if not words:
-            print("Warning: No words found in transcript JSON for alignment.")
-            return
+            raise ValueError("No usable word timestamps found in transcript JSON")
 
         # Align
         aligned_rows = []
@@ -1252,6 +1234,7 @@ class AudioProcessor:
         df_aligned = pd.DataFrame(aligned_rows)
         df_aligned.to_csv(output_csv, index=False)
         print(f"Saved aligned features: {output_csv}")
+        return output_csv
 
     def align_features_batch(self, alignment_pairs, progress_callback=None):
         """
@@ -1261,16 +1244,22 @@ class AudioProcessor:
             alignment_pairs (list): List of tuples (features_csv, transcript_json, output_csv)
             progress_callback (callable): Progress callback
         """
+        outcome = {"succeeded": [], "failed": [], "cancelled": False}
         total = len(alignment_pairs)
         for i, (feat_csv, trans_json, out_csv) in enumerate(alignment_pairs):
             try:
                 self.set_status_message(f"🔗 Aligning: {os.path.basename(out_csv)}")
-                self.align_features(feat_csv, trans_json, out_csv)
+                result = self.align_features(feat_csv, trans_json, out_csv)
+                if result != out_csv or not os.path.isfile(out_csv):
+                    raise RuntimeError("Alignment did not write its output CSV")
+                outcome["succeeded"].append(out_csv)
             except Exception as e:
                 print(f"Error aligning {os.path.basename(out_csv)}: {e}")
+                outcome["failed"].append((out_csv, str(e)))
             
             if progress_callback:
                 progress_callback(int((i + 1) / total * 100))
+        return outcome
 
 
 # PyAnnote-based SpeakerDiarizer
@@ -1317,6 +1306,7 @@ class PyAnnoteSpeakerDiarizer:
             kw = {"use_auth_token": self.auth_token}
 
             try:
+                preload_frozen_windows_diarization_dependencies()
                 from pyannote.audio import Pipeline
             except ModuleNotFoundError as e:
                 raise Exception(

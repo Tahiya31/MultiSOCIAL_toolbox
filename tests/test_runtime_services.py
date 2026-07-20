@@ -54,6 +54,37 @@ def test_get_build_profile_uses_state_then_diarization(monkeypatch, import_runti
     assert rs.get_build_profile() == "complete"
 
 
+def test_frozen_windows_diarization_preload_uses_the_verified_native_order(monkeypatch, import_runtime_services):
+    rs = import_runtime_services
+    imported = []
+    monkeypatch.setattr(rs.sys, "platform", "win32")
+    monkeypatch.setattr(rs.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(rs.importlib, "import_module", imported.append)
+
+    rs.preload_frozen_windows_diarization_dependencies()
+
+    assert imported == [
+        "torch",
+        "torchaudio",
+        "regex",
+        "sentencepiece",
+        "pyarrow",
+        "speechbrain",
+    ]
+
+
+def test_diarization_preload_is_inactive_outside_frozen_windows(monkeypatch, import_runtime_services):
+    rs = import_runtime_services
+    imported = []
+    monkeypatch.setattr(rs.sys, "platform", "darwin")
+    monkeypatch.setattr(rs.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(rs.importlib, "import_module", imported.append)
+
+    rs.preload_frozen_windows_diarization_dependencies()
+
+    assert imported == []
+
+
 def test_get_diarization_feature_state_resets_stale_enabled_status(monkeypatch, import_runtime_services):
     rs = import_runtime_services
     monkeypatch.setattr(
@@ -159,3 +190,33 @@ def test_get_startup_diagnostics_contains_current_state(monkeypatch, import_runt
     assert diagnostics["install_profile"] == "complete"
     assert diagnostics["ffmpeg_source"] == "bundled"
     assert diagnostics["diarization_installed"] is True
+
+
+def test_frozen_resource_path_finds_pyinstaller_internal_assets(tmp_path, monkeypatch, import_runtime_services):
+    rs = import_runtime_services
+    executable = tmp_path / "MultiSOCIAL-Standard.app" / "Contents" / "MacOS" / "MultiSOCIAL-Standard"
+    asset = executable.parent / "_internal" / "assets" / "yolov5s.pt"
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(b"weights")
+
+    monkeypatch.setattr(rs.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(rs.sys, "_MEIPASS", str(tmp_path / "missing"), raising=False)
+    monkeypatch.setattr(rs.sys, "executable", str(executable))
+    monkeypatch.setattr(rs.sys, "platform", "darwin")
+
+    assert rs.resource_path("assets", "yolov5s.pt") == str(asset)
+
+
+def test_frozen_resource_path_finds_macos_resources_assets(tmp_path, monkeypatch, import_runtime_services):
+    rs = import_runtime_services
+    executable = tmp_path / "MultiSOCIAL-Complete.app" / "Contents" / "MacOS" / "MultiSOCIAL-Complete"
+    asset = executable.parent.parent / "Resources" / "assets" / "yolov5s.pt"
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(b"weights")
+
+    monkeypatch.setattr(rs.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(rs.sys, "_MEIPASS", str(tmp_path / "missing"), raising=False)
+    monkeypatch.setattr(rs.sys, "executable", str(executable))
+    monkeypatch.setattr(rs.sys, "platform", "darwin")
+
+    assert rs.resource_path("assets", "yolov5s.pt") == str(asset)

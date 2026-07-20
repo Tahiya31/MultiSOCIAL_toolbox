@@ -11,6 +11,7 @@ import subprocess
 
 
 _PUNCTUATION_ENDINGS = (".", "!", "?", ";", ":")
+_MIN_CUE_DURATION = 0.25
 
 
 def _format_srt_timestamp(seconds):
@@ -37,7 +38,11 @@ def group_caption_segments(segments, speaker_label_fn=None, max_gap=0.75, max_du
     grouped = []
     current = None
 
-    for seg in segments or []:
+    usable_segments = sorted(
+        segments or [],
+        key=lambda seg: (float(seg.get("start") or 0.0), float(seg.get("end") or 0.0)),
+    )
+    for seg in usable_segments:
         text = str(seg.get("text") or "").strip()
         if not text:
             continue
@@ -93,11 +98,14 @@ def write_srt(segments, output_path, speaker_label_fn=None):
     """
     cues = []
     index = 1
+    previous_end = 0.0
     for seg in group_caption_segments(segments, speaker_label_fn=speaker_label_fn):
         text = str(seg.get('text') or '').strip()
         if not text:
             continue
         start, end = _segment_start_end(seg)
+        start = max(start, previous_end)
+        end = max(end, start + _MIN_CUE_DURATION)
 
         label = seg.get("speaker")
         if label:
@@ -108,6 +116,7 @@ def write_srt(segments, output_path, speaker_label_fn=None):
             f"{_format_srt_timestamp(start)} --> {_format_srt_timestamp(end)}\n"
             f"{text}\n"
         )
+        previous_end = end
         index += 1
 
     if not cues:

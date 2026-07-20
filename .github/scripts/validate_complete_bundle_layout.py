@@ -41,6 +41,12 @@ def main():
         print(f"ERROR: Missing speechbrain METADATA in packaged app. Did copy_metadata('speechbrain') fail?", file=sys.stderr)
         sys.exit(1)
 
+    # 4. Heavy model is required by multi-person ROI pose and must never be
+    # fetched at runtime in a packaged app.
+    if not any(f.endswith("mediapipe/modules/pose_landmark/pose_landmark_heavy.tflite") for f in all_files):
+        print("ERROR: Missing bundled MediaPipe Heavy pose model.", file=sys.stderr)
+        sys.exit(1)
+
     print("Complete bundle layout validation passed: required metadata and data files are present.")
 
 if __name__ == "__main__":

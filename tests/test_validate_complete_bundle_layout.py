@@ -33,6 +33,9 @@ def test_validate_complete_bundle_layout_passes_for_macos_bundle(
     (root / "meta" / "pyannote.audio-1.dist-info" / "METADATA").write_text("", encoding="utf-8")
     (root / "meta" / "speechbrain-1.dist-info").mkdir(parents=True)
     (root / "meta" / "speechbrain-1.dist-info" / "METADATA").write_text("", encoding="utf-8")
+    heavy_model = root / "mediapipe" / "modules" / "pose_landmark" / "pose_landmark_heavy.tflite"
+    heavy_model.parent.mkdir(parents=True)
+    heavy_model.write_bytes(b"model")
 
     module.main()
 

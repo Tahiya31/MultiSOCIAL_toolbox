@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import os
+import re
 import sys
 from importlib.util import find_spec
 from pathlib import Path
@@ -22,6 +23,11 @@ SRC = os.path.join(ROOT, "src")
 HOOKS = os.path.join(ROOT, "hooks")
 BUILD_PROFILE = os.environ.get("MULTISOCIAL_BUILD_PROFILE", "standard").strip().lower()
 APP_NAME = "MultiSOCIAL-Complete" if BUILD_PROFILE == "complete" else "MultiSOCIAL-Standard"
+_pyproject_text = Path(ROOT, "pyproject.toml").read_text(encoding="utf-8")
+_version_match = re.search(r'^version\s*=\s*"([^"]+)"', _pyproject_text, re.MULTILINE)
+if _version_match is None:
+    raise RuntimeError("Could not determine application version from pyproject.toml")
+APP_VERSION = _version_match.group(1)
 IS_MACOS = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
 ICON_ICO = os.path.join(ROOT, "assets", "MultiSOCIAL_logo.ico")
@@ -147,6 +153,11 @@ hiddenimports = [
 
 datas = [
     (os.path.join(ROOT, "assets"), "assets"),
+    (os.path.join(ROOT, "assets", "yolov5s.pt"), "assets"),
+    (
+        os.path.join(ROOT, "assets", "pose_landmark_heavy.tflite"),
+        os.path.join("mediapipe", "modules", "pose_landmark"),
+    ),
     (os.path.join(ROOT, "env.example"), "."),
     (os.path.join(ROOT, "pyproject.toml"), "."),
 ]
@@ -156,7 +167,16 @@ datas += collect_data_files("opensmile")
 datas += collect_data_files("audinterface")
 datas += collect_data_files("imageio_ffmpeg")
 datas += collect_data_files("yolov5")
+datas += collect_data_files("ultralytics")
 datas += collect_data_files("lightning_fabric")
+
+for package in ("yolov5", "ultralytics", "torch", "torchvision"):
+    try:
+        datas += copy_metadata(package)
+    except Exception:
+        pass
+
+hiddenimports += collect_submodules("ultralytics")
 binaries = collect_dynamic_libs("mediapipe")
 binaries += collect_dynamic_libs("audresample")
 binaries += collect_dynamic_libs("opensmile")
@@ -302,6 +322,10 @@ if IS_MACOS:
         name=f"{APP_NAME}.app",
         icon=ICON_ICNS if os.path.exists(ICON_ICNS) else None,
         bundle_identifier="edu.colby.multisocial",
+        info_plist={
+            "CFBundleShortVersionString": APP_VERSION,
+            "CFBundleVersion": APP_VERSION,
+        },
     )
 else:
     exe = EXE(
@@ -313,7 +337,9 @@ else:
         debug=False,
         bootloader_ignore_signals=False,
         strip=False,
-        upx=True,
+        # Keep Windows native-heavy binaries uncompressed. This is a packaging
+        # policy, not a workaround for a specific runtime crash.
+        upx=not IS_WINDOWS,
         console=False,
         icon=ICON_ICO if os.path.exists(ICON_ICO) else None,
         contents_directory='.',
@@ -324,7 +350,7 @@ else:
         a.zipfiles,
         a.datas,
         strip=False,
-        upx=True,
+        upx=not IS_WINDOWS,
         upx_exclude=[],
         name=APP_NAME,
     )

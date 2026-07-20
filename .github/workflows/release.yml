@@ -197,12 +197,33 @@ jobs:
             echo "Broken app bundle layout: ${link_path} must be a symlink." >&2
             exit 1
           fi
+          expected_version="$(python -c "import re; from pathlib import Path; print(re.search(r'^version\\s*=\\s*\\\"([^\\\"]+)\\\"', Path('pyproject.toml').read_text(), re.M).group(1))")"
+          actual_version="$(plutil -extract CFBundleShortVersionString raw "${app_path}/Contents/Info.plist")"
+          if [[ "${actual_version}" != "${expected_version}" ]]; then
+            echo "Incorrect macOS app version: expected ${expected_version}, got ${actual_version}" >&2
+            exit 1
+          fi
           echo "macOS symlink integrity check passed."
 
       - name: Validate complete profile bundle layout
         if: matrix.profile == 'complete'
         shell: bash
         run: python .github/scripts/validate_complete_bundle_layout.py
+
+      - name: Validate packaged Heavy pose model
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_name="MultiSOCIAL-Standard"
+          if [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]]; then
+            app_name="MultiSOCIAL-Complete"
+          fi
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            root="dist/${app_name}"
+          else
+            root="dist/${app_name}.app"
+          fi
+          test -f "${root}/Contents/Resources/mediapipe/modules/pose_landmark/pose_landmark_heavy.tflite" || test -f "${root}/mediapipe/modules/pose_landmark/pose_landmark_heavy.tflite"
 
       - name: Run packaged import smoke test
         shell: bash
@@ -224,7 +245,7 @@ jobs:
             exit 1
           fi
 
-          MULTISOCIAL_IMPORT_SMOKE_TEST=1 "${target}"
+          MULTISOCIAL_IMPORT_SMOKE_TEST=1 MULTISOCIAL_VERIFY_HEAVY_POSE_ASSET=1 "${target}"
 
       - name: Archive release bundle
         shell: bash
