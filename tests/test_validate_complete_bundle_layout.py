@@ -57,3 +57,29 @@ def test_validate_complete_bundle_layout_fails_when_metadata_missing(
         module.main()
 
     assert exc.value.code == 1
+
+
+def test_validate_complete_bundle_layout_accepts_embedded_windows_worker(
+    monkeypatch, tmp_path, capsys, validate_complete_bundle_layout_module
+):
+    module = validate_complete_bundle_layout_module
+    monkeypatch.setenv("MULTISOCIAL_BUILD_PROFILE", "complete")
+    monkeypatch.setenv("RUNNER_OS", "Windows")
+    monkeypatch.chdir(tmp_path)
+
+    root = tmp_path / "dist" / "MultiSOCIAL-Complete" / "worker"
+    for relative in (
+        "Lib/site-packages/lightning_fabric/version.info",
+        "Lib/site-packages/pyannote.audio-1.dist-info/METADATA",
+        "Lib/site-packages/speechbrain-1.dist-info/METADATA",
+        "Lib/site-packages/regex-1.dist-info/METADATA",
+        "Lib/site-packages/requests-1.dist-info/METADATA",
+        "assets/pose_landmark_heavy.tflite",
+    ):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fixture")
+
+    module.main()
+
+    assert "Complete bundle layout validation passed" in capsys.readouterr().out

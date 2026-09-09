@@ -178,6 +178,12 @@ def can_self_install_optional_features() -> bool:
 
 
 def is_diarization_installed() -> bool:
+    if is_frozen_runtime():
+        # Native dependencies live in the private worker on Windows, so the
+        # GUI must use immutable artifact identity instead of probing its own
+        # deliberately minimal import environment.
+        executable_name = os.path.basename(sys.executable).casefold()
+        return "complete" in executable_name
     try:
         return importlib.util.find_spec("pyannote.audio") is not None
     except ModuleNotFoundError:

@@ -3,29 +3,29 @@ This is the main script for multisocial app
 
 '''
 
-# Import necessary system and utility modules
 import glob
 import json
 import os
 import sys
 import threading
 
-# Set up GPU environment specially for Mediapipe (specific for Saturn Cloud), if you use some other high performance computing platform check compatibility before usage
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # Make sure the system uses the GPU
-# Enable MPS fallback for Mac to prevent freezes on unsupported operations
-os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+# These legacy settings are for the non-Windows in-process runtime. Windows
+# analysis runs in the private CPU worker, where MediaPipe GPU is unsupported.
+if not sys.platform.startswith("win"):
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    # Enable MPS fallback for Mac to prevent freezes on unsupported operations.
+    os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 
-# Third-party libraries (assumed pre-installed via the project package metadata)
 import wx
 import unicodedata
 from dotenv import load_dotenv
 
-# Load environment variables from .env file if present
 load_dotenv()
 
 import gui_utils
 import runtime_services
+from analysis_backend import get_backend
 from gui_utils import Theme
 from ui_components import (
     GradientPanel,
@@ -40,32 +40,10 @@ from ui_components import (
     SectionCard,
 )
 
-_PoseProcessorCls = None
+def find_pose_csv_paths(output_folder, video_path, multi_person=None):
+    return get_backend().find_pose_csv_paths(output_folder, video_path, multi_person)
 
-
-def _get_pose_processor_class():
-    """Load pose/Mediapipe only when the user starts a video step (startup stays light on Windows)."""
-    global _PoseProcessorCls
-    if os.environ.get("MULTISOCIAL_IMPORT_SMOKE_TEST") == "1":
-        return None
-    if _PoseProcessorCls is None:
-        from pose import PoseProcessor
-
-        _PoseProcessorCls = PoseProcessor
-    return _PoseProcessorCls
-
-
-# Keep packaged import smoke test lightweight by avoiding heavy ML/native imports.
-if os.environ.get("MULTISOCIAL_IMPORT_SMOKE_TEST") != "1":
-    gui_utils.ensure_ffmpeg_available()
-    from audio import AudioProcessor
-else:
-    AudioProcessor = None
-
-# Enable High DPI on Windows
 gui_utils.setup_high_dpi()
-
-## All dependencies are expected to be installed ahead of time via the project package metadata.
 
 class VideoToWavConverter(wx.Frame):
     def __init__(self, *args, **kw):
@@ -75,9 +53,7 @@ class VideoToWavConverter(wx.Frame):
         self._init_ui()
         
     def _init_state(self):
-        # Start at designed size; prevent shrinking below baseline
         self._baseline_size = None  # will be captured on first resize to drive responsive scaling
-        # Track if a background process is running to prevent UI resets during tab switches
         self._process_running = False
         self._diarization_install_running = False
         self._cancel_event = threading.Event()
@@ -91,7 +67,6 @@ class VideoToWavConverter(wx.Frame):
         self._status_layout_pending = False
         self._status_layout_text = None
         self._status_wrap_width = None
-        # File extensions constants
         self.VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv", ".m4v")
         self.AUDIO_EXTENSIONS = (".wav", ".wave", ".aiff", ".aif", ".aifc", ".flac", ".caf", ".au", ".snd")
 
@@ -183,32 +158,21 @@ class VideoToWavConverter(wx.Frame):
         pnl = GradientPanel(self)
         vbox = wx.BoxSizer(wx.VERTICAL)
         
-        # Add extra space above the title
         vbox.Add((0, 20))
-        
-        # Header (Logo and Title)
         self._create_header(pnl, vbox)
-        
-        # Mode toggle buttons
         self._create_mode_selection(pnl, vbox)
-        
-        # Folder Picker
         self._create_folder_picker(pnl, vbox)
-        
-        # Panels for Video and Audio options (invisible grouping — cards provide chrome)
         self.videoPanel = GlassPanel(pnl, chrome=False)
         self.audioPanel = GlassPanel(pnl, chrome=False)
         
         self._create_video_panel()
         self._create_audio_panel()
         
-        # Assemble panels (centered to a content column; width set in _update_panel_sizes)
         vbox.AddSpacer(self.FromDIP(Theme.SPACE_SM))
         vbox.Add(self.videoPanel, proportion=0, flag=wx.ALIGN_CENTER_HORIZONTAL | wx.TOP, border=Theme.SPACE_SM)
         vbox.Add(self.audioPanel, proportion=0, flag=wx.ALIGN_CENTER_HORIZONTAL | wx.TOP, border=Theme.SPACE_SM)
         vbox.AddSpacer(self.FromDIP(Theme.SPACE_LG))
         
-        # Status and Progress
         self._create_status_and_progress(pnl, vbox)
         
         pnl.SetSizer(vbox)
@@ -216,7 +180,6 @@ class VideoToWavConverter(wx.Frame):
         self.mainPanel.Layout()
         self.mainPanel.FitInside()
         
-        # Final setup (sizing, binding, etc.)
         self._finalize_setup(vbox)
 
     def _create_header(self, pnl, vbox):
@@ -606,7 +569,6 @@ class VideoToWavConverter(wx.Frame):
         self.SetSize((min_w, min_h))
         self.SetTitle(runtime_services.get_app_title())
         
-        # Set Window Icon
         try:
             logo_path = runtime_services.resource_path("assets", "MultiSOCIAL_logo.png")
             if os.path.exists(logo_path):
@@ -619,7 +581,6 @@ class VideoToWavConverter(wx.Frame):
         self.Centre()
         
         self.active_mode = 'video'
-        # Try to load token from environment variable first
         self.hf_token = runtime_services.load_hf_token()
         self.switch_mode('video')
         self.refresh_diarization_state()
@@ -799,7 +760,6 @@ class VideoToWavConverter(wx.Frame):
             else:
                 target_w = min(max(self.FromDIP(360), int(cur_w * 0.70)), self.FromDIP(640))
 
-            # All content blocks share one width so their edges align.
             tab_h = self.FromDIP(50)
             for block in (
                 getattr(self, 'headerBar', None),
@@ -1110,7 +1070,7 @@ class VideoToWavConverter(wx.Frame):
         event.Skip()
 
     def set_status_message(self, message):
-        """Safely update the centered status label with emoji-free text prefixed by 'Status:'."""
+        """Safely update the centered status label with emoji-free text."""
         if hasattr(self, 'statusLabel'):
             # Remove emojis and most symbol-like non-ASCII chars
             try:
@@ -1126,7 +1086,7 @@ class VideoToWavConverter(wx.Frame):
                 except Exception:
                     sanitized = str(message)
 
-            final_text = f"Status: {sanitized}" if sanitized else "Status:"
+            final_text = sanitized or "Ready."
             if final_text in (self._pending_status_text, self._displayed_status_text):
                 return
             self._pending_status_text = final_text
@@ -1317,7 +1277,6 @@ class VideoToWavConverter(wx.Frame):
         if not self._ensure_output_directory(self.converted_audio_folder, "converted_audio"):
             return
 
-        # Process each video file in a separate thread
         self._begin_process()
         thread = threading.Thread(target=self.convert_all_videos_to_wav, args=(video_files,))
         thread.start()
@@ -1418,10 +1377,10 @@ class VideoToWavConverter(wx.Frame):
                 csv_paths = self._pose_csv_paths_for_embedded_video(video)
 
                 if not csv_paths:
-                    self.set_status_message(f"⚠️ No CSVs found for {base}; skipping")
+                    self.set_status_message(f"No CSVs found for {base}; skipping")
                     continue
 
-                self.set_status_message(f"🔎 Verifying pose match: {os.path.basename(video)}")
+                self.set_status_message(f"Verifying pose match: {os.path.basename(video)}")
                 try:
                     worst_dir = os.path.join(worst_frames_root, base)
                     def verify_progress(local_progress, file_index=i, file_total=total):
@@ -1456,13 +1415,11 @@ class VideoToWavConverter(wx.Frame):
                         "min_hit_rate": report.get("min_hit_rate"),
                     })
                 except Exception as e:
-                    self.set_status_message(f"❌ Verification failed for {base}: {e}")
+                    self.set_status_message(f"Verification failed for {base}: {e}")
 
-                # Progress update
                 overall = int((i / max(1, total)) * 100)
                 self.update_progress(overall)
 
-            # Write summary JSON
             try:
                 import json
                 summary_path = os.path.join(verification_dir, "summary.json")
@@ -1534,11 +1491,6 @@ class VideoToWavConverter(wx.Frame):
         if not self._ensure_output_directory(self.extracted_pose_folder, "pose_features"):
             return
 
-        PoseCls = _get_pose_processor_class()
-        if PoseCls is None:
-            wx.MessageBox("Pose extraction is unavailable in this launch mode.", "Error", wx.OK | wx.ICON_ERROR)
-            return
-
         stride_val = 1
         try:
             stride_val = max(1, int(self.frameStrideInput.GetValue()))
@@ -1547,7 +1499,7 @@ class VideoToWavConverter(wx.Frame):
         downscale_to = (1280, 720) if (hasattr(self, "downscaleCheckbox") and self.downscaleCheckbox.GetValue()) else None
 
         try:
-            pose_processor = PoseCls(
+            pose_processor = get_backend().create_pose_processor(
                 self.extracted_pose_folder,
                 status_callback=self.set_status_message,
                 frame_threshold=self.frameThresholdInput.GetValue(),
@@ -1577,8 +1529,6 @@ class VideoToWavConverter(wx.Frame):
         failed = False
         failures = []
         try:
-            from pose import find_pose_csv_paths
-
             total_files = len(video_files)
             multi_person = bool(getattr(pose_processor, "enable_multi_person_pose", False))
             mode_label = "multi-person" if multi_person else "single-person"
@@ -1653,8 +1603,6 @@ class VideoToWavConverter(wx.Frame):
             )
             return
 
-        from pose import find_pose_csv_paths
-
         multi_person = bool(
             hasattr(self, "multiPersonCheckbox") and self.multiPersonCheckbox.GetValue()
         )
@@ -1678,11 +1626,6 @@ class VideoToWavConverter(wx.Frame):
             )
             return
 
-        PoseCls = _get_pose_processor_class()
-        if PoseCls is None:
-            wx.MessageBox("Pose embedding is unavailable in this launch mode.", "Error", wx.OK | wx.ICON_ERROR)
-            return
-
         if not self._ensure_output_directory(self.embedded_pose_folder, "embedded_pose"):
             return
 
@@ -1694,7 +1637,7 @@ class VideoToWavConverter(wx.Frame):
         downscale_to = (1280, 720) if (hasattr(self, "downscaleCheckbox") and self.downscaleCheckbox.GetValue()) else None
 
         try:
-            pose_processor = PoseCls(
+            pose_processor = get_backend().create_pose_processor(
                 output_csv_folder=self.extracted_pose_folder,
                 output_video_folder=self.embedded_pose_folder,
                 status_callback=self.set_status_message,
@@ -1934,10 +1877,9 @@ class VideoToWavConverter(wx.Frame):
         if not self._ensure_output_directory(self.extracted_audio_folder, "audio_features"):
             return
 
-        # Initialize audio processor
-        audio_processor = AudioProcessor(
+        audio_processor = get_backend().create_audio_processor(
             output_audio_features_folder=self.extracted_audio_folder,
-            output_transcripts_folder=None,  # Not needed for feature extraction
+            output_transcripts_folder=None,
             status_callback=self.set_status_message
         )
 
@@ -2024,7 +1966,6 @@ class VideoToWavConverter(wx.Frame):
                 return
 
             enable_diarization = True
-            # Check if we already have a token (from env or previous entry)
             if not self.hf_token:
                 dlg = wx.TextEntryDialog(
                     self,
@@ -2056,8 +1997,7 @@ class VideoToWavConverter(wx.Frame):
                 )
                 enable_diarization = False
 
-        # Initialize audio processor
-        audio_processor = AudioProcessor(
+        audio_processor = get_backend().create_audio_processor(
             output_audio_features_folder=None,
             output_transcripts_folder=self.extracted_transcripts_folder,
             status_callback=self.set_status_message,
@@ -2083,7 +2023,6 @@ class VideoToWavConverter(wx.Frame):
             hasattr(self, 'wordTimestampsCheckbox') and self.wordTimestampsCheckbox.GetValue()
         )
 
-        # Run transcription in a separate thread
         self._begin_process()
         thread = threading.Thread(
             target=self.extract_transcripts_batch,
@@ -2144,7 +2083,6 @@ class VideoToWavConverter(wx.Frame):
 
         self.configure_output_paths(folder_path)
 
-        # Check if we have features and transcripts
         if not self.extracted_audio_folder or not os.path.exists(self.extracted_audio_folder):
             wx.MessageBox(
                 "Audio features haven't been extracted yet.\n\n"
@@ -2168,7 +2106,6 @@ class VideoToWavConverter(wx.Frame):
         if not self._ensure_output_directory(self.extracted_transcripts_folder, "transcripts"):
             return
 
-        # Run in thread
         self._begin_process()
         thread = threading.Thread(target=self.align_features_batch, args=(audio_files,))
         thread.start()
@@ -2182,7 +2119,7 @@ class VideoToWavConverter(wx.Frame):
             # so diarization is explicitly disabled: otherwise the AudioProcessor
             # default (enabled) would offload Whisper and attempt pyannote for every
             # file we auto-transcribe here, which is slow and needs an HF token.
-            audio_processor = AudioProcessor(
+            audio_processor = get_backend().create_audio_processor(
                 output_audio_features_folder=self.extracted_audio_folder,
                 output_transcripts_folder=self.extracted_transcripts_folder,
                 status_callback=self.set_status_message,
@@ -2199,12 +2136,10 @@ class VideoToWavConverter(wx.Frame):
                     break
                 base_name = os.path.splitext(os.path.basename(audio_file))[0]
 
-                # 1. Ensure we have word-level transcript (JSON)
                 json_path = os.path.join(self.extracted_transcripts_folder, f"{base_name}_words.json")
                 if not os.path.exists(json_path):
-                    self.set_status_message(f"📝 Generating word-level transcript for: {base_name}")
+                    self.set_status_message(f"Generating word-level transcript for: {base_name}")
                     try:
-                        # Force word timestamps
                         audio_processor.extract_transcript(audio_file, word_timestamps=True)
                     except Exception as e:
                         print(f"Failed to generate transcript for {base_name}: {e}")
@@ -2217,16 +2152,11 @@ class VideoToWavConverter(wx.Frame):
                         prep_errors.append((base_name, "word-level JSON was not produced"))
                         continue
 
-                # 2. Ensure we have features CSV
-                # Feature files are usually named {base_name}.csv or similar in extracted_audio_folder
-                # The AudioProcessor.extract_audio_features saves them as {base_name}.csv
                 feature_csv = os.path.join(self.extracted_audio_folder, f"{base_name}.csv")
                 if not os.path.exists(feature_csv):
-                    self.set_status_message(f"🎵 Extracting audio features for: {base_name}")
+                    self.set_status_message(f"Extracting audio features for: {base_name}")
                     try:
-                        # Auto-extract missing features for this file
                         audio_processor.extract_audio_features(audio_file)
-                        # Verify the file was created
                         if not os.path.exists(feature_csv):
                             print(f"Feature extraction completed but file not found: {feature_csv}, skipping.")
                             prep_errors.append((base_name, "feature CSV was not produced"))
@@ -2236,7 +2166,6 @@ class VideoToWavConverter(wx.Frame):
                         prep_errors.append((base_name, f"feature extraction failed: {e}"))
                         continue
 
-                # 3. Output path
                 output_csv = os.path.join(self.extracted_audio_folder, f"{base_name}_aligned.csv")
                 alignment_pairs.append((feature_csv, json_path, output_csv))
 
@@ -2280,31 +2209,20 @@ class VideoToWavConverter(wx.Frame):
 
 def main():
     if os.environ.get("MULTISOCIAL_IMPORT_SMOKE_TEST") == "1":
-        if os.environ.get("MULTISOCIAL_VERIFY_HEAVY_POSE_ASSET") == "1":
-            heavy_model = runtime_services.resource_path(
-                "mediapipe", "modules", "pose_landmark", "pose_landmark_heavy.tflite"
-            )
-            if not os.path.isfile(heavy_model):
-                print(f"ERROR: Missing bundled Heavy pose model: {heavy_model}", file=sys.stderr, flush=True)
-                sys.exit(1)
-            print("Bundled Heavy pose model check passed.", flush=True)
         profile = runtime_services.get_build_profile().lower()
-        if profile == "complete":
-            try:
-                runtime_services.preload_frozen_windows_diarization_dependencies()
-                import pyannote.audio
-                print("Import smoke test passed (complete profile).", flush=True)
-            except ImportError as e:
-                print(f"ERROR: pyannote.audio import failed: {e}", file=sys.stderr, flush=True)
-                sys.exit(1)
-        else:
-            print("Import smoke test passed (standard profile).", flush=True)
+        try:
+            message = get_backend().validate_import_smoke(
+                profile,
+                os.environ.get("MULTISOCIAL_VERIFY_HEAVY_POSE_ASSET") == "1",
+            )
+        except Exception as exc:
+            print(f"ERROR: {exc}", file=sys.stderr, flush=True)
+            sys.exit(1)
+        print(message, flush=True)
         return
 
-    # Create wx.App FIRST before any wx calls (including MessageBox)
+    # wx must be initialized before any UI call, including MessageBox.
     app = wx.App()
-    
-    # Now we can safely show message boxes
     if not gui_utils.ensure_ffmpeg_available():
         msg = (
             "ffmpeg was not found. Install it or let the app use a bundled one.\n\n"
@@ -2320,6 +2238,3 @@ def main():
     frm = VideoToWavConverter(None)
     frm.Show()
     app.MainLoop()
-
-if __name__ == '__main__':
-    main()

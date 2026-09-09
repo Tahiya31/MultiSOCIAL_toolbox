@@ -41,9 +41,28 @@ def main():
         print(f"ERROR: Missing speechbrain METADATA in packaged app. Did copy_metadata('speechbrain') fail?", file=sys.stderr)
         sys.exit(1)
 
+    if runner_os == "Windows":
+        for distribution in ("regex", "requests"):
+            if not any(
+                Path(path).name == "METADATA"
+                and f"{distribution}-" in path.casefold()
+                and ".dist-info/" in path.casefold()
+                for path in all_files
+            ):
+                print(
+                    f"ERROR: Missing {distribution} distribution metadata required by Transformers.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
     # 4. Heavy model is required by multi-person ROI pose and must never be
     # fetched at runtime in a packaged app.
-    if not any(f.endswith("mediapipe/modules/pose_landmark/pose_landmark_heavy.tflite") for f in all_files):
+    heavy_model_suffix = (
+        "worker/assets/pose_landmark_heavy.tflite"
+        if runner_os == "Windows"
+        else "mediapipe/modules/pose_landmark/pose_landmark_heavy.tflite"
+    )
+    if not any(f.endswith(heavy_model_suffix) for f in all_files):
         print("ERROR: Missing bundled MediaPipe Heavy pose model.", file=sys.stderr)
         sys.exit(1)
 

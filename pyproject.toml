@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "multisocial-toolbox"
-version = "1.2.1"
+version = "1.2.2"
 description = "Desktop toolbox for multimodal interaction analysis across video and audio."
 readme = "README.md"
 requires-python = ">=3.10,<3.11"
@@ -54,14 +54,22 @@ dev = [
 [tool.setuptools]
 include-package-data = true
 py-modules = [
+  "analysis_backend",
   "app",
+  "app_macos",
+  "app_windows",
   "audio",
   "captions",
   "gui_utils",
+  "macos_packaged_e2e",
+  "native_backend",
+  "native_worker_client",
   "pose",
   "runtime_services",
+  "source_entry",
   "ui_components",
   "verify_pose_embedding",
+  "worker_backend",
 ]
 
 [tool.setuptools.package-dir]

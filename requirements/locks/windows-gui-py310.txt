@@ -1,0 +1,113 @@
+# Windows GUI-only packaging lock (no native analysis stack)
+# Generated from the committed pip-compile lock; every installed file remains hash-checked.
+# Install with: pip install --require-hashes --no-deps -r <this-file>
+
+altgraph==0.17.5 \
+    --hash=sha256:c87b395dd12fabde9c99573a9749d67da8d29ef9de0125c7f536699b4a9bc9e7 \
+    --hash=sha256:f3a22400bce1b0c701683820ac4f3b159cd301acab067c51c653e06961600597
+    # via pyinstaller
+imageio-ffmpeg==0.6.0 \
+    --hash=sha256:02fa47c83703c37df6bfe4896aab339013f62bf02c5ebf2dce6da56af04ffc0a \
+    --hash=sha256:196faa79366b4a82f95c0f4053191d2013f4714a715780f0ad2a68ff37483cc2 \
+    --hash=sha256:1d47bebd83d2c5fc770720d211855f208af8a596c82d17730aa51e815cdee6dc \
+    --hash=sha256:9d2baaf867088508d4a3458e61eeb30e945c4ad8016025545f66c4b5aaef0a61 \
+    --hash=sha256:b1ae3173414b5fc5f538a726c4e48ea97edc0d2cdc11f103afee655c463fa742 \
+    --hash=sha256:c7e46fcec401dd990405049d2e2f475e2b397779df2519b544b8aab515195282 \
+    --hash=sha256:e2556bed8e005564a9f925bb7afa4002d82770d6b08825078b7697ab88ba1755
+    # via multisocial-toolbox (pyproject.toml)
+msvc-runtime==14.42.34433 ; platform_system == "Windows" \
+    --hash=sha256:087e2a7906b953970d93f37ea740605688eff616fa7ad42cc46e15137797e7e6 \
+    --hash=sha256:0d873db88d3027e3a9b2abf8b2104af96199a317f940802bce2d234dd4aa915c \
+    --hash=sha256:0f1c2733bf16fee37ab5f48a4c1cdf8f8bd26a945679a111e4219396e89a9049 \
+    --hash=sha256:2adaf04bc5a7290b669fcc404a96750c1c6d8ffb8fe1037c264371bf67bca210 \
+    --hash=sha256:3a339f6dd8c8830743ef250a46683cb77b40633aaf1e5cf4032753f2c46f5afd \
+    --hash=sha256:60ab9e5ca8ef3e230ead1a3db66340628aafc25f0c10d0195ced8f5a2e24883f \
+    --hash=sha256:7211342b24025fd0294f7920814c5a5dc95a22fd03c8bc729ca980fb21df3f2b \
+    --hash=sha256:791f60e9d8479065c6e9c6b1ae1d31555a6bb41a2e649f705bd96566a79bd1df \
+    --hash=sha256:7d1fc5675c3d9769b3f05b9a57156211a053415f0dab938493c2d490c84187a4 \
+    --hash=sha256:89574bc376a48e349f97b6dde289367b0a32dedaf3774ef64ed4330e9823e09c \
+    --hash=sha256:a54c001e058ca22d88c30dc348d06fa704708ca9369464e52ed80b130bb47b4e \
+    --hash=sha256:d4da7241349e9bf7d79346680f180b29bcc8aff242bd3de075529be71c097271 \
+    --hash=sha256:e934840ebbef53f51febfacdb4f39965060a818cee3429da9fcfd396c61595cf \
+    --hash=sha256:f4ffbb6bdde4870f4995234423a46ac650cc2535c7812605bd457d064a77345e
+    # via multisocial-toolbox (pyproject.toml)
+packaging==26.2 \
+    --hash=sha256:5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e \
+    --hash=sha256:ff452ff5a3e828ce110190feff1178bb1f2ea2281fa2075aadb987c2fb221661
+    # via
+    #   audobject
+    #   huggingface-hub
+    #   lazy-loader
+    #   matplotlib
+    #   pyinstaller
+    #   pyinstaller-hooks-contrib
+    #   pytest
+    #   scikit-image
+    #   tensorboard
+    #   transformers
+pefile==2023.2.7 \
+    --hash=sha256:82e6114004b3d6911c77c3953e3838654b04511b8b66e8583db70c65998017dc \
+    --hash=sha256:da185cd2af68c08a6cd4481f7325ed600a88f6a813bad9dea07ab3ef73d8d8d6
+    # via pyinstaller
+pyinstaller==6.11.1 \
+    --hash=sha256:0d6475559c4939f0735122989611d7f739ed3bf02f666ce31022928f7a7e4fda \
+    --hash=sha256:208c0ef6dab0837a0a273ea32d1a3619a208e3d1fe3fec3785eea71a77fd00ce \
+    --hash=sha256:2e8365276c5131c9bef98e358fbc305e4022db8bedc9df479629d6414021956a \
+    --hash=sha256:32c742a24fe65d0702958fadf4040f76de85859c26bec0008766e5dbabc5b68f \
+    --hash=sha256:35e6b8077d240600bb309ed68bb0b1453fd2b7ab740b66d000db7abae6244423 \
+    --hash=sha256:44e36172de326af6d4e7663b12f71dbd34e2e3e02233e181e457394423daaf03 \
+    --hash=sha256:491dfb4d9d5d1d9650d9507daec1ff6829527a254d8e396badd60a0affcb72ef \
+    --hash=sha256:6d12c45a29add78039066a53fb05967afaa09a672426072b13816fe7676abfc4 \
+    --hash=sha256:7ac83c0dc0e04357dab98c487e74ad2adb30e7eb186b58157a8faf46f1fa796f \
+    --hash=sha256:ad84abf465bcda363c1d54eafa76745d77b6a8a713778348377dc98d12a452f7 \
+    --hash=sha256:ddc0fddd75f07f7e423da1f0822e389a42af011f9589e0269b87e0d89aa48c1f \
+    --hash=sha256:e21c7806e34f40181e7606926a14579f848bfb1dc52cbca7eea66eccccbfe977
+    # via multisocial-toolbox (pyproject.toml)
+pyinstaller-hooks-contrib==2026.6 \
+    --hash=sha256:bef5002c32f4f50bd55b005da12cff64eca8783e7eaf86a06a62410164bab725 \
+    --hash=sha256:fd13b8ac126b35361175edacd41a0d97080b75dd5f4b594ecefefff969509dd3
+    # via pyinstaller
+python-dotenv==1.2.1 \
+    --hash=sha256:42667e897e16ab0d66954af0e60a9caa94f0fd4ecf3aaf6d2d260eec1aa36ad6 \
+    --hash=sha256:b81ee9561e9ca4004139c6cbba3a238c32b03e4894671e181b671e8cb8425d61
+    # via
+    #   multisocial-toolbox (pyproject.toml)
+    #   roboflow
+pywin32-ctypes==0.2.3 \
+    --hash=sha256:8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8 \
+    --hash=sha256:d162dc04946d704503b2edc4d55f3dba5c1d539ead017afa00142c38b9885755
+    # via pyinstaller
+wxpython==4.2.3 \
+    --hash=sha256:0a66b0d6fe1d7e8e133fdfdee3cae95f70cc433929f36af08f377e103584f49c \
+    --hash=sha256:0b1b5ac5ced6bc46a4bf9041d16b3e35373a5a0c1dddac9384b59c43d06cc294 \
+    --hash=sha256:0f73aebf960f0ec6961454841deed242c2d852066ab2c538e617c5eabd95bd7b \
+    --hash=sha256:20d6e0c927e27ced85643719bd63e9f7fd501df6e9a8aab1489b039897fd7c01 \
+    --hash=sha256:23afd08aa530a5ede0bcee0526ce185e38e28374ef5c3d2f65f058c1d7204f67 \
+    --hash=sha256:361db46442376ba1cae4ce9f8fab4081b4d085458f973b4c10b68e04492067ad \
+    --hash=sha256:39bd411bcdf60d0e06d4ea8a5129e75c37e31d024906a92a91f6690564a35cc3 \
+    --hash=sha256:4e5028d7092701ab20b3bef4547d6a7d528d82f12192d72595eeb98b2ebe6364 \
+    --hash=sha256:676aeb82d64d3d3cb94210e882a508bb1013de5fb55917f54f8dd2c1483f9110 \
+    --hash=sha256:718a1560e341b5c4755fe9e8a431a1c6796a9d742a4bfce7ebd90d8a71ac0dd4 \
+    --hash=sha256:80df5158129577b8b1153b9af28ef18cf738a8f200e87c836a1dfc9ca61f86b7 \
+    --hash=sha256:81c551460392040fddbf2ced6e477a0b842b8a1598c68c5c7bc5580d373cf108 \
+    --hash=sha256:84a01d90c4514d738a05d9045f62b1f1850fbe8d967b4ae545ba090e74cb1216 \
+    --hash=sha256:8e729d3110a6ed5f6520371bb3cd5f05f993f6b40d5f80ec6446b8678f2fc2ac \
+    --hash=sha256:9040fe6ae7e0fd1b33c7020c392a08f94d205614a24e23b9c7a3a74a9836140d \
+    --hash=sha256:9231853d8a15b0610a6153cbef65f392164c17f234c65916df499619f7e75bd9 \
+    --hash=sha256:a1a367e4242ae83aedbaf2728f622be8ee7aec4721eb4254fe8cf2d86f893bc5 \
+    --hash=sha256:a7c95c385895b94b4784a78c06a1626329c3552fcc47a78ab88f0a02ffe1e2db \
+    --hash=sha256:c007b153ebf74a8429789a5dcb93c76b3901c531b1413695fdb96f222ec207fc \
+    --hash=sha256:c8ce9223d256b69815ef2c64842fb6a70303ab46d262b601382adff053779ab3 \
+    --hash=sha256:d2cf6a99ec39440298a2c6fbbfd95e386f0ad7d56ae7880553c1ae45709c091a \
+    --hash=sha256:dac14ea1b04d90b403414f0401704beecae0d3e7143755a20da0ac2cfec02bf9 \
+    --hash=sha256:e5c413a592b355bf3a6705a73051977c8c2558fd4a3d38a6a8b428bdccbabc77 \
+    --hash=sha256:f9d5a08199adb8e66ac15bdd494b398f5fa53e7a31ecd9dc07f522265d61aa47
+    # via multisocial-toolbox (pyproject.toml)
+setuptools==80.10.2 \
+    --hash=sha256:8b0e9d10c784bf7d262c4e5ec5d4ec94127ce206e8738f29a437945fbc219b70 \
+    --hash=sha256:95b30ddfb717250edb492926c92b5221f7ef3fbcc2b07579bcd4a27da21d0173
+    # via
+    #   multisocial-toolbox (pyproject.toml)
+    #   pyinstaller
+    #   tensorboard
+    #   yolov5

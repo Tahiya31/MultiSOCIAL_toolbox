@@ -4,7 +4,6 @@ import shutil
 import unicodedata
 import wx
 
-# --- Constants & Theme ---
 import sys
 import subprocess
 import ctypes
@@ -59,20 +58,12 @@ class TransparentStaticText(stattext.GenStaticText):
         super(TransparentStaticText, self).__init__(*args, **kwargs)
         self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
         if sys.platform.startswith("win"):
-            # Set initial background to gradient start color to prevent white flash
             self.SetBackgroundColour(wx.Colour(Theme.COLOR_BG_GRADIENT_START))
         self.Bind(wx.EVT_ERASE_BACKGROUND, lambda e: None)
 
     def OnPaint(self, event):
         dc = wx.AutoBufferedPaintDC(self)
-        # Note: DoPrepareDC is only for ScrolledWindow subclasses, not Controls.
-        # Scroll offset is handled manually below via CalcUnscrolledPosition.
-        
-        # 1. Paint Background to match the parent environment
-        # Find the GradientPanel and calculate relative position
-        # Start with fallback background (use gradient color on Windows to avoid gray)
         if sys.platform.startswith("win"):
-            # Use gradient start color as fallback instead of system gray
             fallback_color = wx.Colour(Theme.COLOR_BG_GRADIENT_START)
             dc.SetBackground(wx.Brush(fallback_color))
         else:
@@ -80,77 +71,51 @@ class TransparentStaticText(stattext.GenStaticText):
         dc.Clear()
         
         try:
-            # Walk up to find GradientPanel
             win = self.GetParent()
             glass_parent = None
             gradient_parent = None
             
-            # Simple check since we know the structure: GlassPanel -> GradientPanel
-            # Or directly GradientPanel
-            if hasattr(win, "fill_rgba"): # Identify GlassPanel by attribute
+            if hasattr(win, "fill_rgba"):
                 glass_parent = win
                 win = win.GetParent()
                 
-            # Check for GradientPanel (ScrolledWindow with OnPaint gradient logic)
-            # We assume it's the next parent up
             if win:
                 gradient_parent = win
 
             if gradient_parent:
-                # Get dimensions
-                # Use VirtualSize because gradient covers whole scroll area
                 fw, fh = gradient_parent.GetVirtualSize()
                 fh = max(fh, 1) # avoid div zero
-                
-                # Determine absolute logical Y of this control's top and bottom
-                # Using screen positions for simplicity.
-                # NOTE: Gradient is painted on the Virtual canvas.
-                # So we need (ChildScreenPos - GradientScreenPos) + ScrollOffset
                 
                 child_screen = self.GetScreenPosition()
                 grad_screen = gradient_parent.GetScreenPosition()
                 
-                # CalcUnscrolledPosition(0,0) gives the scroll offset in pixels
                 scroll_x, scroll_y = gradient_parent.CalcUnscrolledPosition(0, 0)
                 
                 rel_y_top = (child_screen.y - grad_screen.y) + scroll_y
                 rel_y_bot = rel_y_top + self.GetSize().height
                 
-                # Colors
-                c_start = wx.Colour(Theme.COLOR_BG_GRADIENT_START) # Bottom (if NORTH)
-                c_end = wx.Colour(Theme.COLOR_BG_GRADIENT_END)     # Top (if NORTH)
-                # wx.NORTH means Gradient starts at bottom?
-                # "wx.NORTH: The starting color is at the bottom"
-                # So y=0 is END, y=H is START.
-                
-                # Calculate color at top and bottom of this control
-                # Linear interp: val = End * (1-pct) + Start * pct
+                # wx.NORTH paints from the end colour at the top to the start
+                # colour at the bottom.
+                c_start = wx.Colour(Theme.COLOR_BG_GRADIENT_START)
+                c_end = wx.Colour(Theme.COLOR_BG_GRADIENT_END)
                 pct_top = max(0.0, min(1.0, rel_y_top / float(fh)))
                 pct_bot = max(0.0, min(1.0, rel_y_bot / float(fh)))
                 
                 color_top = _mix_colors(c_end, c_start, pct_top)
                 color_bot = _mix_colors(c_end, c_start, pct_bot)
                 
-                # If inside GlassPanel, blend the glass color on top
                 if glass_parent:
                     glass_color = wx.Colour(*Theme.COLOR_GLASS_FILL[:3])
                     alpha = Theme.COLOR_GLASS_FILL[3] / 255.0
-                    # Composite: Result = Glass * alpha + Gradient * (1-alpha)
                     color_top = _mix_colors(color_top, glass_color, alpha)
                     color_bot = _mix_colors(color_bot, glass_color, alpha)
 
-                # Fill the background with gradient (top to bottom)
-                # wx.SOUTH means starting color is at top
                 rect = self.GetClientRect()
                 dc.GradientFillLinear(rect, color_top, color_bot, wx.SOUTH)
 
-        except Exception as e:
-            # Fallback if math fails
-            # print(f"bg error: {e}")
+        except Exception:
             pass
 
-        # 2. Draw Text
-        # Use GCDC for nice antialiasing
         try:
             gc = wx.GCDC(dc)
             dc_to_use = gc

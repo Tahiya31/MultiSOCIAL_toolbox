@@ -144,4 +144,4 @@ fi
 
 echo "Starting MultiSOCIAL Toolbox..."
 export MULTISOCIAL_INSTALL_PROFILE="$INSTALL_PROFILE"
-python "$SCRIPT_DIR/src/app.py"
+python "$SCRIPT_DIR/src/source_entry.py"

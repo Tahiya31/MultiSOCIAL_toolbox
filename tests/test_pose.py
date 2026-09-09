@@ -164,6 +164,28 @@ def _write_min_pose_csv(path, *, frame=0, person_id=0, x=0.5, y=0.5, confidence=
     pd.DataFrame([row], columns=columns).to_csv(path, index=False)
 
 
+def _yolo_person_box(x1, y1, x2, y2, confidence=0.9):
+    values = [x1, y1, x2, y2, confidence, 0]
+
+    class _Slice:
+        def __init__(self, data):
+            self._data = data
+
+        def int(self):
+            return self
+
+        def tolist(self):
+            return list(self._data)
+
+    class _Box:
+        def __getitem__(self, key):
+            if isinstance(key, slice):
+                return _Slice(values[key])
+            return values[key]
+
+    return _Box()
+
+
 def test_extract_pose_features_cancel_check_stops_early(import_pose, tmp_path, monkeypatch):
     pose = import_pose
     monkeypatch.setattr(pose, "ensure_yolov5_weights", lambda: None)
@@ -181,6 +203,22 @@ def test_extract_pose_features_cancel_check_stops_early(import_pose, tmp_path, m
     assert result is False
     assert checks["n"] <= 4
 
+
+def test_extract_pose_features_writes_all_single_person_rows(import_pose, tmp_path):
+    pose = import_pose
+    processor = pose.PoseProcessor(str(tmp_path))
+    landmarks = [types.SimpleNamespace(x=0.1, y=0.2, z=0.3, visibility=0.9) for _ in range(33)]
+    processor.pose.process = lambda image: types.SimpleNamespace(
+        pose_landmarks=types.SimpleNamespace(landmark=landmarks)
+    )
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake")
+
+    assert processor.extract_pose_features(str(video)) is True
+
+    rows = pd.read_csv(tmp_path / "clip_ID_0.csv")
+    assert len(rows) == 20
+    assert rows["frame"].tolist() == list(range(20))
 
 def test_frozen_yolov5_weights_missing_does_not_download(import_pose, tmp_path, monkeypatch):
     pose = import_pose
@@ -215,6 +253,10 @@ def test_extract_pose_features_stride_progress_reaches_100(import_pose, tmp_path
     assert result is True
     assert progress[-1] == 100
     assert max(progress) == 100
+    assert processor._max_lost_frames == int((29.97 / 5) * processor.MAX_LOST_SECONDS)
+    assert processor._retired_track_ttl_frames == int(
+        (29.97 / 5) * processor.RETIRED_TRACK_TTL_SECONDS
+    )
 
 
 def test_extract_pose_features_stride_status_reaches_source_end(import_pose, tmp_path, monkeypatch):
@@ -365,7 +407,7 @@ def test_csv_row_to_pts_maps_normalized_coordinates(import_pose):
     assert pts[1] is None
 
 
-def test_roi_spawn_assigns_monotonic_ids(import_pose, tmp_path, monkeypatch):
+def test_roi_spawn_confirms_before_assigning_monotonic_ids(import_pose, tmp_path, monkeypatch):
     pose = import_pose
     monkeypatch.setattr(pose, "ensure_yolov5_weights", lambda: None)
     processor = pose.PoseProcessor(str(tmp_path))
@@ -406,8 +448,344 @@ def test_roi_spawn_assigns_monotonic_ids(import_pose, tmp_path, monkeypatch):
     )
     image = np.zeros((40, 40, 3), dtype=np.uint8)
     rois = processor._seed_rois_if_needed(image, 40, 40, [], margin_ratio=0.0)
+    assert rois == []
+    assert model_complexities == []
+
+    rois = processor._seed_rois_if_needed(image, 40, 40, rois, margin_ratio=0.0)
     assert [r["id"] for r in rois] == [0, 1]
     assert model_complexities == [2, 2]
+    assert all(roi["provisional"] for roi in rois)
+
+
+def test_roi_spawn_discards_one_pass_and_low_confidence_false_detections(import_pose, tmp_path):
+    pose = import_pose
+    processor = pose.PoseProcessor(str(tmp_path))
+    processor._next_pid = 0
+
+    def make_box(x1, y1, x2, y2, confidence):
+        values = [x1, y1, x2, y2, confidence, 0]
+
+        class _Slice:
+            def __init__(self, data):
+                self._data = data
+
+            def int(self):
+                return self
+
+            def tolist(self):
+                return list(self._data)
+
+        class _Box:
+            def __getitem__(self, key):
+                if isinstance(key, slice):
+                    return _Slice(values[key])
+                return values[key]
+
+        return _Box()
+
+    responses = iter([
+        [make_box(0, 0, 10, 10, 0.9)],
+        [],
+        [make_box(0, 0, 10, 10, 0.39)],
+    ])
+    processor.yolo = types.SimpleNamespace(
+        predict=lambda *a, **k: types.SimpleNamespace(xyxy=[next(responses)])
+    )
+    image = np.zeros((40, 40, 3), dtype=np.uint8)
+
+    rois = processor._seed_rois_if_needed(image, 40, 40, [], margin_ratio=0.0)
+    assert rois == []
+    rois = processor._seed_rois_if_needed(image, 40, 40, rois, margin_ratio=0.0)
+    assert rois == []
+    rois = processor._seed_rois_if_needed(image, 40, 40, rois, margin_ratio=0.0)
+    assert rois == []
+
+
+def test_provisional_roi_requires_two_meaningful_pose_results(import_pose, tmp_path):
+    pose = import_pose
+    processor = pose.PoseProcessor(str(tmp_path))
+    landmarks = [types.SimpleNamespace(x=0.5, y=0.5, z=0.0, visibility=0.9) for _ in range(33)]
+
+    class _Pose:
+        def process(self, image):
+            return types.SimpleNamespace(
+                pose_landmarks=types.SimpleNamespace(landmark=landmarks)
+            )
+
+    rois = [{
+        "id": 0, "x1": 0, "y1": 0, "x2": 10, "y2": 10,
+        "lost": 0, "pose": _Pose(), "overlap_streak": 0,
+        "provisional": True, "pose_hits": 0,
+    }]
+    image = np.zeros((20, 20, 3), dtype=np.uint8)
+
+    outputs, rois = processor._process_multiperson_frame(image, 20, 20, rois)
+    assert outputs == []
+    assert rois[0]["provisional"] is True
+    outputs, rois = processor._process_multiperson_frame(image, 20, 20, rois)
+    assert [person_id for person_id, _ in outputs] == [0]
+    assert rois[0]["provisional"] is False
+
+
+def test_confirmed_roi_keeps_existing_partial_pose_behavior(import_pose, tmp_path):
+    pose = import_pose
+    processor = pose.PoseProcessor(str(tmp_path))
+    landmarks = [types.SimpleNamespace(x=0.5, y=0.5, z=0.0, visibility=0.1) for _ in range(33)]
+
+    class _Pose:
+        def process(self, image):
+            return types.SimpleNamespace(
+                pose_landmarks=types.SimpleNamespace(landmark=landmarks)
+            )
+
+    rois = [{
+        "id": 0, "x1": 0, "y1": 0, "x2": 10, "y2": 10,
+        "lost": 0, "pose": _Pose(), "overlap_streak": 0,
+        "provisional": False,
+    }]
+    outputs, rois = processor._process_multiperson_frame(
+        np.zeros((20, 20, 3), dtype=np.uint8), 20, 20, rois
+    )
+
+    assert [person_id for person_id, _ in outputs] == [0]
+    assert rois[0]["lost"] == 0
+
+
+def test_pending_spawn_accepts_normal_motion_on_next_frame(import_pose, tmp_path):
+    pose = import_pose
+    processor = pose.PoseProcessor(str(tmp_path))
+
+    assert processor._advance_pending_spawns([(0, 0, 10, 10)]) == []
+    confirmed = processor._advance_pending_spawns([(8, 0, 18, 10)])
+
+    assert len(confirmed) == 1
+    assert confirmed[0]["box"] == (8, 0, 18, 10)
+
+
+def test_pending_spawn_forces_immediate_confirmation_with_active_rois(import_pose, tmp_path):
+    pose = import_pose
+    processor = pose.PoseProcessor(str(tmp_path))
+    processor._next_pid = 1
+    responses = iter([
+        [_yolo_person_box(20, 0, 30, 10)],
+        [_yolo_person_box(28, 0, 38, 10)],
+    ])
+    processor.yolo = types.SimpleNamespace(
+        predict=lambda *a, **k: types.SimpleNamespace(xyxy=[next(responses)])
+    )
+    rois = [{
+        "id": 0, "x1": 0, "y1": 0, "x2": 10, "y2": 10,
+        "lost": 0, "pose": object(), "overlap_streak": 0,
+    }]
+    image = np.zeros((40, 40, 3), dtype=np.uint8)
+
+    rois = processor._seed_rois_if_needed(
+        image, 40, 40, rois, margin_ratio=0.0,
+        force_spawn_check=True, frame_index=10,
+    )
+    assert len(rois) == 1
+    rois = processor._seed_rois_if_needed(
+        image, 40, 40, rois, margin_ratio=0.0,
+        force_spawn_check=False, frame_index=11,
+    )
+
+    assert [roi["id"] for roi in rois] == [0, 1]
+
+
+def test_person_confidence_boundary_is_inclusive_at_minimum(import_pose, tmp_path):
+    pose = import_pose
+    processor = pose.PoseProcessor(str(tmp_path))
+    low = types.SimpleNamespace(xyxy=[[_yolo_person_box(0, 0, 10, 10, 0.39)]])
+    at_minimum = types.SimpleNamespace(
+        xyxy=[[_yolo_person_box(0, 0, 10, 10, processor.MIN_PERSON_CONFIDENCE)]]
+    )
+
+    assert processor._person_boxes(low, 40, 40, margin_ratio=0.0) == []
+    assert processor._person_boxes(at_minimum, 40, 40, margin_ratio=0.0) == [(0, 0, 10, 10)]
+
+
+def test_one_person_multiperson_clip_writes_exactly_one_csv(import_pose, tmp_path, monkeypatch):
+    pose = import_pose
+    processor = pose.PoseProcessor(str(tmp_path))
+    processor.set_multi_person_mode(True)
+    processor.yolo = types.SimpleNamespace(
+        predict=lambda *a, **k: types.SimpleNamespace(
+            xyxy=[[_yolo_person_box(10, 10, 30, 40)]]
+        )
+    )
+    landmarks = [
+        types.SimpleNamespace(x=0.5, y=0.5, z=0.0, visibility=0.9)
+        for _ in range(33)
+    ]
+
+    class _RoiPose:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def process(self, image):
+            return types.SimpleNamespace(
+                pose_landmarks=types.SimpleNamespace(landmark=landmarks)
+            )
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(pose.mp.solutions.pose, "Pose", _RoiPose)
+    video = tmp_path / "one_person.mp4"
+    video.write_bytes(b"fake")
+
+    assert processor.extract_pose_features(str(video)) is True
+
+    assert sorted(path.name for path in tmp_path.glob("one_person_multi_ID_*.csv")) == [
+        "one_person_multi_ID_0.csv"
+    ]
+
+
+def test_retired_roi_reuses_id_after_long_occlusion(import_pose, tmp_path, monkeypatch):
+    pose = import_pose
+    processor = pose.PoseProcessor(str(tmp_path))
+    processor._max_lost_frames = 2
+    processor._retired_track_ttl_frames = 100
+    processor._next_pid = 8
+
+    class _LostPose:
+        def __init__(self):
+            self.closed = False
+
+        def process(self, image):
+            return types.SimpleNamespace(pose_landmarks=None)
+
+        def close(self):
+            self.closed = True
+
+    lost_pose = _LostPose()
+    rois = [{
+        "id": 7, "x1": 0, "y1": 0, "x2": 10, "y2": 10,
+        "lost": 1, "pose": lost_pose, "overlap_streak": 0,
+        "provisional": False,
+    }]
+    _, rois = processor._process_multiperson_frame(
+        np.zeros((20, 20, 3), dtype=np.uint8), 20, 20, rois, frame_index=50
+    )
+    assert rois == []
+    assert lost_pose.closed is True
+
+    created = []
+
+    class _RoiPose:
+        def __init__(self, *args, **kwargs):
+            created.append(kwargs["model_complexity"])
+
+    monkeypatch.setattr(pose.mp.solutions.pose, "Pose", _RoiPose)
+    processor._allocate_confirmed_roi((2, 0, 12, 10), rois, frame_index=55)
+
+    assert [roi["id"] for roi in rois] == [7]
+    assert processor._next_pid == 8
+    assert created == [2]
+
+
+def test_unconfirmed_provisional_roi_retires_without_reseed_churn(import_pose, tmp_path):
+    pose = import_pose
+    messages = []
+    processor = pose.PoseProcessor(str(tmp_path), status_callback=messages.append)
+    processor._max_lost_frames = 3
+    processor._last_spawn_status_t = -100.0
+    yolo_calls = {"n": 0}
+    processor.yolo = types.SimpleNamespace(
+        predict=lambda *a, **k: yolo_calls.__setitem__("n", yolo_calls["n"] + 1)
+    )
+    landmarks = [
+        types.SimpleNamespace(x=0.5, y=0.5, z=0.0, visibility=0.9 if i < 7 else 0.1)
+        for i in range(33)
+    ]
+
+    class _Pose:
+        def __init__(self):
+            self.closed = False
+
+        def process(self, image):
+            return types.SimpleNamespace(
+                pose_landmarks=types.SimpleNamespace(landmark=landmarks)
+            )
+
+        def close(self):
+            self.closed = True
+
+    roi_pose = _Pose()
+    rois = [{
+        "id": 0, "x1": 0, "y1": 0, "x2": 10, "y2": 10,
+        "lost": 0, "pose": roi_pose, "overlap_streak": 0,
+        "provisional": True, "pose_hits": 0,
+    }]
+    image = np.zeros((20, 20, 3), dtype=np.uint8)
+    for frame_index in range(3):
+        _, rois = processor._process_multiperson_frame(
+            image, 20, 20, rois, frame_index=frame_index
+        )
+
+    assert rois == []
+    assert yolo_calls["n"] == 0
+    assert roi_pose.closed is True
+    assert any("Could not confirm" in message for message in messages)
+    assert len(processor._suppressed_spawns) == 1
+
+    processor.yolo = types.SimpleNamespace(
+        predict=lambda *a, **k: types.SimpleNamespace(
+            xyxy=[[_yolo_person_box(0, 0, 10, 10)]]
+        )
+    )
+    rois = processor._seed_rois_if_needed(
+        image, 20, 20, rois, margin_ratio=0.0,
+        force_spawn_check=True, frame_index=3,
+    )
+    assert rois == []
+    assert processor._pending_spawns == []
+
+
+def test_roi_spawn_never_exceeds_tracking_cap(import_pose, tmp_path, monkeypatch):
+    pose = import_pose
+    processor = pose.PoseProcessor(str(tmp_path))
+    processor._next_pid = 0
+    processor._max_tracked_people = 1
+    created = []
+
+    class _RoiPose:
+        def __init__(self, *args, **kwargs):
+            created.append(kwargs["model_complexity"])
+
+    monkeypatch.setattr(pose.mp.solutions.pose, "Pose", _RoiPose)
+
+    def make_box(x1, y1, x2, y2):
+        values = [x1, y1, x2, y2, 0.9, 0]
+
+        class _Slice:
+            def __init__(self, data):
+                self._data = data
+
+            def int(self):
+                return self
+
+            def tolist(self):
+                return list(self._data)
+
+        class _Box:
+            def __getitem__(self, key):
+                if isinstance(key, slice):
+                    return _Slice(values[key])
+                return values[key]
+
+        return _Box()
+
+    boxes = [make_box(0, 0, 10, 10), make_box(20, 20, 30, 30)]
+    processor.yolo = types.SimpleNamespace(
+        predict=lambda *a, **k: types.SimpleNamespace(xyxy=[boxes])
+    )
+    image = np.zeros((40, 40, 3), dtype=np.uint8)
+    rois = processor._seed_rois_if_needed(image, 40, 40, [], margin_ratio=0.0)
+    rois = processor._seed_rois_if_needed(image, 40, 40, rois, margin_ratio=0.0)
+
+    assert [roi["id"] for roi in rois] == [0]
+    assert created == [2]
 
 
 def test_dedup_preserves_survivor_ids(import_pose, monkeypatch):
@@ -433,6 +811,44 @@ def test_dedup_preserves_survivor_ids(import_pose, monkeypatch):
     assert outputs == []
     assert len(remaining) == 1
     assert remaining[0]["id"] == 7
+
+
+def test_multiperson_reseed_is_throttled_and_stale_rois_are_removed(import_pose):
+    pose = import_pose
+    processor = pose.PoseProcessor("/tmp", frame_threshold=1)
+    processor._reseed_period = 10
+    processor._max_lost_frames = 3
+    yolo_calls = {"n": 0}
+
+    def predict(*args, **kwargs):
+        yolo_calls["n"] += 1
+        return types.SimpleNamespace(xyxy=[[]])
+
+    processor.yolo = types.SimpleNamespace(predict=predict)
+
+    class _LostPose:
+        def __init__(self):
+            self.closed = False
+
+        def process(self, cropped):
+            return types.SimpleNamespace(pose_landmarks=None)
+
+        def close(self):
+            self.closed = True
+
+    roi_pose = _LostPose()
+    locked_rois = [{
+        "id": 0, "x1": 0, "y1": 0, "x2": 10, "y2": 10,
+        "lost": 1, "pose": roi_pose, "overlap_streak": 0,
+    }]
+    image = np.zeros((20, 20, 3), dtype=np.uint8)
+
+    _, locked_rois = processor._process_multiperson_frame(image, 20, 20, locked_rois)
+    _, locked_rois = processor._process_multiperson_frame(image, 20, 20, locked_rois)
+
+    assert yolo_calls["n"] == 1
+    assert locked_rois == []
+    assert roi_pose.closed is True
 
 
 def test_scaled_color_applies_confidence_floor(import_pose):

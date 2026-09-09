@@ -23,3 +23,11 @@ def test_windows_launcher_keeps_network_install_inside_stamp_check():
     assert "python -m pip install --upgrade pip" in script
     assert script.index('if "%NEEDS_INSTALL%"=="1" (') < script.index("python -m pip install --upgrade pip")
     assert 'py -%DESIRED_PYTHON% --version' in script
+
+
+def test_windows_launcher_does_not_use_unix_line_continuations_for_python_commands():
+    script_lines = (REPO_ROOT / "run_app.bat").read_text(encoding="utf-8").splitlines()
+
+    python_commands = [line.rstrip() for line in script_lines if "python -c" in line]
+    assert python_commands
+    assert not [line for line in python_commands if line.endswith("\\")]

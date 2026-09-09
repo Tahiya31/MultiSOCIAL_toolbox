@@ -15,7 +15,7 @@ class GradientPanel(wx.ScrolledWindow):
     def __init__(self, parent):
         super(GradientPanel, self).__init__(parent, style=wx.VSCROLL)
         self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
-        self.SetScrollRate(0, 10) # Vertical scrolling only
+        self.SetScrollRate(0, 10)
         self.Bind(wx.EVT_PAINT, self.OnPaint)
 
     def OnPaint(self, event):
@@ -60,20 +60,16 @@ class GlassPanel(wx.Panel):
         so we need to manually paint the gradient that would show through.
         """
         try:
-            # Find the GradientPanel parent to get gradient dimensions
             gradient_parent = self.GetParent()
             if not gradient_parent:
                 return
             
-            # Get the full virtual size of the gradient panel
             fw, fh = gradient_parent.GetVirtualSize()
             fh = max(fh, 1)  # Avoid division by zero
             
-            # Calculate this panel's position relative to the gradient
             self_screen = self.GetScreenPosition()
             parent_screen = gradient_parent.GetScreenPosition()
             
-            # Get scroll offset if parent is scrolled
             scroll_y = 0
             if hasattr(gradient_parent, 'CalcUnscrolledPosition'):
                 _, scroll_y = gradient_parent.CalcUnscrolledPosition(0, 0)
@@ -81,7 +77,6 @@ class GlassPanel(wx.Panel):
             rel_y_top = (self_screen.y - parent_screen.y) + scroll_y
             rel_y_bot = rel_y_top + rect.height
             
-            # Calculate gradient colors at top and bottom of this panel
             c_start = wx.Colour(Theme.COLOR_BG_GRADIENT_START)
             c_end = wx.Colour(Theme.COLOR_BG_GRADIENT_END)
             
@@ -91,10 +86,8 @@ class GlassPanel(wx.Panel):
             color_top = _mix_colors(c_end, c_start, pct_top)
             color_bot = _mix_colors(c_end, c_start, pct_bot)
             
-            # Fill with gradient (wx.SOUTH means starting color is at top)
             dc.GradientFillLinear(rect, color_top, color_bot, wx.SOUTH)
         except Exception:
-            # Fallback: fill with gradient start color
             dc.SetBackground(wx.Brush(wx.Colour(Theme.COLOR_BG_GRADIENT_START)))
             dc.Clear()
 
@@ -171,7 +164,6 @@ class ElevatedLogoPanel(wx.Panel):
         cx = radius
         cy = radius
 
-        # Apply circular alpha mask
         for y in range(diameter):
             for x in range(diameter):
                 dx = x - cx
@@ -189,9 +181,7 @@ class ElevatedLogoPanel(wx.Panel):
         dc = wx.AutoBufferedPaintDC(self)
         rect = self.GetClientRect()
         
-        # Clear background to avoid artifacts on Windows
         if sys.platform.startswith("win"):
-            # Paint gradient background to match parent
             try:
                 parent = self.GetParent()
                 if parent:
@@ -218,16 +208,13 @@ class ElevatedLogoPanel(wx.Panel):
         if not self.logo_bitmap:
             return
 
-        # Determine circle diameter and center; add small padding so border doesn't clip
         padding = self.FromDIP(6)
         base_diameter = max(10, min(rect.width, rect.height) - padding * 2)
         diameter = int(base_diameter * self.scale_factor)
 
-        # Center position
         x = rect.x + (rect.width - diameter) // 2
         y = rect.y + (rect.height - diameter) // 2
 
-        # Subtle shadow (fake blur via semi-transparent larger ellipse)
         gc = wx.GraphicsContext.Create(dc)
         if gc:
             shadow_color = wx.Colour(0, 0, 0, 70)
@@ -265,11 +252,9 @@ class CustomTooltip(wx.PopupWindow):
     def __init__(self, parent, text):
         super(CustomTooltip, self).__init__(parent, wx.SIMPLE_BORDER)
         self.text = text
-        # Darker, higher-contrast tooltip
         self.SetBackgroundColour(Theme.COLOR_TOOLTIP_BG)
         self.SetForegroundColour(Theme.COLOR_TOOLTIP_FG)
         
-        # Create a panel for the tooltip content
         panel = wx.Panel(self)
         panel.SetBackgroundColour(Theme.COLOR_TOOLTIP_BG)
         self.content_panel = panel
@@ -281,14 +266,11 @@ class CustomTooltip(wx.PopupWindow):
         # without forcing each item onto several wrapped lines.
         self.text_ctrl.Wrap(380)
         
-        # Layout
         sizer = wx.BoxSizer(wx.VERTICAL)
         sizer.Add(self.text_ctrl, flag=wx.ALL, border=10)
         panel.SetSizer(sizer)
         
-        # Size the tooltip
         panel.Fit()
-        # Add a subtle border by enlarging slightly and drawing via parent window border
         self.SetSize(panel.GetSize() + wx.Size(6, 6))
 
 
@@ -710,7 +692,6 @@ class ToggleTabBar(wx.Panel):
         track = wx.Rect(pad, pad, rect.width - pad * 2, rect.height - pad * 2)
         radius = self.FromDIP(Theme.RADIUS_TAB)
 
-        # Opaque track so tabs never disappear under siblings on any platform
         track_path = gc.CreatePath()
         track_path.AddRoundedRectangle(track.x, track.y, track.width, track.height, radius)
         gc.SetBrush(wx.Brush(Theme.colour(Theme.COLOR_TAB_TRACK)))
@@ -925,7 +906,6 @@ class CustomGauge(wx.Panel):
         self.Bind(wx.EVT_ERASE_BACKGROUND, self.OnEraseBackground)
 
     def OnEraseBackground(self, event):
-        # Do nothing to prevent flickering; letting the parent background show through
         pass
 
     def SetValue(self, value):
@@ -953,7 +933,6 @@ class CustomGauge(wx.Panel):
         event.Skip()
 
     def OnPaint(self, event):
-        # Use AutoBufferedPaintDC for cross-platform consistency (prevents flicker on Windows)
         dc = wx.AutoBufferedPaintDC(self)
         _fill_windows_background(self, dc)
 

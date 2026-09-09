@@ -54,6 +54,26 @@ def test_get_build_profile_uses_state_then_diarization(monkeypatch, import_runti
     assert rs.get_build_profile() == "complete"
 
 
+def test_frozen_complete_reports_worker_owned_diarization_as_installed(
+    monkeypatch, import_runtime_services
+):
+    rs = import_runtime_services
+    monkeypatch.setattr(rs.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(
+        rs.sys,
+        "executable",
+        r"C:\Program Files\MultiSOCIAL-Complete\MultiSOCIAL-Complete.exe",
+    )
+    monkeypatch.setattr(
+        rs,
+        "load_state",
+        lambda: {"features": {}, "secrets": {}, "install_profile": "standard"},
+    )
+
+    assert rs.is_diarization_installed() is True
+    assert rs.get_diarization_feature_state()["installed"] is True
+
+
 def test_frozen_windows_diarization_preload_uses_the_verified_native_order(monkeypatch, import_runtime_services):
     rs = import_runtime_services
     imported = []

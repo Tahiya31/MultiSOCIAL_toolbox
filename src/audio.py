@@ -10,6 +10,8 @@ This module provides functionality for:
 
 import os
 import json
+import sys
+from pathlib import Path
 import torch
 import opensmile
 import gc
@@ -17,6 +19,7 @@ import numpy as np
 from scipy.io import wavfile
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 
+from atomic_outputs import OutputStaging
 from runtime_services import (
     DIARIZATION_MODEL_ID,
     preload_frozen_windows_diarization_dependencies,
@@ -24,6 +27,42 @@ from runtime_services import (
 
 
 _SCIPY_WAV_EXTENSIONS = {".wav", ".wave"}
+_WORKER_RUNTIME_ROOT_ENV = "MULTISOCIAL_WORKER_RUNTIME_ROOT"
+
+
+def _private_worker_opensmile_config_root():
+    """Return the launcher's verified ASCII OpenSMILE config root, if any.
+
+    OpenSMILE builds its config paths from ``realpath(__file__)``. On Windows,
+    that resolves the worker's private ASCII drive alias back to a Unicode
+    install path, while the bundled SMILE API encodes configuration paths as
+    ASCII. The native launcher preserves its ASCII worker-root spelling for
+    this narrow use. It is accepted only when it is this process' actual
+    worker directory and contains the packaged OpenSMILE config tree.
+    """
+    if sys.platform != "win32":
+        return None
+    runtime_root = os.environ.get(_WORKER_RUNTIME_ROOT_ENV)
+    if not runtime_root or not runtime_root.isascii():
+        return None
+    config_root = os.path.join(
+        runtime_root, "Lib", "site-packages", "opensmile", "core", "config"
+    )
+    try:
+        executable_root = os.path.dirname(os.path.abspath(sys.executable))
+        if not os.path.isdir(config_root) or not os.path.samefile(runtime_root, executable_root):
+            return None
+    except OSError:
+        return None
+    return config_root
+
+
+class _PrivateWorkerSmile(opensmile.Smile):
+    """Use the verified ASCII config root only in the Windows private worker."""
+
+    @property
+    def default_config_root(self):
+        return _private_worker_opensmile_config_root() or super().default_config_root
 
 
 def _pcm_audio_to_mono_float32(audio, sampling_rate):
@@ -169,13 +208,14 @@ class AudioProcessor:
             
         return scoped_callback
 
-    def extract_audio_features(self, filepath, progress_callback=None):
+    def extract_audio_features(self, filepath, progress_callback=None, cancel_check=None):
         """
         Extract audio features from a single WAV file using OpenSMILE.
         
         Args:
             filepath (str): Path to the WAV file
             progress_callback (callable, optional): Callback function for progress updates
+            cancel_check (callable, optional): Return True to abandon this file without output
             
         Returns:
             str: Path to the saved CSV file with features
@@ -184,6 +224,8 @@ class AudioProcessor:
             raise ValueError("Audio features output folder not configured")
             
         try:
+            if cancel_check and cancel_check():
+                return False
             if progress_callback:
                 progress_callback(0)
             
@@ -195,19 +237,28 @@ class AudioProcessor:
                 progress_callback(10)
             
             # Initialize OpenSMILE processor
-            smile = opensmile.Smile(feature_set=feature_set_name, feature_level=feature_level_name)
+            smile = _PrivateWorkerSmile(feature_set=feature_set_name, feature_level=feature_level_name)
+
+            if cancel_check and cancel_check():
+                return False
             
             if progress_callback:
                 progress_callback(20)
             
             # Audio input is decoded via scipy for WAV and soundfile/libsndfile otherwise.
             y, sr = _load_audio_for_opensmile(filepath)
+
+            if cancel_check and cancel_check():
+                return False
             
             if progress_callback:
                 progress_callback(40)
             
             # Extract features using OpenSMILE
             features = smile.process_signal(y, sr)
+
+            if cancel_check and cancel_check():
+                return False
             
             if progress_callback:
                 progress_callback(70)
@@ -232,11 +283,14 @@ class AudioProcessor:
             features.insert(2, 'Timestamp_Formatted', timestamps_formatted)
             
             # Save features to CSV with original OpenSMILE column names and timestamps
-            output_csv = os.path.join(
-                self.output_audio_features_folder, 
-                os.path.splitext(os.path.basename(filepath))[0] + ".csv"
-            )
-            features.to_csv(output_csv, index=False)
+            filename = os.path.splitext(os.path.basename(filepath))[0] + ".csv"
+            output_csv = os.path.join(self.output_audio_features_folder, filename)
+            transaction = OutputStaging(self.output_audio_features_folder)
+            with transaction as staged:
+                if cancel_check and cancel_check():
+                    return False
+                features.to_csv(staged / filename, index=False)
+                transaction.commit()
             
             if progress_callback:
                 progress_callback(100)
@@ -265,7 +319,7 @@ class AudioProcessor:
             if cancel_check and cancel_check():
                 outcome["cancelled"] = True
                 break
-            self.set_status_message(f"🎧 Extracting audio features from: {os.path.basename(audio_file)}")
+            self.set_status_message(f"Extracting audio features from: {os.path.basename(audio_file)}")
             print(f"Extracting features from: {audio_file}")
             
             # Create progress callback for this audio file
@@ -278,7 +332,14 @@ class AudioProcessor:
                 return file_progress_callback
             
             try:
-                self.extract_audio_features(audio_file, progress_callback=make_progress_callback(i + 1, total_files))
+                result = self.extract_audio_features(
+                    audio_file,
+                    progress_callback=make_progress_callback(i + 1, total_files),
+                    cancel_check=cancel_check,
+                )
+                if result is False:
+                    outcome["cancelled"] = True
+                    break
                 outcome["succeeded"].append(audio_file)
             except Exception as e:
                 print(f"Error processing {audio_file}: {e}")
@@ -304,7 +365,11 @@ class AudioProcessor:
 
         # Use standard large-v3-turbo for better speed/accuracy balance than distil
         # or fallback to large-v3 if turbo is unavailable
-        model_id = "openai/whisper-large-v3-turbo"
+        model_id = os.environ.get("MULTISOCIAL_WHISPER_MODEL_ID", "openai/whisper-large-v3-turbo")
+        # CI can pin its small verification model to an immutable Hub commit.  Normal
+        # user runs intentionally continue to follow the selected model's default
+        # revision, preserving the existing user-facing behaviour.
+        model_revision = os.environ.get("MULTISOCIAL_WHISPER_MODEL_REVISION")
 
         if progress_callback:
             progress_callback(10)
@@ -315,6 +380,8 @@ class AudioProcessor:
                 "use_safetensors": True,
                 "local_files_only": local_files_only,
             }
+            if model_revision:
+                kwargs["revision"] = model_revision
             try:
                 return AutoModelForSpeechSeq2Seq.from_pretrained(
                     model_id,
@@ -335,7 +402,7 @@ class AudioProcessor:
         try:
             print("Attempting to load Whisper model from local cache...")
             self.whisper_model = load_whisper_from_pretrained(local_files_only=True)
-            print("✓ Loaded Whisper model from cache.")
+            print("Loaded Whisper model from cache.")
         except Exception as e:
             print(f"Whisper model not found in cache or error loading: {e}. Downloading...")
             self.whisper_model = load_whisper_from_pretrained(local_files_only=False)
@@ -350,9 +417,15 @@ class AudioProcessor:
 
         # Load processor
         try:
-            self.whisper_processor = AutoProcessor.from_pretrained(model_id, local_files_only=True)
+            processor_kwargs = {"local_files_only": True}
+            if model_revision:
+                processor_kwargs["revision"] = model_revision
+            self.whisper_processor = AutoProcessor.from_pretrained(model_id, **processor_kwargs)
         except Exception:
-            self.whisper_processor = AutoProcessor.from_pretrained(model_id, local_files_only=False)
+            processor_kwargs = {"local_files_only": False}
+            if model_revision:
+                processor_kwargs["revision"] = model_revision
+            self.whisper_processor = AutoProcessor.from_pretrained(model_id, **processor_kwargs)
 
         if progress_callback:
             progress_callback(55)
@@ -493,11 +566,13 @@ class AudioProcessor:
         print("Pre-loading PyAnnote speaker diarization model...")
         try:
             self._load_speaker_diarizer()
-            print("✓ PyAnnote model pre-loaded successfully")
+            print("PyAnnote model pre-loaded successfully")
         finally:
             self._clear_speaker_diarizer()
 
-    def extract_transcript(self, filepath, progress_callback=None, word_timestamps=False):
+    def extract_transcript(
+        self, filepath, progress_callback=None, word_timestamps=False, cancel_check=None
+    ):
         """
         Extract transcript from a single WAV file using Whisper with optional speaker diarization.
         
@@ -512,6 +587,8 @@ class AudioProcessor:
             raise ValueError("Transcripts output folder not configured")
             
         try:
+            if cancel_check and cancel_check():
+                return False
             if progress_callback:
                 progress_callback(0)
             
@@ -542,12 +619,10 @@ class AudioProcessor:
             transcript = result['text']
 
             compact_result = self._compact_whisper_result(result, transcript)
+            word_result = result if self.enable_speaker_diarization and word_timestamps else None
 
             if progress_callback:
                 progress_callback(50)
-
-            if self.enable_speaker_diarization and word_timestamps:
-                self._write_word_json_sidecar(filepath, result)
 
             # Perform speaker diarization if enabled
             speaker_segments = None
@@ -577,12 +652,16 @@ class AudioProcessor:
                 if progress_callback:
                     progress_callback(90)
 
+            if cancel_check and cancel_check():
+                return False
+
             ok, err = self._save_transcript_outputs(
                 filepath,
                 transcript,
                 compact_result if self.enable_speaker_diarization else result,
                 speaker_segments,
-                False if self.enable_speaker_diarization else word_timestamps,
+                word_timestamps,
+                word_result,
             )
             if not ok:
                 raise OSError(err)
@@ -920,14 +999,18 @@ class AudioProcessor:
             
         return "UNKNOWN"
 
-    def _save_transcript_outputs(self, audio_file, transcript, whisper_result, speaker_segments, word_timestamps):
+    def _save_transcript_outputs(
+        self, audio_file, transcript, whisper_result, speaker_segments, word_timestamps,
+        word_result=None,
+    ):
         """Write the .txt transcript (+ .srt sidecar, + _words.json when requested) for one file.
 
         Shared by the diarization-on (deferred) and diarization-off (streamed) save paths
         so both produce identical output. Returns (saved_bool, error_msg_or_None).
         """
         base_name = os.path.splitext(os.path.basename(audio_file))[0]
-        output_txt = os.path.join(self.output_transcripts_folder, f"{base_name}.txt")
+        output_folder = self.output_transcripts_folder
+        output_txt = os.path.join(output_folder, f"{base_name}.txt")
 
         # _extract_whisper_segments (used by both formatters and the SRT writer) reads
         # self.whisper_result, so set it for this file before formatting.
@@ -937,23 +1020,32 @@ class AudioProcessor:
         else:
             formatted_transcript = self._format_plain_transcript(transcript)
 
+        transaction = OutputStaging(output_folder)
         try:
-            with open(output_txt, 'w', encoding='utf-8', newline='\n') as f:
-                f.write(formatted_transcript)
+            with transaction as staged:
+                self.output_transcripts_folder = str(staged)
+                staged_txt = staged / f"{base_name}.txt"
+                with staged_txt.open('w', encoding='utf-8', newline='\n') as output:
+                    output.write(formatted_transcript)
+                output_srt = self._write_srt_sidecar(
+                    audio_file, transcript, whisper_result, speaker_segments
+                )
+                if not output_srt or not os.path.isfile(output_srt):
+                    return False, f"{output_txt}: caption sidecar was not written"
+
+                # When word-level timestamps were requested, write the JSON sidecar that
+                # Align Features consumes (so it won't have to re-transcribe this file).
+                if word_timestamps:
+                    self._write_word_json_sidecar(audio_file, word_result or whisper_result)
+                    if not (staged / f"{base_name}_words.json").is_file():
+                        return False, f"{output_txt}: word timestamp sidecar was not written"
+                transaction.commit()
             print(f"Saved transcript: {output_txt}")
-            output_srt = self._write_srt_sidecar(
-                audio_file, transcript, whisper_result, speaker_segments
-            )
-            if not output_srt or not os.path.isfile(output_srt):
-                return False, f"{output_txt}: caption sidecar was not written"
         except OSError as e:
             print(f"Error saving transcript for {audio_file}: {e}")
             return False, f"{output_txt}: {e}"
-
-        # When word-level timestamps were requested, write the JSON sidecar that
-        # Align Features consumes (so it won't have to re-transcribe this file).
-        if word_timestamps:
-            self._write_word_json_sidecar(audio_file, whisper_result)
+        finally:
+            self.output_transcripts_folder = output_folder
 
         return True, None
 
@@ -977,10 +1069,11 @@ class AudioProcessor:
 
             transcript = None
             compact_result = None
+            word_result = None
             audio_path = os.path.normpath(os.path.abspath(audio_file))
 
             try:
-                self.set_status_message(f"🗣️ Transcribing ({i+1}/{total_files}): {os.path.basename(audio_file)}")
+                self.set_status_message(f"Transcribing ({i+1}/{total_files}): {os.path.basename(audio_file)}")
                 file_progress(0)
                 self._load_whisper_model()
                 file_progress(10)
@@ -996,14 +1089,13 @@ class AudioProcessor:
                 )
                 transcript = result['text']
                 compact_result = self._compact_whisper_result(result, transcript)
-                if word_timestamps:
-                    self._write_word_json_sidecar(audio_file, result)
+                word_result = result if word_timestamps else None
 
                 del result
                 self._clear_whisper_model()
                 file_progress(50)
 
-                self.set_status_message(f"🎭 Diarizing ({i+1}/{total_files}): {os.path.basename(audio_file)}")
+                self.set_status_message(f"Diarizing ({i+1}/{total_files}): {os.path.basename(audio_file)}")
                 speaker_segments = None
                 try:
                     self._load_speaker_diarizer()
@@ -1014,8 +1106,13 @@ class AudioProcessor:
                     self._clear_speaker_diarizer()
                 file_progress(90)
 
+                if cancel_check and cancel_check():
+                    outcome["cancelled"] = True
+                    break
+
                 ok, err = self._save_transcript_outputs(
-                    audio_file, transcript, compact_result, speaker_segments, False
+                    audio_file, transcript, compact_result, speaker_segments,
+                    word_timestamps, word_result,
                 )
                 if ok:
                     outcome["succeeded"].append(audio_file)
@@ -1029,6 +1126,7 @@ class AudioProcessor:
             finally:
                 transcript = None
                 compact_result = None
+                word_result = None
                 self._clear_whisper_model()
                 self._clear_torch_cache()
 
@@ -1074,7 +1172,7 @@ class AudioProcessor:
         transcription_end = 95
         
         # ===== PHASE 1: Load Whisper model ONCE =====
-        self.set_status_message("🔄 Loading speech recognition model...")
+        self.set_status_message("Loading speech recognition model...")
         if progress_callback:
             progress_callback(0)
         
@@ -1095,7 +1193,7 @@ class AudioProcessor:
             if cancel_check and cancel_check():
                 outcome["cancelled"] = True
                 break
-            self.set_status_message(f"🗣️ Transcribing ({i+1}/{total_files}): {os.path.basename(audio_file)}")
+            self.set_status_message(f"Transcribing ({i+1}/{total_files}): {os.path.basename(audio_file)}")
 
             transcript, result = None, None
             try:
@@ -1116,6 +1214,9 @@ class AudioProcessor:
                 outcome["failed"].append((audio_file, str(e)))
 
             if transcript is not None:
+                if cancel_check and cancel_check():
+                    outcome["cancelled"] = True
+                    break
                 ok, err = self._save_transcript_outputs(
                     audio_file, transcript, result, None, word_timestamps
                 )
@@ -1230,9 +1331,13 @@ class AudioProcessor:
                 
             aligned_rows.append(row)
 
-        # Save to CSV
+        # Save to CSV only after its complete contents have been produced.
         df_aligned = pd.DataFrame(aligned_rows)
-        df_aligned.to_csv(output_csv, index=False)
+        output_path = Path(output_csv)
+        transaction = OutputStaging(output_path.parent)
+        with transaction as staged:
+            df_aligned.to_csv(staged / output_path.name, index=False)
+            transaction.commit()
         print(f"Saved aligned features: {output_csv}")
         return output_csv
 
@@ -1248,7 +1353,7 @@ class AudioProcessor:
         total = len(alignment_pairs)
         for i, (feat_csv, trans_json, out_csv) in enumerate(alignment_pairs):
             try:
-                self.set_status_message(f"🔗 Aligning: {os.path.basename(out_csv)}")
+                self.set_status_message(f"Aligning: {os.path.basename(out_csv)}")
                 result = self.align_features(feat_csv, trans_json, out_csv)
                 if result != out_csv or not os.path.isfile(out_csv):
                     raise RuntimeError("Alignment did not write its output CSV")
@@ -1336,7 +1441,7 @@ class PyAnnoteSpeakerDiarizer:
             # Move pipeline to the specified device
             if self.diarization_pipeline is not None:
                 self.diarization_pipeline.to(torch.device(self.device))
-                print(f"✓ PyAnnote pipeline moved to {self.device}")
+                print(f"PyAnnote pipeline moved to {self.device}")
             
             if self.progress_callback:
                 self.progress_callback(20)

@@ -184,6 +184,7 @@ Entry point: `gui_utils.create_transparent_text()` — `TransparentStaticText` o
 4. **Single font-scaling registry** — register `(widget, base_size, bold)` at creation; scale in one `on_resize` loop (max 2× baseline). The loop is per-widget defensive (proxies without `IsShown` are allowed; one failure never aborts the pass).
 5. **Windows gradient under cards** — keep `GlassPanel._paint_gradient_background_windows`; owner-drawn children sit on top.
 6. **Adding a new control** — if it is clickable, owner-draw it **and call `_fill_windows_background` at the top of its paint**; if native (picker/spin), put it in a `SectionCard` + `style_native_input`; register fonts in `_scalable_widgets`.
+7. **Keep Windows native analysis outside the GUI process and build graph.** The GUI receives the native-free `AnalysisBackend`, while `app_windows.py` configures only `WindowsWorkerBackend`. Windows GUI and worker use separate dependency environments, PyInstaller specs, and onedir runtimes. Do not add Torch, MediaPipe, OpenCV, OpenSMILE, Transformers, YOLO, SpeechBrain, or pyannote imports to `app.py`, `app_windows.py`, or any GUI-reachable module; graph assertions fail the build if this boundary is crossed. macOS remains in-process through `NativeAnalysisBackend`.
 
 ## Cancel UX (#17)
 

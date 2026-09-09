@@ -19,6 +19,7 @@ from scipy.optimize import linear_sum_assignment
 from yolov5 import YOLOv5
 
 import runtime_services
+from atomic_outputs import OutputStaging
 
 
 def _is_valid_weights_file(path):
@@ -46,6 +47,34 @@ def get_yolov5_weights_path():
 
     os.makedirs(runtime_assets_dir, exist_ok=True)
     return runtime_path
+
+
+def _configure_frozen_yolov5_file_date():
+    """Keep YOLOv5's informational version banner compatible with PyInstaller."""
+    if not runtime_services.is_frozen_runtime():
+        return
+
+    from yolov5.utils import general as yolov5_general
+    from yolov5.utils import torch_utils as yolov5_torch_utils
+
+    if getattr(yolov5_general, "_multisocial_safe_file_date", False):
+        return
+
+    original_file_date = yolov5_general.file_date
+
+    def safe_file_date(path=yolov5_general.__file__):
+        try:
+            return original_file_date(path)
+        except OSError:
+            # PyInstaller keeps this module in its archive, so its synthetic
+            # ``__file__`` may not exist on disk. This value is diagnostic only.
+            return "packaged"
+
+    yolov5_general.file_date = safe_file_date
+    # torch_utils imported file_date directly, so update that bound reference.
+    yolov5_torch_utils.file_date = safe_file_date
+    yolov5_general._multisocial_safe_file_date = True
+
 
 def _resolve_ffmpeg_exe():
     """Locate ffmpeg without importing the GUI layer.
@@ -211,7 +240,7 @@ def _emit_pose_status(status_callback, video_path, current_frame, total_frames, 
     now = time.monotonic()
     if now - last_status_t >= 0.5 or current_frame >= total_frames:
         status_callback(
-            f"📸 Extracting pose from: {os.path.basename(video_path)} "
+            f"Extracting pose from: {os.path.basename(video_path)} "
             f"(Source frame {current_frame}/{total_frames})"
         )
         return now
@@ -220,6 +249,19 @@ def _emit_pose_status(status_callback, video_path, current_frame, total_frames, 
 
 # Core pose processor class
 class PoseProcessor:
+    # Conservative internal gates prevent transient YOLO boxes from becoming
+    # costly, persistent MediaPipe graphs without adding user controls.
+    MIN_PERSON_CONFIDENCE = 0.40
+    SPAWN_MATCH_IOU = 0.30
+    SPAWN_CONFIRMATIONS = 2
+    POSE_CONFIRMATIONS = 2
+    MIN_VISIBLE_LANDMARKS = 8
+    MAX_TRACKED_PEOPLE = 10
+    SPAWN_CENTER_MATCH_DISTANCE = 1.0
+    MAX_LOST_SECONDS = 3
+    RETIRED_TRACK_TTL_SECONDS = 10
+    FAILED_SPAWN_SUPPRESSION_SECONDS = 5
+
     PALETTE = [
         (0, 255, 0), (0, 0, 255), (255, 0, 0), (0, 255, 255),
         (255, 0, 255), (255, 255, 0), (128, 0, 255), (255, 128, 0),
@@ -235,14 +277,31 @@ class PoseProcessor:
         self.frame_stride = max(1, int(frame_stride))
         # downscale_to: tuple (target_width, target_height) or None
         self.downscale_to = downscale_to if (isinstance(downscale_to, tuple) and len(downscale_to) == 2) else None
-        # Frame counters for optional maintenance tasks
+        # This counts only frames with active ROIs and is used for reseed
+        # cadence. Video-frame timestamps are passed separately where needed.
         self._frame_counter = 0
-        # Disable periodic global reassignment to reduce jitter; set >0 to enable
-        self._reassign_period = 0
+        # Re-running YOLO for a lost ROI on every frame is much more expensive
+        # than the pose pass. Retry at a bounded cadence instead.
+        self._reseed_period = 10
+        self._last_reseed_frame = -self._reseed_period
         # Lightweight periodic spawn-only check to detect new entrants without moving existing ROIs
         self._spawn_period = 10
+        # These time-based limits are converted to processed-frame counts once
+        # the source frame rate is known at extraction start.
+        self._max_lost_frames = 90
         # Light smoothing for ROI box updates to reduce micro jitter
         self.smooth_alpha = 0.5
+        self._spawn_confirmations = self.SPAWN_CONFIRMATIONS
+        self._pose_confirmations = self.POSE_CONFIRMATIONS
+        self._max_tracked_people = self.MAX_TRACKED_PEOPLE
+        self._pending_spawns = []
+        self._retired_tracks = []
+        self._retired_track_ttl_frames = 300
+        self._suppressed_spawns = []
+        self._failed_spawn_suppression_frames = 150
+        self._detection_pass = 0
+        self._last_spawn_status_t = 0.0
+        self._track_limit_status_emitted = False
         
         # Initialize Mediapipe Pose
         self.pose = mp.solutions.pose.Pose(static_image_mode=False, min_detection_confidence=0.7, min_tracking_confidence=0.7, model_complexity=1)
@@ -255,53 +314,234 @@ class PoseProcessor:
         cy = 0.5 * (y1 + y2)
         return cx, cy
 
-    def _seed_rois_if_needed(self, image_rgb, image_width, image_height, locked_rois, margin_ratio=0.25, force_spawn_check=False):
-        """Ensure YOLO is initialized and seed ROIs when none exist, or periodically check for new people."""
-        # Ensure YOLO is loaded
-        self._ensure_yolo()
-        
-        # Always run detection if no ROIs exist
-        # OR if force_spawn_check is True (periodic check for new people)
-        should_detect = (not locked_rois) or force_spawn_check
-        
-        if should_detect:
-            results = self.yolo.predict(image_rgb, size=640)
-            boxes = results.xyxy[0]
-            person_boxes = [b[:4].int().tolist() for b in boxes if int(b[5]) == 0]
-            
-            # If we already have ROIs, only add NEW people (not overlapping with existing)
-            if locked_rois:
-                new_people = []
-                for (x1, y1, x2, y2) in person_boxes:
-                    x1e, y1e, x2e, y2e = self._expand_and_clip_bbox(x1, y1, x2, y2, image_width, image_height, margin_ratio=margin_ratio)
-                    # Check if this detection overlaps significantly with any existing ROI
-                    is_new = True
-                    for roi in locked_rois:
-                        iou = self._iou((x1e, y1e, x2e, y2e), (roi["x1"], roi["y1"], roi["x2"], roi["y2"]))
-                        if iou > 0.3:  # 30% overlap means it's the same person
-                            is_new = False
-                            break
-                    if is_new:
-                        new_people.append((x1e, y1e, x2e, y2e))
-                
-                # Add new people to the tracking list
-                for (x1e, y1e, x2e, y2e) in new_people:
-                    roi_pose = mp.solutions.pose.Pose(static_image_mode=False, min_detection_confidence=0.7, min_tracking_confidence=0.7, model_complexity=2)
-                    locked_rois.append({"id": self._next_pid, "x1": x1e, "y1": y1e, "x2": x2e, "y2": y2e, "lost": 0, "pose": roi_pose, "overlap_streak": 0})
-                    self._next_pid += 1
-                    if self.status_callback:
-                        self.status_callback(f"🆕 New person detected! Now tracking {len(locked_rois)} people")
+    def _person_boxes(self, results, image_width, image_height, margin_ratio):
+        """Return confidence-filtered person boxes in the requested geometry."""
+        person_boxes = []
+        for box in results.xyxy[0]:
+            if int(box[5]) != 0 or float(box[4]) < self.MIN_PERSON_CONFIDENCE:
+                continue
+            x1, y1, x2, y2 = box[:4].int().tolist()
+            person_boxes.append(
+                self._expand_and_clip_bbox(
+                    x1, y1, x2, y2, image_width, image_height,
+                    margin_ratio=margin_ratio,
+                )
+            )
+        return person_boxes
+
+    def _emit_spawn_status(self, message):
+        """Avoid flooding the GUI thread when many detections appear at once."""
+        if not self.status_callback:
+            return
+        now = time.monotonic()
+        if now - self._last_spawn_status_t >= 0.5:
+            self.status_callback(message)
+            self._last_spawn_status_t = now
+
+    def _spawn_match_score(self, previous_box, current_box):
+        """Match the same entrant across adjacent passes despite normal motion."""
+        previous_width = max(1.0, previous_box[2] - previous_box[0])
+        previous_height = max(1.0, previous_box[3] - previous_box[1])
+        current_width = max(1.0, current_box[2] - current_box[0])
+        current_height = max(1.0, current_box[3] - current_box[1])
+        size_ratio = max(
+            previous_width / current_width,
+            current_width / previous_width,
+            previous_height / current_height,
+            current_height / previous_height,
+        )
+        if size_ratio > 2.0:
+            return None
+
+        previous_center = self._roi_center(*previous_box)
+        current_center = self._roi_center(*current_box)
+        center_distance = np.linalg.norm(
+            np.array(previous_center) - np.array(current_center)
+        ) / max(previous_width, previous_height, current_width, current_height)
+        overlap = self._iou(previous_box, current_box)
+        if (
+            overlap < self.SPAWN_MATCH_IOU
+            and center_distance > self.SPAWN_CENTER_MATCH_DISTANCE
+        ):
+            return None
+        return overlap + max(0.0, 1.0 - center_distance) * 0.25
+
+    def _advance_pending_spawns(self, candidate_boxes):
+        """Confirm new detections on consecutive detection passes before spawn."""
+        self._detection_pass += 1
+        detection_pass = self._detection_pass
+        matches = []
+        for candidate_index, candidate in enumerate(self._pending_spawns):
+            for box_index, box in enumerate(candidate_boxes):
+                score = self._spawn_match_score(candidate["box"], box)
+                if score is not None:
+                    matches.append((score, candidate_index, box_index))
+
+        matched_candidates = set()
+        matched_boxes = set()
+        for _, candidate_index, box_index in sorted(matches, reverse=True):
+            if candidate_index in matched_candidates or box_index in matched_boxes:
+                continue
+            candidate = self._pending_spawns[candidate_index]
+            candidate["box"] = candidate_boxes[box_index]
+            candidate["streak"] += 1
+            candidate["last_pass"] = detection_pass
+            matched_candidates.add(candidate_index)
+            matched_boxes.add(box_index)
+
+        for box_index, box in enumerate(candidate_boxes):
+            if box_index not in matched_boxes:
+                self._pending_spawns.append(
+                    {"box": box, "streak": 1, "last_pass": detection_pass}
+                )
+
+        confirmed = []
+        still_pending = []
+        for candidate in self._pending_spawns:
+            if candidate["last_pass"] != detection_pass:
+                continue
+            if candidate["streak"] >= self._spawn_confirmations:
+                confirmed.append(candidate)
             else:
-                # No existing ROIs, add all detected people
-                for (x1, y1, x2, y2) in person_boxes:
-                    x1e, y1e, x2e, y2e = self._expand_and_clip_bbox(x1, y1, x2, y2, image_width, image_height, margin_ratio=margin_ratio)
-                    roi_pose = mp.solutions.pose.Pose(static_image_mode=False, min_detection_confidence=0.7, min_tracking_confidence=0.7, model_complexity=2)
-                    locked_rois.append({"id": self._next_pid, "x1": x1e, "y1": y1e, "x2": x2e, "y2": y2e, "lost": 0, "pose": roi_pose, "overlap_streak": 0})
-                    self._next_pid += 1
-        
+                still_pending.append(candidate)
+        self._pending_spawns = still_pending
+        return confirmed
+
+    def _retire_roi(self, roi, frame_index):
+        """Release native resources while retaining enough identity for re-entry."""
+        try:
+            roi_pose = roi.get("pose")
+            if roi_pose is not None:
+                roi_pose.close()
+        except Exception:
+            pass
+        self._retired_tracks.append({
+            "id": roi["id"],
+            "box": (roi["x1"], roi["y1"], roi["x2"], roi["y2"]),
+            "retired_at_frame": frame_index,
+        })
+
+    def _claim_retired_id(self, box, frame_index):
+        """Reuse a recently retired identity only for a plausible re-entry."""
+        self._expire_retired_tracks(frame_index)
+        best_index = None
+        best_score = None
+        for index, track in enumerate(self._retired_tracks):
+            score = self._spawn_match_score(track["box"], box)
+            if score is not None and (best_score is None or score > best_score):
+                best_index = index
+                best_score = score
+        if best_index is None:
+            return None
+        return self._retired_tracks.pop(best_index)["id"]
+
+    def _expire_retired_tracks(self, frame_index):
+        self._retired_tracks = [
+            track for track in self._retired_tracks
+            if frame_index - track["retired_at_frame"] <= self._retired_track_ttl_frames
+        ]
+
+    def _suppress_failed_spawn(self, box, frame_index):
+        """Temporarily ignore a box that repeatedly failed pose confirmation."""
+        self._suppressed_spawns.append({
+            "box": box,
+            "until_frame": frame_index + self._failed_spawn_suppression_frames,
+        })
+
+    def _expire_suppressed_spawns(self, frame_index):
+        self._suppressed_spawns = [
+            spawn for spawn in self._suppressed_spawns
+            if spawn["until_frame"] >= frame_index
+        ]
+
+    def _is_suppressed_spawn(self, box):
+        return any(
+            self._spawn_match_score(spawn["box"], box) is not None
+            for spawn in self._suppressed_spawns
+        )
+
+    def _allocate_confirmed_roi(self, box, locked_rois, frame_index):
+        """Allocate a heavy MediaPipe graph only for a confirmed new person."""
+        if len(locked_rois) >= self._max_tracked_people:
+            if not self._track_limit_status_emitted:
+                self._emit_spawn_status(
+                    f"Tracking limit reached ({self._max_tracked_people} people)"
+                )
+                self._track_limit_status_emitted = True
+            return False
+        x1e, y1e, x2e, y2e = box
+        roi_pose = mp.solutions.pose.Pose(
+            static_image_mode=False,
+            min_detection_confidence=0.7,
+            min_tracking_confidence=0.7,
+            model_complexity=2,
+        )
+        reused_id = self._claim_retired_id(box, frame_index)
+        person_id = self._next_pid if reused_id is None else reused_id
+        if reused_id is None:
+            self._next_pid += 1
+        locked_rois.append({
+            "id": person_id,
+            "x1": x1e,
+            "y1": y1e,
+            "x2": x2e,
+            "y2": y2e,
+            "lost": 0,
+            "pose": roi_pose,
+            "overlap_streak": 0,
+            "provisional": True,
+            "pose_hits": 0,
+        })
+        self._emit_spawn_status(f"New person detected; tracking {len(locked_rois)} people")
+        return True
+
+    def _has_meaningful_pose(self, landmarks):
+        """Reject partial or non-finite landmark sets from provisional tracks."""
+        visible = 0
+        for landmark in landmarks.landmark:
+            if (
+                np.isfinite(landmark.x)
+                and np.isfinite(landmark.y)
+                and np.isfinite(landmark.z)
+                and np.isfinite(landmark.visibility)
+                and landmark.visibility >= 0.5
+            ):
+                visible += 1
+        return visible >= self.MIN_VISIBLE_LANDMARKS
+
+    def _seed_rois_if_needed(self, image_rgb, image_width, image_height, locked_rois, margin_ratio=0.25, force_spawn_check=False, frame_index=None):
+        """Confirm new detections before allocating their persistent pose graph."""
+        self._ensure_yolo()
+        if frame_index is None:
+            frame_index = self._frame_counter
+        self._expire_retired_tracks(frame_index)
+        self._expire_suppressed_spawns(frame_index)
+        # A pending candidate is confirmed on the immediately following frame,
+        # not at the normal new-entrant cadence ten frames later.
+        should_detect = (not locked_rois) or force_spawn_check or self._pending_spawns
+        if not should_detect:
+            return locked_rois
+
+        results = self.yolo.predict(image_rgb, size=640)
+        person_boxes = self._person_boxes(
+            results, image_width, image_height, margin_ratio=margin_ratio
+        )
+        candidates = []
+        for box in person_boxes:
+            if self._is_suppressed_spawn(box):
+                continue
+            if not any(
+                self._iou(box, (roi["x1"], roi["y1"], roi["x2"], roi["y2"]))
+                >= self.SPAWN_MATCH_IOU
+                for roi in locked_rois
+            ):
+                candidates.append(box)
+
+        for candidate in self._advance_pending_spawns(candidates):
+            self._allocate_confirmed_roi(candidate["box"], locked_rois, frame_index)
         return locked_rois
 
-    def _process_multiperson_frame(self, image_rgb, image_width, image_height, locked_rois):
+    def _process_multiperson_frame(self, image_rgb, image_width, image_height, locked_rois, frame_index=None):
         """Run pose on existing ROIs, handle reseed when lost, and return mapped landmarks per ROI.
 
         Returns a list of tuples (person_id, mp_landmarks_mapped) where landmarks are mapped to full frame.
@@ -309,6 +549,8 @@ class PoseProcessor:
         outputs = []
         if not locked_rois:
             return outputs, locked_rois
+        if frame_index is None:
+            frame_index = self._frame_counter
 
         # Track which ROIs need reseed this frame
         rois_needing_reseed = []  # list of indices
@@ -318,8 +560,18 @@ class PoseProcessor:
             x1e, y1e, x2e, y2e = roi["x1"], roi["y1"], roi["x2"], roi["y2"]
             cropped = image_rgb[y1e:y2e, x1e:x2e]
             result = roi["pose"].process(cropped)
-            if result.pose_landmarks:
+            is_provisional = roi.get("provisional", False)
+            has_usable_pose = result.pose_landmarks and (
+                not is_provisional
+                or self._has_meaningful_pose(result.pose_landmarks)
+            )
+            if has_usable_pose:
                 roi["lost"] = 0
+                if is_provisional:
+                    roi["pose_hits"] = roi.get("pose_hits", 0) + 1
+                    if roi["pose_hits"] < self._pose_confirmations:
+                        continue
+                    roi["provisional"] = False
                 # Map back to full frame coordinates
                 try:
                     original_landmarks = result.pose_landmarks
@@ -330,15 +582,28 @@ class PoseProcessor:
                 except Exception:
                     pass
             else:
+                if is_provisional:
+                    roi["pose_hits"] = 0
                 roi["lost"] += 1
-                if roi["lost"] >= self.frame_threshold:
+                # A provisional ROI must keep the same pose graph long enough
+                # to settle. Recreating it every reseed period both wastes work
+                # and makes a hard-to-resolve person silently loop forever.
+                if not is_provisional and roi["lost"] >= self.frame_threshold:
                     rois_needing_reseed.append(roi_index)
 
-        # Perform a single reseed step using global one-to-one assignment
-        if rois_needing_reseed:
+        # Perform a single, throttled reseed step using global one-to-one
+        # assignment. Without the cadence guard, an unmatched lost ROI causes
+        # a full YOLO inference on every frame for the rest of the clip.
+        reseed_due = (
+            self._reseed_period <= 0
+            or self._frame_counter - self._last_reseed_frame >= self._reseed_period
+        )
+        if rois_needing_reseed and reseed_due:
+            self._last_reseed_frame = self._frame_counter
             results = self.yolo.predict(image_rgb, size=640)
-            boxes = results.xyxy[0]
-            person_boxes = [b[:4].int().tolist() for b in boxes if int(b[5]) == 0]
+            person_boxes = self._person_boxes(
+                results, image_width, image_height, margin_ratio=0.0
+            )
 
             # Reserve detections that belong to healthy ROIs so lost ROIs can't take them
             healthy_indices = [i for i, r in enumerate(locked_rois) if r.get("lost", 0) == 0]
@@ -413,7 +678,30 @@ class PoseProcessor:
                             roi["pose"] = mp.solutions.pose.Pose(static_image_mode=False, min_detection_confidence=0.7, min_tracking_confidence=0.7, model_complexity=2)
                             roi["lost"] = 0
 
-        # Increment frame counter for optional tasks (no global reassignment by default)
+        # Drop ROIs that have been absent long enough to be considered gone.
+        # This closes their Heavy MediaPipe graph and prevents per-frame work
+        # from growing as people enter and leave a long recording.
+        stale_indices = {
+            index for index, roi in enumerate(locked_rois)
+            if roi.get("lost", 0) >= self._max_lost_frames
+        }
+        if stale_indices:
+            for index in stale_indices:
+                roi = locked_rois[index]
+                self._retire_roi(roi, frame_index)
+                if roi.get("provisional", False):
+                    self._suppress_failed_spawn(
+                        (roi["x1"], roi["y1"], roi["x2"], roi["y2"]), frame_index
+                    )
+                    self._emit_spawn_status(
+                        "Could not confirm a detected person; tracker retired"
+                    )
+            locked_rois = [
+                roi for index, roi in enumerate(locked_rois)
+                if index not in stale_indices
+            ]
+
+        # Increment frame counter for optional tasks.
         self._frame_counter += 1
 
         # Post-assignment deduplication with short persistence using IoU
@@ -654,12 +942,13 @@ class PoseProcessor:
         if self.yolo is None:
             try:
                 ensure_yolov5_weights()
+                _configure_frozen_yolov5_file_date()
                 self.yolo = YOLOv5(get_yolov5_weights_path())
                 if self.status_callback:
-                    self.status_callback("🤖 YOLOv5 model loaded for multi-person detection")
+                    self.status_callback("YOLOv5 model loaded for multi-person detection")
             except Exception as e:
                 if self.status_callback:
-                    self.status_callback(f"❌ Failed to load YOLOv5: {e}")
+                    self.status_callback(f"Failed to load YOLOv5: {e}")
                 raise RuntimeError(f"Failed to initialize YOLOv5: {e}")
 
     def extract_pose_features(self, video_path, progress_callback=None, cancel_check=None):
@@ -681,6 +970,8 @@ class PoseProcessor:
         
         # Get total frame count for progress tracking
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        source_fps = float(cap.get(cv2.CAP_PROP_FPS))
+        processed_fps = source_fps / self.frame_stride if source_fps > 0 else 30.0
         if total_frames <= 0:
             # Seek to end to get actual frame count (more reliable on Windows)
             current_pos = cap.get(cv2.CAP_PROP_POS_FRAMES)
@@ -694,6 +985,23 @@ class PoseProcessor:
         # Each ROI holds its own MediaPipe Pose instance with persistent id
         locked_rois = []  # Each item: {"id":int,"x1":int,"y1":int,"x2":int,"y2":int,"lost":int, "pose": Pose}
         self._next_pid = 0
+        self._frame_counter = 0
+        self._last_reseed_frame = -self._reseed_period
+        self._pending_spawns = []
+        self._retired_tracks = []
+        self._retired_track_ttl_frames = max(
+            1, int(processed_fps * self.RETIRED_TRACK_TTL_SECONDS)
+        )
+        self._max_lost_frames = max(
+            1, int(processed_fps * self.MAX_LOST_SECONDS)
+        )
+        self._suppressed_spawns = []
+        self._failed_spawn_suppression_frames = max(
+            1, int(processed_fps * self.FAILED_SPAWN_SUPPRESSION_SECONDS)
+        )
+        self._detection_pass = 0
+        self._last_spawn_status_t = 0.0
+        self._track_limit_status_emitted = False
         last_progress_percent = -1
         last_status_t = 0.0  # wall-clock gate so status text never floods the UI thread
 
@@ -738,7 +1046,10 @@ class PoseProcessor:
                 # Seed ROIs using shared pipeline with periodic new-person detection
                 # Check for new people every _spawn_period frames (default 10)
                 force_check = (self._spawn_period > 0) and (frame_idx % self._spawn_period == 0)
-                locked_rois = self._seed_rois_if_needed(image_rgb, w, h, locked_rois, margin_ratio=0.25, force_spawn_check=force_check)
+                locked_rois = self._seed_rois_if_needed(
+                    image_rgb, w, h, locked_rois, margin_ratio=0.25,
+                    force_spawn_check=force_check, frame_index=frame_idx,
+                )
 
                 # If still none, skip frame (advance both counters so the
                 # processed-frame index stays in lockstep with the source frame
@@ -752,7 +1063,9 @@ class PoseProcessor:
                     continue
 
                 # Process using shared multiperson step
-                mp_outputs, locked_rois = self._process_multiperson_frame(image_rgb, w, h, locked_rois)
+                mp_outputs, locked_rois = self._process_multiperson_frame(
+                    image_rgb, w, h, locked_rois, frame_index=frame_idx
+                )
                 for person_id, mp_landmarks in mp_outputs:
                     row = [frame_idx, person_id]
                     for lmk in mp_landmarks.landmark:
@@ -768,7 +1081,10 @@ class PoseProcessor:
                     row = [frame_idx, 0]
                     for lmk in result.pose_landmarks.landmark:
                         row.extend([lmk.x, lmk.y, lmk.z, lmk.visibility])
-                    keypoints_by_person[0] = keypoints_by_person.get(0, []) + [row]
+                    # Append in place.  Rebuilding the list with ``+ [row]``
+                    # copies every prior frame on each iteration, turning a
+                    # long single-person extraction into quadratic work.
+                    keypoints_by_person.setdefault(0, []).append(row)
 
             raw_frame_idx += 1
             frame_idx += 1
@@ -805,21 +1121,24 @@ class PoseProcessor:
         base_filename = os.path.splitext(os.path.basename(video_path))[0] + suffix
         
         
-        # Save separate CSV for each person
-        for person_id, keypoints in keypoints_by_person.items():
-            df = pd.DataFrame(keypoints, columns=columns)
-            filename = f"{base_filename}_ID_{int(person_id)}.csv"
-            csv_path = os.path.join(self.output_csv_folder, filename)
-            df.to_csv(csv_path, index=False)
+        # Do not expose an incomplete set of person CSVs when a write fails.
+        # Extraction cancellation returns before this write phase; the embedded
+        # video path below stages output while cancellation can occur.
+        transaction = OutputStaging(self.output_csv_folder)
+        with transaction as staged:
+            for person_id, keypoints in keypoints_by_person.items():
+                df = pd.DataFrame(keypoints, columns=columns)
+                filename = f"{base_filename}_ID_{int(person_id)}.csv"
+                df.to_csv(staged / filename, index=False)
 
-        # Record the frame_stride used so embed can map CSV processed-frame
-        # indices back to source frames without assuming the embed-time stride.
-        try:
-            meta_path = os.path.join(self.output_csv_folder, f"{base_filename}_meta.json")
-            with open(meta_path, "w") as f:
-                json.dump({"frame_stride": self.frame_stride}, f)
-        except Exception:
-            pass
+            # Record the frame_stride used so embed can map CSV processed-frame
+            # indices back to source frames without assuming the embed-time stride.
+            try:
+                with (staged / f"{base_filename}_meta.json").open("w") as output:
+                    json.dump({"frame_stride": self.frame_stride}, output)
+            except Exception:
+                pass
+            transaction.commit()
 
         return True
 
@@ -863,76 +1182,80 @@ class PoseProcessor:
         base = os.path.splitext(os.path.basename(video_path))[0]
         suffix = "_multi" if is_multi else ""
         filename = f"{base}{suffix}_pose.mp4"
-        out_path = os.path.join(self.output_video_folder, filename)
+        final_path = os.path.join(self.output_video_folder, filename)
         proc_w, proc_h = orig_w, orig_h
         if fps <= 0 or fps > 120:
             fps = 25
 
-        out = None
-        codecs_to_try = [
-            ('avc1', 'H.264 (recommended for macOS)'),
-            ('mp4v', 'MPEG-4'),
-            ('XVID', 'Xvid'),
-            ('MJPG', 'Motion JPEG'),
-        ]
+        transaction = OutputStaging(self.output_video_folder)
+        with transaction as staged:
+            out_path = str(staged / filename)
+            out = None
+            codecs_to_try = [
+                ('avc1', 'H.264 (recommended for macOS)'),
+                ('mp4v', 'MPEG-4'),
+                ('XVID', 'Xvid'),
+                ('MJPG', 'Motion JPEG'),
+            ]
 
-        for fourcc_str, desc in codecs_to_try:
-            try:
-                fourcc = cv2.VideoWriter_fourcc(*fourcc_str)
-                test_writer = cv2.VideoWriter(out_path, fourcc, fps, (proc_w, proc_h))
-                if test_writer.isOpened():
-                    out = test_writer
-                    if self.status_callback:
-                        self.status_callback(f"✓ Using codec: {desc}")
+            for fourcc_str, desc in codecs_to_try:
+                try:
+                    fourcc = cv2.VideoWriter_fourcc(*fourcc_str)
+                    test_writer = cv2.VideoWriter(out_path, fourcc, fps, (proc_w, proc_h))
+                    if test_writer.isOpened():
+                        out = test_writer
+                        if self.status_callback:
+                            self.status_callback(f"Using codec: {desc}")
+                        break
+                    test_writer.release()
+                except Exception:
+                    pass
+
+            if out is None or not out.isOpened():
+                error_msg = f"Failed to create video writer for {final_path}. All codecs failed."
+                if self.status_callback:
+                    self.status_callback(error_msg)
+                raise RuntimeError(error_msg)
+
+            raw_frame_idx = 0
+            cached_draws = []
+            last_progress_percent = -1
+
+            while cap.isOpened():
+                if cancel_check and cancel_check():
+                    cancelled = True
                     break
-                test_writer.release()
-            except Exception:
-                pass
+                ret, frame = cap.read()
+                if not ret:
+                    break
 
-        if out is None or not out.isOpened():
-            error_msg = f"❌ Failed to create video writer for {out_path}. All codecs failed."
-            if self.status_callback:
-                self.status_callback(error_msg)
-            raise RuntimeError(error_msg)
+                canvas = frame.copy()
 
-        raw_frame_idx = 0
-        cached_draws = []
-        last_progress_percent = -1
+                if raw_frame_idx % stride == 0:
+                    proc_idx = raw_frame_idx // stride
+                    # Landmarks are precomputed at load; just pick this frame's rows
+                    # (carried over on stride-skipped frames to avoid flicker).
+                    cached_draws = frames.get(proc_idx, [])
 
-        while cap.isOpened():
-            if cancel_check and cancel_check():
-                cancelled = True
-                break
-            ret, frame = cap.read()
-            if not ret:
-                break
+                for pid, pts in cached_draws:
+                    self._draw_pose(canvas, pts, self._color_for_id(pid))
 
-            canvas = frame.copy()
+                self._draw_legend(canvas, sorted_ids)
+                safe_frame = _sanitize_frame_for_video(canvas, (proc_w, proc_h))
+                out.write(safe_frame)
 
-            if raw_frame_idx % stride == 0:
-                proc_idx = raw_frame_idx // stride
-                # Landmarks are precomputed at load; just pick this frame's rows
-                # (carried over on stride-skipped frames to avoid flicker).
-                cached_draws = frames.get(proc_idx, [])
+                raw_frame_idx += 1
+                if progress_callback and total_frames > 0:
+                    progress_percent = int((raw_frame_idx / total_frames) * 100)
+                    if progress_percent != last_progress_percent or _should_emit_frame_update(raw_frame_idx, total_frames):
+                        progress_callback(progress_percent)
+                        last_progress_percent = progress_percent
 
-            for pid, pts in cached_draws:
-                self._draw_pose(canvas, pts, self._color_for_id(pid))
-
-            self._draw_legend(canvas, sorted_ids)
-            safe_frame = _sanitize_frame_for_video(canvas, (proc_w, proc_h))
-            out.write(safe_frame)
-
-            raw_frame_idx += 1
-            if progress_callback and total_frames > 0:
-                progress_percent = int((raw_frame_idx / total_frames) * 100)
-                if progress_percent != last_progress_percent or _should_emit_frame_update(raw_frame_idx, total_frames):
-                    progress_callback(progress_percent)
-                    last_progress_percent = progress_percent
-
-        cap.release()
-        out.release()
-        if cancelled:
-            return False
-        # OpenCV writes video only; bring the original audio over.
-        _mux_audio_into_video(out_path, video_path, self.status_callback)
-        return out_path
+            cap.release()
+            out.release()
+            if cancelled:
+                return False
+            # OpenCV writes video only; bring the original audio over.
+            _mux_audio_into_video(out_path, video_path, self.status_callback)
+            transaction.commit()
+        return final_path

@@ -10,27 +10,21 @@ def test_captions_module_is_packaged():
     assert '"captions",' in text
 
 
-def test_yolov5_runtime_dependencies_are_packaged():
+def test_embedded_worker_copies_the_locked_runtime_and_assets():
     root = Path(__file__).resolve().parents[1]
-    spec_text = (root / "MultiSOCIAL.spec").read_text(encoding="utf-8")
-    hook_text = (root / "hooks" / "hook-yolov5.py").read_text(encoding="utf-8")
+    builder_text = (root / "packaging" / "build_windows_embedded_worker.py").read_text(encoding="utf-8")
+    manifest_text = (root / "packaging" / "windows_hiddenimports.py").read_text(encoding="utf-8")
 
-    assert 'collect_data_files("ultralytics")' in spec_text
-    assert 'collect_submodules("ultralytics")' in spec_text
-    assert '"yolov5", "ultralytics", "torch", "torchvision"' in spec_text
-    assert 'os.path.join(ROOT, "assets", "yolov5s.pt")' in spec_text
-
-    assert 'collect_data_files("ultralytics")' in hook_text
-    assert 'collect_submodules("ultralytics")' in hook_text
-    assert '"yolov5", "ultralytics", "torch", "torchvision"' in hook_text
+    assert 'shutil.copytree(\n        site_packages,\n        output / "Lib" / "site-packages",' in builder_text
+    assert 'shutil.copytree(ROOT / "assets", output / "assets")' in builder_text
+    assert '"yolov5.models.yolo"' in manifest_text
 
 
-def test_mediapipe_heavy_pose_model_is_packaged():
+def test_embedded_worker_copies_the_heavy_pose_asset():
     root = Path(__file__).resolve().parents[1]
-    spec_text = (root / "MultiSOCIAL.spec").read_text(encoding="utf-8")
+    builder_text = (root / "packaging" / "build_windows_embedded_worker.py").read_text(encoding="utf-8")
 
-    assert 'os.path.join(ROOT, "assets", "pose_landmark_heavy.tflite")' in spec_text
-    assert 'os.path.join("mediapipe", "modules", "pose_landmark")' in spec_text
+    assert 'shutil.copytree(ROOT / "assets", output / "assets")' in builder_text
 
 
 def test_macos_bundle_uses_project_version_metadata():

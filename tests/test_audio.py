@@ -91,6 +91,29 @@ def test_whisper_pipeline_audio_input_wraps_decoded_audio(monkeypatch, import_au
     assert payload["array"].tolist() == [1.0, 2.0]
 
 
+def test_private_worker_opensmile_config_uses_only_a_verified_ascii_runtime_root(
+    monkeypatch, import_audio, tmp_path
+):
+    audio = import_audio
+    worker = tmp_path / "worker"
+    config = worker / "Lib" / "site-packages" / "opensmile" / "core" / "config"
+    config.mkdir(parents=True)
+    executable = worker / "python.exe"
+    executable.touch()
+    monkeypatch.setattr(audio.sys, "platform", "win32")
+    monkeypatch.setattr(audio.sys, "executable", str(executable))
+    monkeypatch.setenv(audio._WORKER_RUNTIME_ROOT_ENV, str(worker))
+
+    assert audio._private_worker_opensmile_config_root() == str(config)
+    assert audio._PrivateWorkerSmile().default_config_root == str(config)
+
+    unicode_worker = tmp_path / "Üworker"
+    unicode_config = unicode_worker / "Lib" / "site-packages" / "opensmile" / "core" / "config"
+    unicode_config.mkdir(parents=True)
+    monkeypatch.setenv(audio._WORKER_RUNTIME_ROOT_ENV, str(unicode_worker))
+    assert audio._private_worker_opensmile_config_root() is None
+
+
 def test_extract_audio_features_writes_timestamped_csv(monkeypatch, import_audio, tmp_path):
     audio = import_audio
     processor = audio.AudioProcessor(
@@ -113,6 +136,33 @@ def test_extract_audio_features_writes_timestamped_csv(monkeypatch, import_audio
     assert df["Timestamp_Seconds"].tolist() == [0.0, 0.01]
     assert progress_updates[0] == 0
     assert progress_updates[-1] == 100
+
+
+def test_extract_audio_features_cancellation_does_not_commit_or_leave_staging(
+    monkeypatch, import_audio, tmp_path
+):
+    audio = import_audio
+    processor = audio.AudioProcessor(
+        output_audio_features_folder=str(tmp_path),
+        output_transcripts_folder=None,
+        status_callback=None,
+    )
+    monkeypatch.setattr(
+        audio,
+        "_load_audio_for_opensmile",
+        lambda path: (np.array([0.0, 1.0], dtype=np.float32), 2),
+    )
+    calls = {"count": 0}
+
+    def cancel_at_staging_boundary():
+        calls["count"] += 1
+        return calls["count"] >= 5
+
+    assert processor.extract_audio_features(
+        "clip.flac", cancel_check=cancel_at_staging_boundary
+    ) is False
+    assert not (tmp_path / "clip.csv").exists()
+    assert not list(tmp_path.glob(".multisocial-stage-*"))
 
 
 def _make_processor(audio, tmp_path):
@@ -321,6 +371,55 @@ def test_whisper_batch_size_is_one_when_diarization_enabled(monkeypatch, import_
     processor._load_whisper_model()
 
     assert captured["batch_size"] == 1
+
+
+def test_whisper_honours_an_explicit_immutable_model_revision(monkeypatch, import_audio, tmp_path):
+    audio = import_audio
+    processor = audio.AudioProcessor(
+        output_audio_features_folder=str(tmp_path),
+        output_transcripts_folder=str(tmp_path),
+    )
+    processor.device = "cpu"
+    processor.torch_dtype = "float32"
+    monkeypatch.setenv(
+        "MULTISOCIAL_WHISPER_MODEL_REVISION",
+        "169d4a4341b33bc18d8881c4b69c2e104e1cc0af",
+    )
+
+    class FakeModel:
+        device = type("Device", (), {"type": "cpu"})()
+
+        def to(self, device):
+            return self
+
+    fake_processor = type(
+        "FakeProcessor",
+        (),
+        {"tokenizer": object(), "feature_extractor": object()},
+    )()
+    model_calls = []
+    processor_calls = []
+
+    def load_model(*args, **kwargs):
+        model_calls.append(kwargs)
+        if kwargs["local_files_only"]:
+            raise OSError("not cached")
+        return FakeModel()
+
+    def load_processor(*args, **kwargs):
+        processor_calls.append(kwargs)
+        if kwargs["local_files_only"]:
+            raise OSError("not cached")
+        return fake_processor
+
+    monkeypatch.setattr(audio.AutoModelForSpeechSeq2Seq, "from_pretrained", load_model)
+    monkeypatch.setattr(audio.AutoProcessor, "from_pretrained", load_processor)
+    monkeypatch.setattr(audio, "pipeline", lambda *args, **kwargs: object())
+
+    processor._load_whisper_model()
+
+    assert all(call["revision"] == "169d4a4341b33bc18d8881c4b69c2e104e1cc0af" for call in model_calls)
+    assert all(call["revision"] == "169d4a4341b33bc18d8881c4b69c2e104e1cc0af" for call in processor_calls)
 
 
 def test_extract_transcripts_batch_diarization_saves_each_file_and_clears_whisper(monkeypatch, import_audio, tmp_path):
@@ -538,7 +637,7 @@ def test_extract_audio_features_batch_cancel_check(import_audio, tmp_path, monke
     processor = _make_processor(audio, tmp_path)
     processed = []
 
-    def fake_extract(path, progress_callback=None):
+    def fake_extract(path, progress_callback=None, cancel_check=None):
         processed.append(path)
         return str(tmp_path / f"{os.path.basename(path)}.csv")
 
@@ -565,7 +664,7 @@ def test_extract_audio_features_batch_reports_per_file_failure(import_audio, tmp
     audio = import_audio
     processor = _make_processor(audio, tmp_path)
 
-    def fake_extract(path, progress_callback=None):
+    def fake_extract(path, progress_callback=None, cancel_check=None):
         if path.endswith("bad.wav"):
             raise RuntimeError("decode failed")
         return path + ".csv"
